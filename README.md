@@ -1,0 +1,476 @@
+# StrmAction
+
+> 面向 `.strm` 媒体库的「刮削 + 展示 + 播放分发」Web 应用。
+> 不转码、不代理视频流、不碰网盘鉴权——把播放从 Jellyfin 里彻底剥离。
+
+![首页](docs/screenshots/02-home.png)
+
+## 这是什么
+
+SmartStrm 生成的 `.strm` 文件里只有一行网盘解析地址。StrmAction 扫描这些文件，用
+**TMDB + TVDB** 自己刮削元数据，提供 VidHub / SenPlayer 级别的浏览界面；用户点播放时，
+把该集 `.strm` 里的 URL 交给播放器：**伴侣 App 内置 Media3 播放（默认，5 秒进度心跳）**，
+失败或手动选择时降级到外部 mpv，桌面浏览器可用本机 mpv，纯网页兜底复制链接。
+
+```
+SmartStrm 生成 .strm（内容 = 网盘解析地址）
+        │
+        ▼
+StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
+        │
+        ▼
+用户浏览（伴侣 App / 手机浏览器 / 桌面 / TV）
+        │  点击播放
+        ▼
+伴侣 App 内置 Media3（默认） / mpv（兜底）──(302)──► Alist ──(302)──► 百度 CDN
+        │
+        └─ 全程不经过 StrmAction，服务端零中转、零带宽、零转码
+```
+
+**播放请求头（UA/Referer）由服务端按库下发**，内置播放器与 mpv 都会带上；
+服务端对视频数据**永不发起请求**，只读取 `.strm` 文本、下载海报与背景图。
+
+## 功能
+
+| 模块 | 已实现 |
+|---|---|
+| 媒体库 | 四种类型（电影 / 电视剧 / 家庭视频 / 课程）、多目录、启停、定时扫描 |
+| 扫描 | 增量（mtime+size）、软删除（`missing`）、按内容 URL 归并改名/移动、忽略规则、符号链接越界防护 |
+| 解析 | 目录模板优先 + 规则链 + guessit 兜底；中文、全角括号、季集、多版本、分段、显式 ID |
+| 刮削 | TMDB + TVDB 双源、可配优先级、打分匹配、跨源补空、`{tmdb-603}` 直取、本地 `.nfo` 完全接管 |
+| 元数据 | 17 项字段、季/集详情、剧照、演职员头像、预告片、合集、分级、别名 |
+| 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
+| 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
+| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播）、外部 mpv 兜底、桌面 mpv spawn + JSON IPC、浏览器 `intent://`、复制链接 |
+| 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发 |
+| 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看、分类横滑、详情、选集、搜索、设置、任务、待修正列表、首次向导 |
+| TV | 伴侣 App 手机/电视通用、`?tv=1` 10-foot 布局、方向键空间导航 + 滚屏兜底、48px 安全区、焦点光晕 |
+| 运维 | 单容器 Docker、配置优先级 DB > yaml > 默认、导出/导入、任务日志、Provider 连通性测试 |
+
+### v0.8 变更摘要
+
+- **播放**：伴侣 App 内置 Media3 成为默认路径；5 秒进度心跳、`play_token` 回传、播完无缝连播，
+  外部 mpv 降级为兜底；播放请求头按媒体库下发。
+- **APK 手机优先**：WebView 触摸滚动不再被父容器/桥接层干扰；修复 JS 桥在 JavaBridge 线程
+  访问 `WebView` 导致点击播放报「Java exception」；画中画只在真正播放后触发；支持网页里的
+  海报上传；设置页「伴侣 App」可直接重开服务器配置。
+- **前端**：Hero 轮播支持手指横滑；TV 遥控方向键在没有可聚焦元素时整页滚动；详情页移动端
+  背景高度收敛，首屏操作按钮更早出现。
+- **后端**：`config.example.yaml` 与 v0.8 的 `player.*`（builtin / 心跳 / `play_token` /
+  请求头 / mpv 包名）对齐。
+
+截图：
+
+| 详情 | 搜索 |
+|---|---|
+| ![详情](docs/screenshots/03-detail.png) | ![搜索](docs/screenshots/04-search.png) |
+
+| 设置 | 任务 |
+|---|---|
+| ![设置](docs/screenshots/05-settings.png) | ![任务](docs/screenshots/06-tasks.png) |
+
+手机（伴侣 App / 移动浏览器）：
+
+| 首页 | 详情 |
+|---|---|
+| ![手机首页](docs/screenshots/16-mobile-home.png) | ![手机详情](docs/screenshots/17-mobile-detail.png) |
+
+| 设置 |
+|---|
+| ![手机设置](docs/screenshots/18-mobile-settings.png) |
+
+伴侣 App 实机（Android 14）：
+
+![伴侣 App](docs/screenshots/19-apk-home.png)
+
+43 秒功能演示：[strmaction-demo.webm](docs/demo/strmaction-demo.webm)
+（首页 → 详情 → 选集 → 搜索 → 任务 → 设置 → TV 布局。视频录制于内置播放器上线前，
+播放流程以本文「播放」章节为准）。
+
+## 快速开始（Docker Compose）
+
+> **云服务器 / 公网 HTTPS 部署**：用 [`docker-compose.cloud.yml`](docker-compose.cloud.yml)
+> + [`.env.cloud.example`](.env.cloud.example)，完整步骤（防火墙、域名、Caddy/Nginx、
+> `.strm` 同步、备份、排错）见 **[docs/deploy-cloud.md](docs/deploy-cloud.md)**。
+> 下面的 compose 更适合 NAS / 局域网。
+
+```bash
+git clone <repo> strmaction && cd strmaction
+
+# 可选：准备 .env 覆盖卷与密钥
+cat > .env <<'EOF'
+STRMACTION_BASE_URL=http://192.168.1.10:8080
+STRMACTION_MEDIA_PATH=/volume1/media/strm
+STRMACTION_TMDB_KEY=
+STRMACTION_TVDB_KEY=
+EOF
+
+docker compose up -d --build
+```
+
+打开 `http://<主机IP>:8080`，按向导完成：
+
+1. 设置管理员密码（至少 8 位，不能纯数字）；
+2. 填 TMDB / TVDB Key（可「稍后配置」，先走文件名兜底）；
+3. 添加第一个识别目录（容器内路径，如 `/media/strm/movies`）并扫描。
+
+| 初始化 · 密码 | 初始化 · 媒体库 |
+|---|---|
+| ![向导1](docs/screenshots/11-setup-password.png) | ![向导3](docs/screenshots/13-setup-library.png) |
+
+> 媒体目录以**只读**方式挂载。容器内路径必须与设置里填的路径一致。
+> 数据（SQLite、图片、会话密钥）持久化在 `./data`。
+
+### 手动 docker run
+
+```bash
+docker build -t strmaction:latest .
+
+docker run -d --name strmaction --restart unless-stopped \
+  -p 8080:8080 \
+  -v "$PWD/data:/data" \
+  -v "/volume1/media/strm:/media/strm:ro" \
+  -e STRMACTION_BASE_URL=http://192.168.1.10:8080 \
+  -e STRMACTION_TMDB_KEY=你的Key \
+  strmaction:latest
+```
+
+### 本地开发
+
+后端：
+
+```bash
+python -m venv .venv
+# Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
+pip install -r backend/requirements.txt
+
+cp config.example.yaml config.yaml   # 按需修改 data_dir / base_url
+export PYTHONPATH=$PWD/backend
+uvicorn app.main:app --reload --port 8080 --app-dir backend
+```
+
+前端（另一个终端）：
+
+```bash
+cd frontend
+npm install
+npm run dev        # http://127.0.0.1:5173，已代理 /api 与 /img 到 8080
+```
+
+生产构建由 Docker 自动完成；手动构建：
+
+```bash
+cd frontend && npm run build
+# 后端会自动发现 frontend/dist 并托管
+```
+
+## 配置
+
+优先级：**设置页（数据库） > `config.yaml` > 内置默认值**。
+`config.yaml` 只用于初始值与密钥兜底；修改后重启生效。
+
+常用环境变量：
+
+| 变量 | 说明 |
+|---|---|
+| `STRMACTION_CONFIG` | 配置文件路径，默认 `./config.yaml` |
+| `STRMACTION_DATA_DIR` | 数据目录（SQLite + 图片），默认 `./data` |
+| `STRMACTION_BASE_URL` | 外部访问地址，用于播放链接与 Cookie secure 判断 |
+| `STRMACTION_TMDB_KEY` | TMDB API Key 或 v4 Token |
+| `STRMACTION_TVDB_KEY` / `STRMACTION_TVDB_PIN` | TVDB 凭证 |
+| `STRMACTION_PROXY` | 两个 provider 共用的 HTTP 代理 |
+| `STRMACTION_SECRET` | 会话签名密钥（不填会自动生成并写入数据目录） |
+| `STRMACTION_DISABLE_SCHEDULER` | `1` = 关闭 APScheduler（测试用） |
+
+完整字段见 [`config.example.yaml`](config.example.yaml)。
+
+## 目录与解析
+
+### 支持的目录结构
+
+```
+/media/strm/movies/
+├─ 流浪地球2 (2023)/流浪地球2 (2023).strm
+├─ 沙丘2 (2024)/沙丘2 (2024) - 2160p.strm      ← 同条目 4K
+└─ 沙丘2 (2024)/沙丘2 (2024) - 1080p.strm      ← 同条目 1080P
+
+/media/strm/tv/
+├─ 三体 (2023)/Season 01/三体 - S01E01.strm
+├─ 漫长的季节 (2023)/S01/漫长的季节.01.strm
+├─ 狂飙/第一季/第12集.strm
+└─ Some.Show.2020/Season 02/Some.Show.S02E03.1080p.strm
+```
+
+- 多版本 → 同一 `item` 下多个 `media_file`，详情页可切换；
+- `CD1/CD2`、`part1/part2` → 同一个 `media_file` 序列；
+- 家庭视频 / 课程按目录树分组，不刮削；
+- `.strm` 读取**首行**，兼容 UTF-8 BOM，`#` 开头视为注释；非 `http(s)` 标记 invalid，不进列表；
+- 符号链接解析限制在库目录内；默认忽略 `@eaDir`、`.DS_Store`、`#recycle`、`*.tmp`。
+
+### 目录模板（可选）
+
+在媒体库设置里填写，例如：
+
+```
+{title} ({year})/{title} ({year}).strm
+{title} ({year})/Season {season:02d}/{title} - S{season:02d}E{episode:02d}.strm
+```
+
+模板优先，命中即用；未命中走规则链，最后用 guessit 兜底。
+文件名/目录名里可带显式 ID：`{tmdb-603}`、`{tvdb-12345}`、`{imdb-tt0133093}`。
+
+## 元数据源
+
+### 获取 TMDB Key
+
+1. 注册 [themoviedb.org](https://www.themoviedb.org/)；
+2. 头像 → **Settings → API** → **Create** → 选择 Developer，填写应用用途；
+3. 复制 **API Key (v3 auth)**，或 **API Read Access Token**（以 `eyJ` 开头，也支持）；
+4. 填入「设置 → 元数据源 → TMDB」或环境变量。
+
+### 获取 TVDB Key
+
+1. 注册 [thetvdb.com](https://thetvdb.com/)；
+2. **Dashboard → API Keys → Create Key**；
+3. 部分账号需要 PIN，一并填入；
+4. TVDB 使用 v4 JWT，服务端会自动登录并在过期前 24h 续期。
+
+> 国内访问不稳定时，为每个 provider 单独配置 `base_url`（自建反代）与 `proxy`。
+> 未配置任何 Key 时全站仍可用：标题/结构走文件名兜底，不报错、不白屏。
+
+### 双源策略
+
+- 默认电影/剧集 `[tmdb, tvdb]`，动漫库建议在库设置改为 `[tvdb, tmdb]`；
+- 按优先级依次搜索，得分 ≥ 0.75 自动绑定；0.6–0.75 标记「待确认」；< 0.6 失败；
+- 得分 = 标题 55% + 年份 25% + 热度排名 10% + 别名 10%；
+- 跨源只补空字段（简介/标语/海报/背景/Logo/分级），**季集结构永远只取胜出源**；
+- 本地 `.nfo`（Kodi / tinyMediaManager 标准）存在时完全接管，不再请求在线源。
+
+## 播放（v0.8）
+
+播放方式由服务端 `player.mode` 决定（设置页可改），客户端按能力自动降级：
+
+| mode | 使用方 | 进度 | 说明 |
+|---|---|---|---|
+| `builtin` | 伴侣 App | **5 秒心跳** | 默认；Media3 解码、直连网盘 |
+| `external_mpv` | 伴侣 App | 退出时一次 | 兜底，画质/字幕特效优先 |
+| `browser_intent` | Android 浏览器 | 无 | 无伴侣 App 时的降级 |
+| `desktop_mpv` | 桌面浏览器（后端同机） | 5 秒（JSON IPC） | 由服务端 spawn mpv |
+| `copy` | 任意 | 无 | 最终兜底 |
+
+> `POST /api/play/{item_id}` 只负责下发 `play_url / headers / resume_ms / play_token /
+next_item_id`。`play_token` 是 item 级、12 小时有效的进度写入凭证，原生播放器**不需要**
+也不接触会话 Cookie。
+
+### 伴侣 App 内置播放器（默认）
+
+- 数据源带库级 `play_headers`（不同网盘/架子可分别配 UA、Referer），`setAllowCrossProtocolRedirects(true)` 兼容 302 https→http；
+- 从 `resume_ms` 起播，硬解失败自动回退软解；暂停、退后台、播完各补写一次进度；
+- `STATE_ENDED` 用 `next_item_id` 无缝连播，不黑屏、不跳转；
+- 播放器错误 → 弹窗「用 mpv 打开」；菜单支持字幕/音轨/倍速/下一集/外部 mpv；
+- 手机端支持画中画，电视端支持遥控器左右 ±10s、确定暂停、上下呼出菜单。
+
+### 外部 mpv（兜底）
+
+```bash
+mpv --no-terminal --force-window \
+    --start=123.4 \
+    --http-header-fields="User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/" \
+    "<strm url>"
+```
+
+Android 上由伴侣 App 用 `video/any` + `setPackage("is.xyz.mpv")` 拉起，退出时读取
+`position` / `duration` 回写；未安装 mpv 会提示而不是崩溃。
+`mpv.conf` 只需配置一次请求头：
+
+```ini
+http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/
+cache=yes
+demuxer-max-bytes=256MiB
+```
+
+### 桌面 mpv
+
+后端与 mpv 同机时，`player.mode=desktop_mpv` 会自动 spawn mpv，并通过 JSON IPC 每 5 秒回写进度：
+
+```bash
+mpv --no-terminal --force-window \
+    --start=123.4 \
+    --http-header-fields="User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/" \
+    --input-ipc-server=/tmp/strmaction-xxx.sock \
+    "<strm url>"
+```
+
+> Docker 容器内没有显示/音频设备，桌面 spawn 只适合**本机直接运行后端**的部署方式。
+> 使用 Docker 时请用伴侣 App 或 `copy` 模式。
+
+### 进度粒度
+
+| 端 | 进度来源 | 粒度 | 断点续播 |
+|---|---|---|---|
+| 伴侣 App · 内置 Media3 | 5s 心跳 + 暂停/退后台补写 | **准实时** | ✅ |
+| 伴侣 App · 外部 mpv | 退出时的 result intent | 每次退出一次 | ✅（可能丢最后一段） |
+| 桌面 mpv（IPC） | `time-pos` 每 5s | 准实时 | ✅ |
+| 纯网页（Chrome `intent://`） | 无 | 拿不到 | ❌（可手动标记） |
+
+写入规则：≥90% 或 `finished=true` → 标记已看并把位置归零；否则 UPSERT；
+`play_token` / `client_key` 幂等；非完成状态不允许一次倒退超过 5 秒。
+
+## 伴侣 App（手机优先，兼容电视）
+
+源码在 [`companion/`](companion/README.md)。**已构建的签名 APK**：
+
+```
+companion/strmaction-companion-v1.apk
+```
+
+安装到手机或电视（同一局域网）：
+
+```bash
+adb install -r companion/strmaction-companion-v1.apk
+# 电视：adb connect <TV_IP>:5555 && adb install -r ...
+```
+
+> 本工作区内的 APK 使用本地生成的演示 keystore 签名（`companion/release.keystore`，口令 `strmaction`）。正式分发请用自己的 keystore 重新签名；更换签名后需先卸载旧版。
+
+自行构建（JDK 17 + Android SDK 34）：
+
+```bash
+cd companion
+gradle wrapper --gradle-version 8.7   # 首次
+./gradlew assembleRelease
+```
+
+界面上：
+
+- 手机：竖屏/横屏跟随系统，状态栏保留，**触摸滚动完全交给 WebView**（不拦截、不冲突）；
+- 电视：自动横屏 + 隐藏系统栏 + `?tv=1` 10-foot 布局，遥控器方向键导航，**长按「确定」重设服务器**；
+- 设置页「伴侣 App」区块可查看版本、重新打开服务器设置。
+
+伴侣 App 只负责：
+
+1. WebView 加载同一个 StrmAction 页面（电视自动带 `?tv=1`，触摸设备永远按手机处理）；
+2. 提供 `window.StrmActionNative.play(itemId) / playExternal(itemId) / openSettings()` 桥；
+3. 原生层带 Cookie 请求 `/api/play/{itemId}`，用 Media3 播放并每 5 秒用 `play_token` 回传进度；
+4. 网页只传 `itemId`，**不接触播放 URL 与 token**；返回后刷新「继续观看」；
+5. 外部 mpv 兜底：`type=video/any`、`setPackage`、不加 `FLAG_ACTIVITY_NEW_TASK`、
+   Manifest 声明 `<queries>`，返回后恢复 WebView 焦点。
+
+网页里的海报/背景图上传也支持：Android 侧通过 `onShowFileChooser` 调起系统文件选择器。
+
+## API
+
+启动后访问 **`/docs`** 查看完整 OpenAPI。统一前缀 `/api`，除以下接口外全部需要
+`st_sess` 会话 Cookie（HttpOnly / SameSite=Lax）：
+
+- `POST /api/auth/login`、`/api/auth/setup`、`GET /api/auth/state`
+- `GET /api/health`
+
+主要接口：`/libraries`（增删改 + scan/scrape/refresh）、`/items`（查询/详情/编辑/匹配/
+进度/已看/海报上传/合并）、`/search`、`/home`、`/play/{item_id}`、`/tasks`、`/settings`、
+`/settings/provider-test`、`/img/{name}`、`/export`、`/import`。
+
+播放地址只在 `POST /api/play/{item_id}` 返回，日志中打码；导出备份**不包含** URL。
+
+## 数据与备份
+
+- SQLite（WAL）位于 `<data_dir>/strmaction.db`，图片位于 `<data_dir>/images`；
+- 设置页「导出备份」生成 `library.json`（库配置 + 条目元数据 + 手动覆盖 + 进度，不含 URL）；
+- 恢复后需重新扫描目录以恢复文件关联；也可以直接备份整个 `data/` 目录；
+- 图片以 `sha1(源地址)` 命名，同一张图只下载一次；`/img` 缓存一年。
+
+## 测试与演示
+
+```bash
+# 后端：解析 / 扫描 / 打分 / Provider 映射 / 图片 / NFO / API 全链路
+pip install pytest pytest-asyncio
+PYTHONPATH=backend pytest backend/tests -q
+
+# 生成 §18 的测试样本目录
+python scripts/make_samples.py --dest sample-media
+python scripts/make_samples.py --dest sample-media --big 1000   # 压力测试
+
+# 演示数据（需要服务已启动；会生成示例封面/背景图）
+python scripts/seed_demo.py --base-url http://127.0.0.1:8080
+```
+
+当前测试：**37 项全部通过**。截图脚本：`frontend/scripts/screenshot.mjs`（Playwright + Chrome）。
+
+> `scripts/seed_demo.py` 会从 Picsum 下载随机示例照片并合成演示海报，仅用于本地预览与截图；
+> 真实媒体库请通过 TMDB / TVDB 或本地 `.nfo` 获取图片。
+> 本工作区的演示数据管理员密码为 `demo-password-123`。
+
+## 安全
+
+1. **播放 URL 视为凭证**：所有返回 URL 的接口鉴权；日志打码；不写入任务日志。
+2. 单管理员，密码 argon2；登录失败 5 次锁定 5 分钟；HttpOnly Cookie。
+3. 路径穿越防护：文件访问基于 `library.root_path` 的 realpath 校验。
+4. 默认只在内网使用。公网暴露前请加 HTTPS 反代 + 强密码。
+5. 本产品使用 TMDB API，但未经 TMDB 认可或认证。图片仅在本地缓存用于展示。
+
+## 非目标
+
+- ❌ 视频转码
+- ❌ 视频流中转 / 反代 / 缓存
+- ❌ 网盘登录 / Alist 替代
+- ❌ 依赖 Jellyfin / Emby / Plex
+- ❌ 多用户 / 权限体系
+- ❌ 内嵌 `<video>` 播放器
+- ❌ 多语言 UI（v1 仅中文，文案集中在 `src/i18n/zh-CN.ts`）
+- ❌ iOS / tvOS 伴侣 App
+
+## 已知限制
+
+- 纯网页 `intent://` 无法获取播放进度，需伴侣 App 或桌面 mpv；
+- 桌面 mpv 的 IPC 进度在 Linux/macOS 完整可用，Windows 命名管道为 best-effort；
+- 内置播放器的复杂 ASS 特效字幕无法还原；DV P5 在非 DV 设备上颜色可能异常；
+- 外部 mpv 路径只能拿到退出时的进度，断电/强杀会丢最后一段；
+- 内置播放器的字幕延迟调节（±0.5s）Media3 1.4 未提供公开 API，暂未实现；
+- 重复条目合并目前仅支持电影 / 视频；
+- 导入备份不恢复 `.strm` URL（安全考虑），需要重新扫描；
+- 伴侣 App 源码与签名 APK 均在 `companion/`，更换签名的自定义构建需先卸载旧版；
+- 动漫绝对集号：按 TVDB absolute 顺序把元数据挂到文件序号上，条目结构仍以文件为准。
+
+## 目录结构
+
+```
+backend/
+├─ app/
+│  ├─ main.py            FastAPI 入口 + 静态托管 + 鉴权中间件
+│  ├─ config.py / config_store.py / db.py / models.py / schemas.py
+│  ├─ api/               auth libraries items search home play tasks settings system
+│  ├─ scanner/           walker（遍历 + .strm 读取）/ sync（增量入库）
+│  ├─ parser/            rules（模板 + 中文规则）/ guess（guessit 兜底）
+│  ├─ scraper/           base / tmdb / tvdb / nfo / matcher / merge / service / cache
+│  ├─ players/           web_intent / mpv_ipc / clipboard
+│  ├─ images.py          下载队列 + WebP 变体 + 主题色
+│  ├─ jobs.py            TaskManager + APScheduler
+│  └─ security.py        argon2 + 签名会话 + 登录限流 + play_token
+└─ tests/
+
+frontend/src/
+├─ pages/                Home Detail Search Settings Tasks Fix Login Setup
+├─ components/           HeroCarousel PosterCard Row EpisodeCard Modal ...
+├─ api/                  client.ts types.ts hooks.ts
+├─ i18n/zh-CN.ts         全部界面文案
+└─ hooks/                useStartPlayback useTVMode（空间导航）
+
+companion/               Android WebView 壳 + Media3 播放器 + JS Bridge + mpv 兜底
+scripts/                 make_samples.py / seed_demo.py
+docs/screenshots/        截图
+docs/deploy-cloud.md     云服务器（公网 + HTTPS）部署指南
+deploy/                  Caddy 反向代理示例
+Dockerfile / docker-compose.yml / docker-compose.cloud.yml / config.example.yaml
+```
+
+## 验收对照（v0.8）
+
+| 里程碑 | 状态 |
+|---|---|
+| M0 骨架 + 鉴权 + `/api/health` | ✅ 自动化测试覆盖 |
+| M1 扫描 + 解析（§18 全样本） | ✅ 解析/扫描单测覆盖 |
+| M2 刮削（双源 + 匹配 + 修正 + 刷新 + 图片 + 主题色 + NFO） | ✅ 映射/打分/跨源/锁定测试覆盖；真实 Key 需自行联调 |
+| M3 前端浏览（轮播/继续观看/详情/选集/搜索/骨架屏） | ✅ 截图验证 |
+| M4 播放分发（builtin / external / desktop / copy + play_token） | ✅ API 与 token 测试覆盖；桌面 mpv 需真机验证 |
+| M5 打磨（TV 布局/动效/任务页/待修正） | ✅ |
+| M6 伴侣 App + 内置 Media3（5s 心跳 / 续播 / 连播 / mpv 兜底） | ✅ 源码 + 已签名 APK，模拟器实机验证通过 |

@@ -1,0 +1,391 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(tempfile.mkdtemp(prefix="strmaction-test-"))
+CONFIG = ROOT / "config.yaml"
+CONFIG.write_text("server:\n  data_dir: ./data\n", encoding="utf-8")
+os.environ["STRMACTION_CONFIG"] = str(CONFIG)
+os.environ["STRMACTION_DISABLE_SCHEDULER"] = "1"
+
+from fastapi.testclient import TestClient  # noqa: E402
+
+from app.main import create_app  # noqa: E402
+
+MEDIA = ROOT / "media"
+
+
+def make(rel: str, url: str = "https://example.com/video.m3u8") -> None:
+    path = MEDIA / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(url + "\n", encoding="utf-8")
+
+
+make("电影/流浪地球2 (2023)/流浪地球2 (2023).strm")
+make("电影/沙丘2 (2024)/沙丘2 (2024) - 2160p.strm")
+make("电影/沙丘2 (2024)/沙丘2 (2024) - 1080p.strm")
+make("剧集/三体 (2023)/Season 01/三体 - S01E01.strm")
+make("剧集/三体 (2023)/Season 01/三体 - S01E02.strm")
+make("剧集/坏文件/坏文件.strm", "")  # 内容为空 → invalid
+
+
+def wait_task(client: TestClient, task_id: int, timeout: float = 20) -> dict:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        response = client.get(f"/api/tasks/{task_id}")
+        assert response.status_code == 200, response.text
+        task = response.json()
+        if task["status"] != "running":
+            return task
+        time.sleep(0.2)
+    raise AssertionError(f"task {task_id} still running")
+
+
+def test_full_flow():
+    app = create_app()
+    with TestClient(app) as client:
+        # 未登录保护
+        state = client.get("/api/auth/state")
+        assert state.status_code == 200
+        assert state.json()["needs_setup"] is True
+        assert state.json()["authenticated"] is False
+        unauthorized = client.get("/api/items")
+        assert unauthorized.status_code == 401
+        assert unauthorized.json()["error"]["code"] == "SETUP_REQUIRED"
+        assert client.get("/api/health").json()["ok"] is True
+
+        # 密码强度
+        weak = client.post("/api/auth/setup", json={"password": "123"})
+        assert weak.status_code == 400
+
+        setup = client.post("/api/auth/setup", json={"password": "S3cure-passphrase"})
+        assert setup.status_code == 200, setup.text
+        assert client.get("/api/auth/state").json()["authenticated"] is True
+
+        # 媒体库
+        movie_root = MEDIA / "电影"
+        tv_root = MEDIA / "剧集"
+        created = client.post(
+            "/api/libraries",
+            json={"name": "电影", "root_path": str(movie_root), "type": "movie"},
+        )
+        assert created.status_code == 201, created.text
+        movie_lib = created.json()["id"]
+        tv_created = client.post(
+            "/api/libraries",
+            json={"name": "剧集", "root_path": str(tv_root), "type": "tv"},
+        )
+        assert tv_created.status_code == 201
+        tv_lib = tv_created.json()["id"]
+        duplicate = client.post(
+            "/api/libraries",
+            json={"name": "重复", "root_path": str(tv_root), "type": "tv"},
+        )
+        assert duplicate.status_code == 409
+
+        # 扫描电影
+        scan = client.post(f"/api/libraries/{movie_lib}/scan")
+        assert scan.status_code == 200
+        task = wait_task(client, scan.json()["task_id"])
+        assert task["status"] == "success", task
+        assert task["stats"]["scanned"] == 3
+
+        movies = client.get("/api/items", params={"library_id": movie_lib})
+        assert movies.status_code == 200, movies.text
+        movie_items = movies.json()["items"]
+        titles = {i["title"] for i in movie_items}
+        assert titles == {"流浪地球2", "沙丘2"}
+        dune = next(i for i in movie_items if i["title"] == "沙丘2")
+
+        # 详情 + 多版本
+        detail = client.get(f"/api/items/{dune['id']}").json()
+        assert len(detail["media_files"]) == 2
+        assert {m["version"] for m in detail["media_files"]} == {"2160p", "1080p"}
+        assert "url" not in json.dumps(detail)
+
+        # 扫描剧集
+        tv_scan = client.post(f"/api/libraries/{tv_lib}/scan")
+        tv_task = wait_task(client, tv_scan.json()["task_id"])
+        assert tv_task["status"] == "success", tv_task
+        assert tv_task["stats"]["invalid"] == 1
+
+        series_list = client.get("/api/items", params={"library_id": tv_lib}).json()["items"]
+        series = next(i for i in series_list if i["title"] == "三体")
+        series_detail = client.get(f"/api/items/{series['id']}").json()
+        assert series_detail["seasons"][0]["episode_count"] == 2
+        episode_id = series_detail["seasons"][0]["episodes"][0]["id"]
+        assert series_detail["item"]["play_target_id"] == episode_id
+
+        # 首页 / 搜索
+        home = client.get("/api/home").json()
+        assert home["stats"]["movies"] == 2
+        assert home["stats"]["episodes"] == 2
+        assert any(row["key"] == "recent" for row in home["rows"])
+        search = client.get("/api/search", params={"q": "三体"}).json()
+        assert search["total"] == 1
+
+        # 播放 + 进度回传 + 续播
+        play = client.post(f"/api/play/{series['id']}", json={})
+        assert play.status_code == 200, play.text
+        play_data = play.json()
+        assert play_data["play_url"].startswith("http")
+        assert play_data["item_id"] == episode_id
+        assert play_data["resume_ms"] == 0
+
+        progress = client.post(
+            f"/api/items/{episode_id}/progress",
+            json={"position_ms": 60000, "duration_ms": 120000, "finished": False},
+        )
+        assert progress.status_code == 200, progress.text
+        assert progress.json()["position_ms"] == 60000
+
+        play_again = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert play_again["resume_ms"] == 60000
+
+        # 幂等
+        dup = client.post(
+            f"/api/items/{episode_id}/progress",
+            json={
+                "position_ms": 60000,
+                "duration_ms": 120000,
+                "client_key": "k1",
+            },
+        ).json()
+        assert dup["position_ms"] == 60000
+        duplicate_key = client.post(
+            f"/api/items/{episode_id}/progress",
+            json={
+                "position_ms": 61000,
+                "duration_ms": 120000,
+                "client_key": "k1",
+            },
+        ).json()
+        assert duplicate_key.get("duplicate") is True
+        assert duplicate_key["position_ms"] == 60000
+
+        # 防倒退
+        regression = client.post(
+            f"/api/items/{episode_id}/progress",
+            json={"position_ms": 1000, "duration_ms": 120000},
+        ).json()
+        assert regression.get("ignored") is True
+
+        # 90% 自动已看
+        finished = client.post(
+            f"/api/items/{episode_id}/progress",
+            json={"position_ms": 115000, "duration_ms": 120000},
+        ).json()
+        assert finished["finished"] is True
+        assert finished["position_ms"] == 0
+
+        # 手动已看 / 未看
+        watched = client.post(
+            f"/api/items/{series['id']}/watched", json={"finished": True}
+        ).json()
+        assert watched["count"] == 2
+        unwatched = client.post(
+            f"/api/items/{series['id']}/watched", json={"finished": False}
+        ).json()
+        assert unwatched["count"] == 2
+
+        # 字段编辑 + 锁定
+        preview = client.patch(
+            f"/api/items/{dune['id']}",
+            json={"title": "沙丘 第二部", "overview": "手动简介"},
+        )
+        assert preview.status_code == 200
+        assert set(preview.json()["locked_fields"]) == {"title", "overview"}
+        assert preview.json()["title"] == "沙丘 第二部"
+        unlocked = client.post(f"/api/items/{dune['id']}/unlock")
+        assert unlocked.status_code == 200
+        assert unlocked.json()["locked_fields"] == []
+
+        # 设置
+        settings = client.get("/api/settings").json()
+        assert settings["settings"]["scraper"]["tmdb"]["api_key"] == ""
+        patched = client.patch(
+            "/api/settings", json={"scraper": {"language": "zh-CN"}}
+        )
+        assert patched.status_code == 200
+        test = client.post(
+            "/api/settings/provider-test", json={"provider": "tmdb"}
+        ).json()
+        assert test["ok"] is False
+
+        # 导出不含播放地址
+        exported = client.get("/api/export").json()
+        dumped = json.dumps(exported, ensure_ascii=False)
+        assert "https://example.com" not in dumped
+        assert exported["version"] == 1
+        assert len(exported["items"]) >= 3
+
+        imported = client.post("/api/import", json={"data": exported, "settings": False})
+        assert imported.status_code == 200, imported.text
+        assert imported.json()["ok"] is True
+        assert imported.json()["imported"]["scan_required"] is True
+
+        # 任务
+        tasks = client.get("/api/tasks").json()["tasks"]
+        assert tasks and tasks[0]["kind"] in {"scan", "scrape"}
+
+        # 登出
+        assert client.post("/api/auth/logout").status_code == 200
+        assert client.get("/api/items").status_code == 401
+
+        # 登录
+        bad = client.post(
+            "/api/auth/login", json={"username": "admin", "password": "wrong"}
+        )
+        assert bad.status_code == 401
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        assert login.status_code == 200, login.text
+
+
+def test_play_token_headers_and_subtitles():
+    """v0.8：库级请求头、play_token Bearer 鉴权、外挂字幕、连播跳过已看。"""
+    from app.models import PlayToken, utcnow
+
+    app = create_app()
+    with TestClient(app) as client:
+        login = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        assert login.status_code == 200, login.text
+
+        libraries = client.get("/api/libraries").json()["libraries"]
+        tv = next(lib for lib in libraries if lib["type"] == "tv")
+        patched = client.patch(
+            f"/api/libraries/{tv['id']}",
+            json={
+                "play_headers": {
+                    "User-Agent": "pan.baidu.com",
+                    "Referer": "https://pan.baidu.com/",
+                }
+            },
+        )
+        assert patched.status_code == 200, patched.text
+        assert patched.json()["play_headers"]["User-Agent"] == "pan.baidu.com"
+
+        # 非法头（CRLF 注入 / 非法名字）必须被清洗掉
+        dirty = client.patch(
+            f"/api/libraries/{tv['id']}",
+            json={"play_headers": {"Bad Header": "x", "X-Test": "a\r\nInjected: 1"}},
+        )
+        assert dirty.status_code == 200
+        assert dirty.json()["play_headers"] == {}
+        client.patch(
+            f"/api/libraries/{tv['id']}",
+            json={"play_headers": {"User-Agent": "pan.baidu.com"}},
+        )
+
+        # 外挂字幕（SmartStrm 复制到同目录的 .srt）
+        srt = MEDIA / "剧集" / "三体 (2023)" / "Season 01" / "三体 - S01E01.chs.srt"
+        srt.write_text(
+            "1\n00:00:01,000 --> 00:00:02,000\n你好\n",
+            encoding="utf-8",
+        )
+
+        items = client.get("/api/items", params={"library_id": tv["id"]}).json()["items"]
+        series = next(i for i in items if i["title"] == "三体")
+        play = client.post(f"/api/play/{series['id']}", json={})
+        assert play.status_code == 200, play.text
+        data = play.json()
+        assert data["headers"]["User-Agent"] == "pan.baidu.com"
+        assert data["headers_hint"].startswith("User-Agent: pan.baidu.com")
+        assert data["play_token"].startswith("pt_")
+        assert data["play_token_expires_at"]
+        assert data["progress_interval_ms"] == 5000
+        assert data["next_item_id"] is not None  # 第二集
+        assert len(data["subtitles"]) == 1
+        assert data["subtitles"][0]["lang"] == "zh"
+
+        # Cookie 方式可取字幕
+        sub = client.get(data["subtitles"][0]["url"])
+        assert sub.status_code == 200
+        assert "你好" in sub.text
+
+        item_id = data["item_id"]
+        token = data["play_token"]
+        detail = client.get(f"/api/items/{series['id']}").json()
+        episodes = detail["seasons"][0]["episodes"]
+        other_id = next(ep["id"] for ep in episodes if ep["id"] != item_id)
+
+        # 清掉 Cookie，仅用 play_token 写进度
+        client.cookies.clear()
+        bearer = {"Authorization": f"Bearer {token}"}
+        ok = client.post(
+            f"/api/items/{item_id}/progress",
+            json={"position_ms": 30000, "duration_ms": 120000, "finished": False},
+            headers=bearer,
+        )
+        assert ok.status_code == 200, ok.text
+        assert ok.json()["position_ms"] == 30000
+
+        # 字幕同样可用 ?pt= 取（原生播放器无法自定义头）
+        token_sub = client.get(data["subtitles"][0]["url"])
+        assert token_sub.status_code == 200
+        assert "你好" in token_sub.text
+
+        # token 绑定单个条目
+        mismatch = client.post(
+            f"/api/items/{other_id}/progress",
+            json={"position_ms": 1000, "duration_ms": 120000},
+            headers=bearer,
+        )
+        assert mismatch.status_code == 403
+        assert mismatch.json()["error"]["code"] == "PLAY_TOKEN_MISMATCH"
+
+        # 无凭证 → 401
+        client.cookies.clear()
+        assert (
+            client.post(
+                f"/api/items/{item_id}/progress",
+                json={"position_ms": 1000, "duration_ms": 120000},
+            ).status_code
+            == 401
+        )
+
+        # 过期 token → 明确的错误码
+        state = app.state.app_state
+        with __import__("sqlmodel").Session(state.engine) as session:
+            session.add(
+                PlayToken(
+                    token="pt_expired",
+                    item_id=item_id,
+                    created_at=utcnow(),
+                    expires_at="2020-01-01T00:00:00+00:00",
+                )
+            )
+            session.commit()
+        expired = client.post(
+            f"/api/items/{item_id}/progress",
+            json={"position_ms": 1000, "duration_ms": 120000},
+            headers={"Authorization": "Bearer pt_expired"},
+        )
+        assert expired.status_code == 401
+        assert expired.json()["error"]["code"] == "PLAY_TOKEN_EXPIRED"
+
+        # 未登录访问 /api/play 仍必须 401（play_token 不能换播放地址）
+        assert client.post(f"/api/play/{series['id']}", json={}).status_code == 401
+
+        # 连播跳过已看：看完第一集后，从第二集起播且没有下一集
+        relogin = client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        assert relogin.status_code == 200
+        watched = client.post(
+            f"/api/items/{episodes[0]['id']}/watched", json={"finished": True}
+        )
+        assert watched.status_code == 200
+        after = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert after["item_id"] == other_id
+        assert after["next_item_id"] is None

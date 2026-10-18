@@ -1,0 +1,12 @@
+# 全 Docker 部署时的 Caddyfile（Caddy 容器内使用）
+#
+# 目录约定：
+#   docker-compose 里把本文件挂到 /etc/caddy/Caddyfile
+#   .env 里设置 STRMACTION_DOMAIN=media.example.com
+#
+# Caddy 容器与 strmaction 在同一 compose 网络，直接按服务名反代。
+{$STRMACTION_DOMAIN} {
+	encode zstd gzip
+	header -Server
+	reverse_proxy strmaction:8080
+}

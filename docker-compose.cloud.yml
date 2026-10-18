@@ -1,0 +1,55 @@
+# ---------------------------------------------------------------------------
+# StrmAction 云服务器生产部署（HTTPS 由宿主机 Caddy / Nginx 终止）
+#
+# 用法：
+#   cp .env.cloud.example .env   # 修改域名、媒体目录、Key
+#   docker compose -f docker-compose.cloud.yml up -d --build
+#
+# 说明：
+# - 只把 8080 绑定在 127.0.0.1，公网仅暴露 80/443，避免绕过 HTTPS 直连；
+# - ./data 持久化 SQLite、图片缓存、会话密钥，升级容器不丢；
+# - 媒体目录只读挂载到容器 /media/strm，库里填写的路径必须是这个容器路径。
+# ---------------------------------------------------------------------------
+services:
+  strmaction:
+    build:
+      context: .
+      args:
+        # 国内网络可在 .env 里覆盖为镜像源，例如：
+        # NPM_REGISTRY=https://registry.npmmirror.com
+        # PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+        PIP_INDEX_URL: ${PIP_INDEX_URL:-https://pypi.org/simple}
+    image: strmaction:latest
+    container_name: strmaction
+    restart: unless-stopped
+    init: true
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      STRMACTION_DATA_DIR: /data
+    ports:
+      - "127.0.0.1:8080:8080"
+    volumes:
+      - ./data:/data
+      - "${STRMACTION_MEDIA_PATH:?请先在 .env 中设置 STRMACTION_MEDIA_PATH}:/media/strm:ro"
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    security_opt:
+      - no-new-privileges:true

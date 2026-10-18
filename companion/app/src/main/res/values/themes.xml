@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <style name="Theme.StrmAction" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">#07080A</item>
+        <item name="android:colorBackground">#07080A</item>
+        <item name="android:statusBarColor">#07080A</item>
+        <item name="android:navigationBarColor">#07080A</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="colorAccent">#E8B06A</item>
+    </style>
+
+    <style name="Theme.StrmAction.Fullscreen" parent="Theme.StrmAction">
+        <item name="android:windowFullscreen">true</item>
+        <item name="android:windowActionModeOverlay">true</item>
+        <item name="android:windowBackground">#000000</item>
+        <item name="android:windowContentTransitions">false</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:windowDisablePreview">false</item>
+    </style>
+</resources>
