@@ -188,12 +188,15 @@ def test_full_flow():
         assert duplicate_key.get("duplicate") is True
         assert duplicate_key["position_ms"] == 60000
 
-        # 防倒退
+        # 回退/快退实时记录：拉回较早位置应实时更新（不记录最大位置）
         regression = client.post(
             f"/api/items/{episode_id}/progress",
             json={"position_ms": 1000, "duration_ms": 120000},
         ).json()
-        assert regression.get("ignored") is True
+        assert regression["position_ms"] == 1000
+        assert regression.get("ignored") is not True
+        play_regressed = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert play_regressed["resume_ms"] == 1000
 
         # 90% 自动已看
         finished = client.post(
