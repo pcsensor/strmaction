@@ -352,4 +352,5 @@ def test_home_and_course(env, tmp_path):
         course_videos = session.exec(
             select(Item).where(Item.kind == "video", Item.parent_id == sub_folder.id)
         ).all()
-        assert sorted(v.episode_no for v in course_videos) == [1, 2]
+        assert sorted(v.title for v in course_videos) == ["01 所有权", "02 借用"]
+        assert all(v.episode_no is None for v in course_videos)

@@ -90,3 +90,11 @@ def normalize_title(value: str) -> str:
 
 def is_filler(value: str) -> bool:
     return normalize_title(value) in {"", "其他", "other", "未知", "unknown"}
+
+
+def natural_sort_key(value: str | None) -> list[int | str]:
+    """自然排序键：如 '[2]' < '[10]'，让含数字的文件名按数学大小排序。"""
+    if not value:
+        return []
+    parts = re.split(r"(\d+)", str(value))
+    return [int(p) if p.isdigit() else p.lower() for p in parts]

@@ -4,6 +4,7 @@ import { motion } from 'framer-motion'
 import {
   AlertTriangle,
   ArrowLeft,
+  ArrowUpDown,
   Check,
   ChevronRight,
   CircleCheck,
@@ -86,6 +87,7 @@ export function DetailPage() {
   const [matchOpen, setMatchOpen] = useState(false)
   const [editOpen, setEditOpen] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
+  const [videoSort, setVideoSort] = useState<'name_asc' | 'name_desc' | 'mtime_desc' | 'mtime_asc' | 'created_desc'>('name_asc')
   const posterInput = useRef<HTMLInputElement | null>(null)
   const backdropInput = useRef<HTMLInputElement | null>(null)
 
@@ -94,6 +96,47 @@ export function DetailPage() {
   const series = data?.series
   const parent = data?.parent
   const display = item ? (item.kind === 'episode' || item.kind === 'season' ? series || item : item) : null
+
+  const sortedFolders = useMemo(() => {
+    if (!data?.folders) return []
+    return [...data.folders].sort((a, b) =>
+      a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' })
+    )
+  }, [data?.folders])
+
+  const sortedVideos = useMemo(() => {
+    if (!data?.videos) return []
+    const list = [...data.videos]
+    switch (videoSort) {
+      case 'name_desc':
+        return list.sort((a, b) =>
+          b.title.localeCompare(a.title, undefined, { numeric: true, sensitivity: 'base' })
+        )
+      case 'mtime_desc':
+        return list.sort((a, b) => {
+          const tb = (b as any).mtime ? (b as any).mtime * 1000 : new Date((b as any).updated_at || (b as any).created_at || 0).getTime()
+          const ta = (a as any).mtime ? (a as any).mtime * 1000 : new Date((a as any).updated_at || (a as any).created_at || 0).getTime()
+          return tb - ta
+        })
+      case 'mtime_asc':
+        return list.sort((a, b) => {
+          const ta = (a as any).mtime ? (a as any).mtime * 1000 : new Date((a as any).updated_at || (a as any).created_at || 0).getTime()
+          const tb = (b as any).mtime ? (b as any).mtime * 1000 : new Date((b as any).updated_at || (b as any).created_at || 0).getTime()
+          return ta - tb
+        })
+      case 'created_desc':
+        return list.sort((a, b) => {
+          const tb = new Date((b as any).created_at || 0).getTime()
+          const ta = new Date((a as any).created_at || 0).getTime()
+          return tb - ta
+        })
+      case 'name_asc':
+      default:
+        return list.sort((a, b) =>
+          a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' })
+        )
+    }
+  }, [data?.videos, videoSort])
 
   useEffect(() => {
     if (!data) return
@@ -584,16 +627,16 @@ export function DetailPage() {
         <div className="mt-14 space-y-14">
           {item.kind === 'folder' ? (
             <>
-              {data.folders && data.folders.length > 0 ? (
+              {sortedFolders.length > 0 ? (
                 <section>
                   <div className="mb-5 flex items-center justify-between">
                     <h2 className="section-title flex items-center gap-2">
                       <Folder className="h-5 w-5 text-amber-400" />
-                      子文件夹 ({data.folders.length})
+                      子文件夹 ({sortedFolders.length})
                     </h2>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                    {data.folders.map((f) => (
+                    {sortedFolders.map((f) => (
                       <Link
                         key={f.id}
                         to={`/item/${f.id}`}
@@ -615,16 +658,30 @@ export function DetailPage() {
                 </section>
               ) : null}
 
-              {data.videos && data.videos.length > 0 ? (
+              {sortedVideos.length > 0 ? (
                 <section>
-                  <div className="mb-5 flex items-center justify-between">
+                  <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
                     <h2 className="section-title flex items-center gap-2">
                       <Play className="h-5 w-5 text-accent" />
-                      视频列表 ({data.videos.length})
+                      视频列表 ({sortedVideos.length})
                     </h2>
+                    <div className="flex items-center gap-2 text-xs">
+                      <ArrowUpDown className="h-3.5 w-3.5 text-ink-400" />
+                      <select
+                        value={videoSort}
+                        onChange={(e) => setVideoSort(e.target.value as any)}
+                        className="rounded-xl border border-white/10 bg-[#0e1219] px-2.5 py-1.5 text-xs text-ink-200 transition focus:border-accent focus:outline-none"
+                      >
+                        <option value="name_asc">文件名 (A-Z)</option>
+                        <option value="name_desc">文件名 (Z-A)</option>
+                        <option value="mtime_desc">最新修改优先</option>
+                        <option value="mtime_asc">最早修改优先</option>
+                        <option value="created_desc">最新添加优先</option>
+                      </select>
+                    </div>
                   </div>
                   <div className="grid gap-2.5 lg:grid-cols-2">
-                    {data.videos.map((video) => (
+                    {sortedVideos.map((video) => (
                       <EpisodeCard
                         key={video.id}
                         episode={video as any}
@@ -637,7 +694,7 @@ export function DetailPage() {
                 </section>
               ) : null}
 
-              {!data.folders?.length && !data.videos?.length ? (
+              {!sortedFolders.length && !sortedVideos.length ? (
                 <p className="rounded-2xl border border-white/8 bg-white/[0.02] px-5 py-10 text-center text-sm text-ink-400">
                   该文件夹内暂无视频或子目录
                 </p>
@@ -646,13 +703,27 @@ export function DetailPage() {
           ) : null}
 
           {/* 单个视频详情页：所在同级目录播放列表 */}
-          {item.kind === 'video' && data.videos && data.videos.length > 1 ? (
+          {item.kind === 'video' && sortedVideos.length > 1 ? (
             <section>
-              <div className="mb-5 flex items-center justify-between">
-                <h2 className="section-title">本目录播放列表 ({data.videos.length})</h2>
+              <div className="mb-5 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="section-title">本目录播放列表 ({sortedVideos.length})</h2>
+                <div className="flex items-center gap-2 text-xs">
+                  <ArrowUpDown className="h-3.5 w-3.5 text-ink-400" />
+                  <select
+                    value={videoSort}
+                    onChange={(e) => setVideoSort(e.target.value as any)}
+                    className="rounded-xl border border-white/10 bg-[#0e1219] px-2.5 py-1.5 text-xs text-ink-200 transition focus:border-accent focus:outline-none"
+                  >
+                    <option value="name_asc">文件名 (A-Z)</option>
+                    <option value="name_desc">文件名 (Z-A)</option>
+                    <option value="mtime_desc">最新修改优先</option>
+                    <option value="mtime_asc">最早修改优先</option>
+                    <option value="created_desc">最新添加优先</option>
+                  </select>
+                </div>
               </div>
               <div className="grid gap-2.5 lg:grid-cols-2">
-                {data.videos.map((video) => (
+                {sortedVideos.map((video) => (
                   <EpisodeCard
                     key={video.id}
                     episode={video as any}

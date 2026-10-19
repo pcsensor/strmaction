@@ -15,7 +15,7 @@ from .types import Parsed
 
 # 解析规则版本：升级后扫描器会对所有文件强制重解析一次，
 # 避免「增量跳过」让老库永远停留在旧结构（例如整季被识别成一部电影）。
-PARSER_VERSION = 3
+PARSER_VERSION = 4
 
 _VIDEO_EXT_RE = re.compile(
     r"\.(?:strm|mp4|mkv|avi|mov|m2ts|ts|webm|flv|wmv|iso|rmvb)$", re.I
@@ -512,16 +512,12 @@ def parse_tv(
     )
 
 
-def _clean_stem_and_episode(filename: str) -> tuple[str, int | None]:
+def _clean_tree_filename(filename: str) -> str:
+    """课程与家庭视频专用：直接保留原文件名（去除 .strm 及冗余扩展名标记如 .(mp4)），不识别集数。"""
     stem = strip_extension(_nfkc(filename)).strip()
-    # 过滤类似 .(mp4) 或 (mp4) 的冗余扩展名标记
     stem = re.sub(r"[\._]?\([a-zA-Z0-9]+\)$", "", stem).strip()
-    match = re.match(r"^\s*(?:\[(\d{1,4})\]|(\d{1,4}))\s*(?:--|-|–|—|[\s._\-])*\s*", stem)
-    number = int(match.group(1) or match.group(2)) if match else None
-    if match:
-        cleaned = stem[match.end():].strip()
-        return (cleaned or stem), number
-    return stem, None
+    stem = strip_extension(stem).strip()
+    return stem or strip_extension(filename)
 
 
 def parse_home(rel_path: str) -> Parsed:
@@ -529,14 +525,13 @@ def parse_home(rel_path: str) -> Parsed:
     filename = parts[-1] if parts else ""
     folder_parts = parts[:-1]
     group = folder_parts[0] if folder_parts else None
-    clean_title, ep_no = _clean_stem_and_episode(filename)
+    title = _clean_tree_filename(filename)
     info = parse_name(filename)
-    title = clean_title or info.title or strip_extension(filename)
     return Parsed(
         kind="video",
         title=title,
         year=info.year,
-        episode=ep_no,
+        episode=None,
         confidence=0.9,
         raw_name=filename,
         version=info.version,
@@ -574,20 +569,19 @@ def parse_course(rel_path: str) -> Parsed:
         _clean_chapter_title(chapter) if chapter else (None, None)
     )
 
-    clean_title, episode_no = _clean_stem_and_episode(filename)
-    info = parse_name(clean_title)
+    title = _clean_tree_filename(filename)
 
     return Parsed(
         kind="video",
-        title=clean_title or info.title or strip_extension(filename),
+        title=title,
         year=None,
         season=chapter_no,
-        episode=episode_no,
+        episode=None,
         confidence=0.9,
         raw_name=filename,
-        version=info.version,
-        part=info.part,
-        labels=info.labels,
+        version=None,
+        part=None,
+        labels=[],
         group_title=course_title,
         chapter_title=chapter_title or "默认章节",
         folder_parts=folder_parts,

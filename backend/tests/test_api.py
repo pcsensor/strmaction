@@ -765,8 +765,9 @@ def test_tree_folder_course_api():
         intro_detail = client.get(f"/api/items/{intro_folder['id']}").json()
         assert len(intro_detail["folders"]) == 0
         assert len(intro_detail["videos"]) == 2
-        assert intro_detail["videos"][0]["title"] == "开班仪式"
-        assert intro_detail["videos"][1]["title"] == "班会"
+        assert intro_detail["videos"][0]["title"] == "[1]--开班仪式"
+        assert intro_detail["videos"][1]["title"] == "[2]--班会"
+        assert intro_detail["videos"][0]["episode_no"] is None
         assert len(intro_detail["ancestors"]) == 2
         assert intro_detail["ancestors"][0]["title"] == "09.2027Kira"
         assert intro_detail["ancestors"][1]["title"] == "01.高等数学"
@@ -775,8 +776,8 @@ def test_tree_folder_course_api():
         play_res = client.post(f"/api/play/{intro_folder['id']}", json={"mode": "auto"}).json()
         assert play_res["item_id"] == intro_detail["videos"][0]["id"]
         assert len(play_res["playlist"]) == 2
-        assert play_res["playlist"][0]["title"] == "开班仪式"
-        assert play_res["playlist"][1]["title"] == "班会"
+        assert play_res["playlist"][0]["title"] == "[1]--开班仪式"
+        assert play_res["playlist"][1]["title"] == "[2]--班会"
         assert play_res["next_item_id"] == intro_detail["videos"][1]["id"]
 
 
