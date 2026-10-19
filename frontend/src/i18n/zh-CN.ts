@@ -414,7 +414,7 @@ export const zhCN = {
   },
   login: {
     title: '登录 StrmAction',
-    subtitle: '输入管理员密码继续',
+    subtitle: '输入用户账号和密码继续',
     username: '账号',
     password: '密码',
     submit: '登录',

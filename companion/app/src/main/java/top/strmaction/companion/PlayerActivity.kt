@@ -185,6 +185,37 @@ class PlayerActivity : AppCompatActivity() {
         if (!locked && player?.isPlaying == true) setControlsVisible(false)
     }
 
+    private val hideLockButton = Runnable {
+        if (locked) {
+            lockButton.animate().alpha(0f).setDuration(250).withEndAction {
+                lockButton.visibility = View.GONE
+                lockButton.alpha = 1f
+            }.start()
+        }
+    }
+
+    private fun scheduleLockHide(delayMs: Long = 3000L) {
+        main.removeCallbacks(hideLockButton)
+        if (locked) {
+            main.postDelayed(hideLockButton, delayMs)
+        }
+    }
+
+    private fun showLockButton() {
+        main.removeCallbacks(hideLockButton)
+        lockButton.animate().cancel()
+        lockButton.alpha = 1f
+        lockButton.visibility = View.VISIBLE
+        scheduleLockHide(3000L)
+    }
+
+    private fun hideLockButtonImmediately() {
+        main.removeCallbacks(hideLockButton)
+        lockButton.animate().cancel()
+        lockButton.visibility = View.GONE
+        lockButton.alpha = 1f
+    }
+
     private val playbackListener = object : Player.Listener {
         override fun onPlaybackStateChanged(state: Int) {
             when (state) {
@@ -889,8 +920,12 @@ class PlayerActivity : AppCompatActivity() {
             return
         }
         if (locked) {
-            // 锁定状态下只保留右侧解锁按钮
-            lockButton.visibility = View.VISIBLE
+            // 锁定状态下：触摸屏幕呼出解锁按钮，再次触摸直接隐藏
+            if (lockButton.visibility == View.VISIBLE && lockButton.alpha > 0.5f) {
+                hideLockButtonImmediately()
+            } else {
+                showLockButton()
+            }
             return
         }
         setControlsVisible(!controlsVisible)
@@ -901,7 +936,6 @@ class PlayerActivity : AppCompatActivity() {
         controlsVisible = visible
         if (locked) {
             controls.visibility = View.GONE
-            lockButton.visibility = View.VISIBLE
             return
         }
         controls.visibility = if (visible) View.VISIBLE else View.GONE
@@ -928,9 +962,10 @@ class PlayerActivity : AppCompatActivity() {
             lockButton.setImageResource(R.drawable.ic_lock)
             lockButton.contentDescription = getString(R.string.player_unlock_hint)
             controls.visibility = View.GONE
-            lockButton.visibility = View.VISIBLE
             toast(getString(R.string.player_locked))
+            showLockButton()
         } else {
+            hideLockButtonImmediately()
             lockButton.setImageResource(R.drawable.ic_unlock)
             lockButton.contentDescription = getString(R.string.player_lock_hint)
             setControlsVisible(true)
@@ -1757,7 +1792,7 @@ class PlayerActivity : AppCompatActivity() {
         super.onPictureInPictureModeChanged(isInPictureInPictureMode, newConfig)
         if (isInPictureInPictureMode) {
             controls.visibility = View.GONE
-            lockButton.visibility = View.GONE
+            hideLockButtonImmediately()
         } else {
             setControlsVisible(true)
             if (fullscreen) hideSystemBars() else showSystemBars()
