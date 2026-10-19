@@ -149,9 +149,9 @@ export function ContinueCard({ item }: { item: ContinueItem }) {
             aria-label={t('home.dismissContinue')}
             title={t('home.dismissContinue')}
             onClick={handleDismiss}
-            className="absolute left-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-black/60 text-white/70 opacity-0 backdrop-blur-md transition duration-300 hover:bg-black/90 hover:text-white group-hover:opacity-100 focus-ring"
+            className="absolute right-2.5 top-2.5 z-20 grid h-7 w-7 place-items-center rounded-full bg-black/60 text-white/85 backdrop-blur-md transition duration-200 hover:scale-110 hover:bg-black/90 hover:text-white focus-ring opacity-90 sm:opacity-0 sm:group-hover:opacity-100"
           >
-            <X className="h-4 w-4" />
+            <X className="h-3.5 w-3.5 stroke-[2.5]" />
           </button>
           <button
             type="button"
@@ -161,7 +161,7 @@ export function ContinueCard({ item }: { item: ContinueItem }) {
               event.stopPropagation()
               start(item.continue_item_id)
             }}
-            className="absolute right-3 top-3 grid h-10 w-10 place-items-center rounded-full bg-white/90 text-ink-950 opacity-0 shadow-lift transition duration-300 group-hover:opacity-100"
+            className="absolute inset-0 m-auto grid h-11 w-11 place-items-center rounded-full bg-white/92 text-ink-950 shadow-lift scale-90 opacity-0 transition-all duration-300 group-hover:scale-100 group-hover:opacity-100"
           >
             <Play className="ml-0.5 h-4 w-4 fill-current" />
           </button>
