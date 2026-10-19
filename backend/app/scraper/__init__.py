@@ -12,7 +12,8 @@ from .base import (
 )
 from .matcher import classify, rank_candidates, score_candidate
 from .nfo import find_nfo, parse_nfo
-from .service import ProviderRegistry, ScrapeService
+from .registry import ProviderRegistry, register_provider
+from .service import ScrapeService
 from .tmdb import TmdbProvider
 from .tvdb import TvdbProvider
 
@@ -27,6 +28,7 @@ __all__ = [
     "TvdbProvider",
     "ScrapeService",
     "ProviderRegistry",
+    "register_provider",
     "rank_candidates",
     "score_candidate",
     "classify",

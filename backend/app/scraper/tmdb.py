@@ -20,6 +20,7 @@ from .base import (
     SeasonSummary,
 )
 from .cache import cache_key, cache_load, cache_store
+from .registry import register_provider
 
 IMAGE_BASE = "https://image.tmdb.org/t/p/original"
 
@@ -239,6 +240,7 @@ def map_meta(data: dict[str, Any], kind: Kind, provider_id: str) -> CanonicalMet
     )
 
 
+@register_provider("tmdb")
 class TmdbProvider:
     name = "tmdb"
     supports: set[Kind] = {"movie", "tv"}

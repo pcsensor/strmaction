@@ -27,6 +27,7 @@ from .base import (
 from .matcher import classify, episode_penalty, rank_candidates
 from .merge import fill_missing
 from .nfo import find_nfo, parse_nfo
+from .registry import ProviderRegistry
 from .tmdb import TmdbProvider
 from .tvdb import TvdbProvider
 
@@ -62,36 +63,7 @@ def _loads(value: str | None) -> Any:
 
 
 def _locked(item: Item) -> set[str]:
-    value = _loads(item.locked_fields)
-    return set(value) if isinstance(value, list) else set()
-
-
-class ProviderRegistry:
-    def __init__(self, settings: SettingsService):
-        self.settings = settings
-        self._providers: dict[str, MetadataProvider] = {}
-
-    def get(self, name: str) -> MetadataProvider | None:
-        if name in self._providers:
-            return self._providers[name]
-        provider: MetadataProvider | None = None
-        if name == "tmdb":
-            provider = TmdbProvider(self.settings)
-        elif name == "tvdb":
-            provider = TvdbProvider(self.settings)
-        if provider is not None:
-            self._providers[name] = provider
-        return provider
-
-    async def close(self) -> None:
-        for provider in self._providers.values():
-            close = getattr(provider, "close", None)
-            if close:
-                try:
-                    await close()
-                except Exception:
-                    pass
-        self._providers.clear()
+    return item.get_locked_fields()
 
 
 class ScrapeService:

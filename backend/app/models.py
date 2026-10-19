@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import json
 
 from sqlmodel import Field, SQLModel
 
@@ -81,6 +82,24 @@ class Item(SQLModel, table=True):
     deleted_at: str | None = None
     parse_confidence: float | None = None
     parse_payload: str | None = None  # JSON: 解析结果，便于重刮
+
+    def get_locked_fields(self) -> set[str]:
+        if not self.locked_fields:
+            return set()
+        try:
+            val = json.loads(self.locked_fields)
+            return set(val) if isinstance(val, list) else set()
+        except (json.JSONDecodeError, TypeError):
+            return set()
+
+    def set_locked_fields(self, fields: list[str] | set[str] | None) -> None:
+        if not fields:
+            self.locked_fields = None
+        else:
+            self.locked_fields = json.dumps(sorted(list(fields)), ensure_ascii=False)
+
+    def is_field_locked(self, field: str) -> bool:
+        return field in self.get_locked_fields()
 
 
 class MediaFile(SQLModel, table=True):
