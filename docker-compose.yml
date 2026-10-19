@@ -1,0 +1,33 @@
+services:
+  strmaction:
+    build: .
+    image: strmaction:latest
+    container_name: strmaction
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      # 用于生成播放链接与 Cookie secure 判断；请改成你实际访问的地址
+      STRMACTION_BASE_URL: ${STRMACTION_BASE_URL:-http://192.168.1.10:8080}
+      STRMACTION_TMDB_KEY: ${STRMACTION_TMDB_KEY:-}
+      STRMACTION_TVDB_KEY: ${STRMACTION_TVDB_KEY:-}
+      STRMACTION_TVDB_PIN: ${STRMACTION_TVDB_PIN:-}
+      STRMACTION_PROXY: ${STRMACTION_PROXY:-}
+      TZ: Asia/Shanghai
+    volumes:
+      # 数据库、图片缓存、会话密钥
+      - ./data:/data
+      # SmartStrm 生成的 .strm 根目录（容器内路径需与媒体库设置一致）
+      - ${STRMACTION_MEDIA_PATH:-/media/strm}:/media/strm:ro
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s

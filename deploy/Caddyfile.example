@@ -1,0 +1,13 @@
+# Caddy 2 示例：自动申请/续期 HTTPS 证书
+#
+# 安装 Caddy 后：
+#   sudo cp deploy/Caddyfile.example /etc/caddy/Caddyfile
+#   sudo sed -i 's/media.example.com/你的域名/' /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+#
+# StrmAction 只监听 127.0.0.1:8080，由 Caddy 终止 TLS 后反代。
+media.example.com {
+	encode zstd gzip
+	header -Server
+	reverse_proxy 127.0.0.1:8080
+}

@@ -1,0 +1,71 @@
+# ---------------------------------------------------------------------------
+# StrmAction 配置示例（v0.8）
+# 优先级：设置页（数据库） > 本文件 > 内置默认值
+# 密钥建议用环境变量注入，见 README「配置」一节。
+# ---------------------------------------------------------------------------
+server:
+  host: 0.0.0.0
+  port: 8080
+  base_url: "http://192.168.1.10:8080"   # 用于生成播放链接与 Cookie secure 判断
+  data_dir: "./data"                      # Docker 中建议 /data
+
+auth:
+  username: admin
+  # 首次启动可在向导中设置密码；也可用明文初始化后自动升级为 argon2
+  password_hash: ""
+
+scraper:
+  language: zh-CN
+  proxy: ""                               # 两个源共用；可在各 provider 下单独覆盖
+  auto_refresh_days: 30                   # 0 = 关闭定期刷新
+  match_threshold: 0.75                   # 自动绑定阈值
+
+  # 各类型的源优先级链（空数组 = 不刮削）
+  provider_priority:
+    movie: [tmdb, tvdb]
+    tv: [tmdb, tvdb]                      # 动漫库建议改成 [tvdb, tmdb]
+    home: []
+    course: []
+
+  tmdb:
+    api_key: ""
+    base_url: https://api.themoviedb.org/3
+    proxy: ""
+    rate_limit: 8                         # req/s
+    concurrency: 4
+    language: zh-CN
+
+  tvdb:
+    api_key: ""
+    pin: ""                               # 部分账号需要
+    base_url: https://api4.thetvdb.com/v4
+    proxy: ""
+    rate_limit: 4
+    concurrency: 2
+    language: zho                         # ISO 639-2：zho / jpn / eng
+    season_type: default                  # default | absolute | dvd
+
+scanner:
+  ignore: ["@eaDir", ".DS_Store", "#recycle", "*.tmp"]
+  follow_symlinks: false
+  max_depth: 6
+
+player:
+  mode: builtin                           # builtin | external_mpv | browser_intent | desktop_mpv | copy | auto
+                                          # builtin 只在伴侣 App 内生效；浏览器自动降级为 intent:// 或复制链接
+  progress_interval_ms: 5000              # 内置播放器进度心跳间隔
+  play_token_ttl_hours: 12                # 播放凭证有效期
+  fallback_on_error: true                 # 内置播放失败时提示切外部 mpv
+  # 全局播放请求头（库设置里可覆盖；不同网盘/架子要求不同）
+  play_headers:
+    User-Agent: pan.baidu.com
+    Referer: https://pan.baidu.com/
+  mpv_package: is.xyz.mpv                 # 外部播放器兜底包名
+  mpv_path: /usr/bin/mpv                  # 桌面 mpv IPC 模式使用
+  mpv_extra_args:
+    - "--http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/"
+  enable_progress: true
+
+ui:
+  default_language: zh-CN
+  hero_rotate_ms: 8000

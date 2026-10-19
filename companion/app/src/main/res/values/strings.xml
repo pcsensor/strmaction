@@ -1,0 +1,85 @@
+<resources>
+    <string name="app_name">StrmAction</string>
+
+    <!-- 首次设置 -->
+    <string name="setup_title">连接 StrmAction 服务器</string>
+    <string name="setup_desc">手机与电视输入同一个局域网地址。服务器启动后终端会打印访问地址。</string>
+    <string name="setup_hint">例如 http://192.168.1.10:8080</string>
+    <string name="setup_save">保存并进入</string>
+    <string name="setup_test">测试连接</string>
+    <string name="setup_testing">正在连接…</string>
+    <string name="setup_ok">连接正常：StrmAction %1$s</string>
+    <string name="setup_fail">连接失败：%1$s</string>
+    <string name="setup_invalid">请输入以 http:// 或 https:// 开头的地址</string>
+    <string name="setup_mpv_label">mpv 包名（外部播放器兜底，默认 is.xyz.mpv）</string>
+    <string name="setup_mpv_default">is.xyz.mpv</string>
+
+    <!-- 浏览 -->
+    <string name="web_error_title">无法加载页面</string>
+    <string name="web_error_desc">请检查服务器是否启动，以及手机与服务器是否在同一网络。</string>
+    <string name="web_retry">重试</string>
+    <string name="web_settings">服务器设置</string>
+    <string name="settings_hint">伴侣 App 设置</string>
+    <string name="open_settings">打开设置</string>
+    <string name="refreshing">已返回，正在刷新进度</string>
+
+    <!-- 播放器 -->
+    <string name="common_back">返回</string>
+    <string name="player_loading">正在准备播放…</string>
+    <string name="player_error_title">无法开始播放</string>
+    <string name="player_error_retry">重试</string>
+    <string name="player_error_close">返回</string>
+    <string name="player_login_required">请先在网页里登录 StrmAction，再点播放</string>
+    <string name="player_menu">菜单</string>
+    <string name="player_pip">画中画</string>
+    <string name="player_menu_subtitle">字幕</string>
+    <string name="player_menu_audio">音轨</string>
+    <string name="player_menu_speed">播放速度</string>
+    <string name="player_menu_next">下一集</string>
+    <string name="player_menu_mpv">用 mpv 打开</string>
+    <string name="player_subtitle_off">关闭字幕</string>
+    <string name="player_no_track">没有可切换的轨道</string>
+    <string name="player_mpv_missing">未安装 mpv-android，请先安装 is.xyz.mpv</string>
+    <string name="player_fallback_title">此片源内置播放失败</string>
+    <string name="player_fallback_message">可能是编码、HDR 或字幕特效不受支持。是否用外部 mpv 打开？</string>
+    <string name="player_fallback_positive">用 mpv 打开</string>
+    <string name="player_fallback_negative">返回</string>
+    <string name="player_fallback_unsupported">当前设备不支持外部播放器</string>
+    <string name="player_token_expired">登录状态已失效，请回到列表重新播放</string>
+    <string name="player_progress_failed">进度保存失败，将自动重试</string>
+    <string name="player_next_title">即将播放：%1$s</string>
+    <string name="player_auto_next">自动连播</string>
+    <string name="player_auto_next_message">%1$d 秒后播放下一集 %2$s</string>
+    <string name="player_play_now">立即播放</string>
+    <string name="player_ended">播放结束</string>
+    <string name="player_speed_normal">正常</string>
+    <string name="player_subtitle_hint">复杂 ASS 特效无法还原，需要原样显示请用 mpv 打开。</string>
+
+    <string name="player_prev">上一集</string>
+    <string name="player_play">播放</string>
+    <string name="player_pause">暂停</string>
+    <string name="player_next">下一集</string>
+    <string name="player_playlist">选集</string>
+    <string name="player_playlist_title">选集 · %1$s</string>
+    <string name="player_no_playlist">当前没有可选的剧集</string>
+    <string name="player_speed">倍速</string>
+    <string name="player_speed_toast">播放速度：%1$s</string>
+    <string name="player_speed_long_press_set">已将长按倍速设置为 %1$s</string>
+    <string name="player_long_press_speed_title">长按倍速设置</string>
+    <string name="player_fullscreen">全屏</string>
+    <string name="player_exit_fullscreen">退出全屏</string>
+    <string name="player_lock">锁</string>
+    <string name="player_unlock">解锁</string>
+    <string name="player_lock_hint">锁定屏幕控件</string>
+    <string name="player_unlock_hint">解锁屏幕控件</string>
+    <string name="player_locked">已锁定，再次点击恢复控件</string>
+    <string name="player_unlocked">已解锁</string>
+    <string name="player_no_next">没有下一集了</string>
+    <string name="player_no_prev">没有上一集了</string>
+    <string name="player_compat_retry">直连较慢，正在尝试兼容模式…</string>
+    <string name="player_network_timeout">连接网盘超时，当前网络可能无法直接播放该片源。</string>
+
+    <!-- 外部 mpv -->
+    <string name="mpv_missing">未安装 mpv-android，请先安装 is.xyz.mpv</string>
+    <string name="progress_saved">播放进度已记录</string>
+</resources>
