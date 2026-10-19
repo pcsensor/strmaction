@@ -9,10 +9,21 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
+from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from ..config_store import SettingsService
-from ..models import Item, Library, MediaFile, Setting, utcnow
+from ..models import (
+    ImageTask,
+    Item,
+    Library,
+    MediaFile,
+    PlayProgress,
+    PlaySession,
+    PlayToken,
+    Setting,
+    utcnow,
+)
 from ..parser import PARSER_VERSION, Parsed, parse_path
 from ..text import normalize_title
 from .walker import WalkEntry, iter_strm_files, read_strm
@@ -802,6 +813,17 @@ class ScannerService:
             row.updated_at = utcnow()
         session.add(row)
 
+    @staticmethod
+    def _delete_item_dependents(session: Session, item_id: int) -> None:
+        """删除指向 item 的子表行，否则 SQLite 外键会阻止清理旧条目。
+
+        典型场景：旧版本把整季入成一条 movie，升级重扫后该 movie 被拆成
+        series/season/episode，旧 movie 上残留的播放进度/缓存/凭证会让
+        `DELETE FROM item` 触发 FOREIGN KEY constraint failed。
+        """
+        for model in (ImageTask, PlayProgress, PlaySession, PlayToken):
+            session.exec(delete(model).where(model.item_id == item_id))
+
     # -- 清理 -------------------------------------------------------------
     def _prune_orphans(self, session: Session, library_id: int) -> None:
         items = session.exec(select(Item).where(Item.library_id == library_id)).all()
@@ -858,6 +880,8 @@ class ScannerService:
             level = order.get(item.kind, 3)
             if current_level is not None and level != current_level:
                 session.flush()
+            if item.id is not None:
+                self._delete_item_dependents(session, item.id)
             session.delete(item)
             current_level = level
         if deletable:

@@ -11,7 +11,16 @@ from sqlmodel import Session, select
 
 from ..deps import get_engine, get_scheduler, get_tasks
 from ..errors import APIError
-from ..models import Item, Library, MediaFile, PlayProgress, utcnow
+from ..models import (
+    ImageTask,
+    Item,
+    Library,
+    MediaFile,
+    PlayProgress,
+    PlaySession,
+    PlayToken,
+    utcnow,
+)
 from ..jobs import SchedulerService, TaskManager
 from ..players import clean_headers
 from ..scanner.walker import ensure_library_root
@@ -173,9 +182,10 @@ def delete_library(
             ).all()
         ]
         if item_ids:
-            session.exec(
-                delete(PlayProgress).where(PlayProgress.item_id.in_(item_ids))
-            )
+            for model in (ImageTask, PlayProgress, PlaySession, PlayToken):
+                session.exec(
+                    delete(model).where(model.item_id.in_(item_ids))
+                )
         session.exec(delete(MediaFile).where(MediaFile.library_id == library_id))
         # 先删叶子，再删父级
         for kind in ("episode", "video", "season", "movie", "series"):

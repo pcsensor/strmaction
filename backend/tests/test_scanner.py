@@ -9,7 +9,15 @@ from sqlmodel import Session, select
 from app.config import ConfigManager
 from app.config_store import SettingsService
 from app.db import Database
-from app.models import Item, Library, MediaFile, Setting
+from app.models import (
+    ImageTask,
+    Item,
+    Library,
+    MediaFile,
+    PlayProgress,
+    PlayToken,
+    Setting,
+)
 from app.scanner.sync import ScannerService
 
 
@@ -212,6 +220,29 @@ def test_existing_library_is_reparsed_after_parser_upgrade(env, tmp_path):
         for media in session.exec(select(MediaFile)).all():
             media.item_id = legacy.id
             session.add(media)
+        # 旧条目上残留的进度 / 凭证 / 图片任务：清理时必须一并删除，
+        # 否则 SQLite 外键会让扫描在 _prune_orphans 里失败。
+        session.add(
+            PlayProgress(
+                item_id=legacy.id,
+                position_ms=60_000,
+                duration_ms=120_000,
+            )
+        )
+        session.add(
+            PlayToken(
+                token="legacy-play-token",
+                item_id=legacy.id,
+                expires_at="2099-01-01T00:00:00+00:00",
+            )
+        )
+        session.add(
+            ImageTask(
+                item_id=legacy.id,
+                kind="poster",
+                remote_url="https://example.com/poster.jpg",
+            )
+        )
         for kind in ("episode", "season", "series"):
             for item in session.exec(select(Item).where(Item.kind == kind)).all():
                 session.delete(item)
@@ -230,6 +261,9 @@ def test_existing_library_is_reparsed_after_parser_upgrade(env, tmp_path):
         assert session.exec(select(Item).where(Item.kind == "movie")).all() == []
         episodes = session.exec(select(Item).where(Item.kind == "episode")).all()
         assert sorted(e.episode_no for e in episodes) == [1, 2]
+        assert session.exec(select(PlayProgress)).all() == []
+        assert session.exec(select(PlayToken)).all() == []
+        assert session.exec(select(ImageTask)).all() == []
 
     # 解析版本已记录，下一次扫描恢复增量跳过
     stats2 = scanner.scan_library(lib_id)
