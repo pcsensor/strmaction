@@ -16,13 +16,14 @@ interface Props {
 export function EpisodeCard({ episode, active = false, posterFallback, color }: Props) {
   const start = useStartPlayback()
   const progress = episode.progress?.progress ?? 0
-  const code =
-    episode.episode_code ||
-    (episode.episode_no ? `E${String(episode.episode_no).padStart(2, '0')}` : '')
-  const episodeLabel = episode.episode_no ? `第${episode.episode_no}集` : ''
+  const isPlainVideo = (episode as any).kind === 'video' || episode.episode_no == null
+  const code = isPlainVideo
+    ? ''
+    : episode.episode_code || (episode.episode_no ? `E${String(episode.episode_no).padStart(2, '0')}` : '')
+  const episodeLabel = isPlainVideo || !episode.episode_no ? '' : `第${episode.episode_no}集`
   const title = (() => {
     if (!episode.title) return episodeLabel || t('detail.episodeN', { n: episode.episode_no ?? '' })
-    if (!episodeLabel || /第\s*\d+\s*[集话]/.test(episode.title)) return episode.title
+    if (isPlainVideo || !episodeLabel || /第\s*\d+\s*[集话]/.test(episode.title)) return episode.title
     return `${episodeLabel} · ${episode.title}`
   })()
 

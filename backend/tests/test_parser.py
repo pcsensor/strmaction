@@ -62,12 +62,19 @@ def test_home_and_course():
     assert home.kind == "video"
     assert home.folder_parts == ["2024-06-01 生日"]
     assert home.title == "VID_20240601"
+    assert home.episode is None
 
     course = parse_path("course", "Rust 实战/01 所有权/01 所有权.strm")
     assert course.kind == "video"
     assert course.folder_parts == ["Rust 实战", "01 所有权"]
-    assert course.episode == 1
-    assert course.title == "所有权"
+    assert course.episode is None
+    assert course.title == "01 所有权"
+
+    course2 = parse_path("course", "09.2027Kira/02.线性代数/02.基础习题/[19]--第六章 二次型-基础解答1-5.(mp4).strm")
+    assert course2.kind == "video"
+    assert course2.folder_parts == ["09.2027Kira", "02.线性代数", "02.基础习题"]
+    assert course2.episode is None
+    assert course2.title == "[19]--第六章 二次型-基础解答1-5"
 
 
 def test_explicit_ids_and_parts():

@@ -134,8 +134,17 @@ export function LibrariesPage() {
   const total = itemsQuery.data?.total || 0
   const totalPages = itemsQuery.data?.pages || 1
 
-  const folders = items.filter((i) => i.kind === 'folder')
-  const directVideos = items.filter((i) => i.kind === 'video')
+  const folders = useMemo(() => {
+    return items
+      .filter((i) => i.kind === 'folder')
+      .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }))
+  }, [items])
+
+  const directVideos = useMemo(() => {
+    return items
+      .filter((i) => i.kind === 'video')
+      .sort((a, b) => a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }))
+  }, [items])
 
   return (
     <div className="mx-auto max-w-[1680px] px-5 pb-24 pt-28 sm:px-10 lg:px-16">

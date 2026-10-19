@@ -38,7 +38,7 @@ from ..serializers import (
     ready_item_ids,
     series_of,
 )
-from ..text import normalize_title
+from ..text import natural_sort_key, normalize_title
 
 router = APIRouter(prefix="/items", tags=["items"])
 
@@ -152,7 +152,7 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
             )
         ).all()
         videos = [v for v in videos if v.id in ready]
-        videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+        videos.sort(key=lambda x: natural_sort_key(x.title))
         if videos:
             progress = _progress_map(session, [v.id for v in videos if v.id], user_id)
             for v in videos:
@@ -169,7 +169,7 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
             )
         ).all()
         child_folders = [f for f in child_folders if f.id in ready]
-        child_folders.sort(key=lambda x: (x.episode_no or 0, x.title))
+        child_folders.sort(key=lambda x: natural_sort_key(x.title))
         for f in child_folders:
             try:
                 return _choose_play_target(session, f, user_id)
@@ -474,7 +474,7 @@ def get_item(
                 )
             ).all()
             child_folders = [f for f in child_folders if f.id in ready]
-            child_folders.sort(key=lambda x: (x.episode_no or 0, x.title))
+            child_folders.sort(key=lambda x: natural_sort_key(x.title))
             folders_payload = [item_summary(f) for f in child_folders]
 
             child_videos = session.exec(
@@ -485,14 +485,18 @@ def get_item(
                 )
             ).all()
             child_videos = [v for v in child_videos if v.id in ready]
-            child_videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+            child_videos.sort(key=lambda x: natural_sort_key(x.title))
             v_progress = _progress_map(session, [v.id for v in child_videos if v.id], user.id)
             for v in child_videos:
                 m_file = session.exec(
                     select(MediaFile).where(MediaFile.item_id == v.id, MediaFile.invalid == False, MediaFile.missing == False)  # noqa: E712
                 ).first()
                 badges = media_labels(m_file) if m_file else []
-                videos_payload.append(item_summary(v, progress=v_progress.get(v.id), badges=badges))
+                overrides = {}
+                if m_file:
+                    overrides["mtime"] = m_file.mtime
+                    overrides["size_bytes"] = m_file.size_bytes
+                videos_payload.append(item_summary(v, progress=v_progress.get(v.id), badges=badges, overrides=overrides))
 
             try:
                 play_target = _choose_play_target(session, item, user.id)
@@ -508,14 +512,18 @@ def get_item(
                 )
             ).all()
             sibling_videos = [v for v in sibling_videos if v.id in ready]
-            sibling_videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+            sibling_videos.sort(key=lambda x: natural_sort_key(x.title))
             s_progress = _progress_map(session, [v.id for v in sibling_videos if v.id], user.id)
             for v in sibling_videos:
                 m_file = session.exec(
                     select(MediaFile).where(MediaFile.item_id == v.id, MediaFile.invalid == False, MediaFile.missing == False)  # noqa: E712
                 ).first()
                 badges = media_labels(m_file) if m_file else []
-                videos_payload.append(item_summary(v, progress=s_progress.get(v.id), badges=badges))
+                overrides = {}
+                if m_file:
+                    overrides["mtime"] = m_file.mtime
+                    overrides["size_bytes"] = m_file.size_bytes
+                videos_payload.append(item_summary(v, progress=s_progress.get(v.id), badges=badges, overrides=overrides))
             try:
                 idx = [v.id for v in sibling_videos].index(item.id)
             except ValueError:

@@ -97,6 +97,7 @@ class ItemIndex:
         self.seasons_by_title: dict[tuple[int, str], Item] = {}
         self.episodes: dict[tuple[int, int], Item] = {}
         self.videos: dict[tuple[int | None, str], Item] = {}
+        self.tree_videos: dict[tuple[int | None, str], Item] = {}
         self.children: dict[int | None, list[Item]] = defaultdict(list)
         for item in items:
             self._add(item)
@@ -119,6 +120,7 @@ class ItemIndex:
             self.episodes[(item.parent_id, item.episode_no or 0)] = item
         elif item.kind == "video":
             self.videos[(item.parent_id, normalize_title(item.title))] = item
+            self.tree_videos[(item.parent_id, item.title.strip().lower())] = item
 
     def find_movie(self, key: str, year: int | None) -> Item | None:
         candidates = self.movies.get(normalize_title(key), [])
@@ -742,8 +744,10 @@ class ScannerService:
             current_parent_id = folder.id
 
         title = parsed.title or parsed.raw_name
-        norm_video = normalize_title(title)
-        video = index.videos.get((current_parent_id, norm_video))
+        video_key = title.strip().lower()
+        video = index.tree_videos.get((current_parent_id, video_key))
+        if video is None:
+            video = index.videos.get((current_parent_id, normalize_title(title)))
         if video is None:
             video = self._new_item(
                 session,
@@ -752,7 +756,7 @@ class ScannerService:
                 kind="video",
                 title=title,
                 parent_id=current_parent_id,
-                episode_no=parsed.episode,
+                episode_no=None,
                 match_state="skipped",
                 parse_payload={
                     "parse_title": title,
@@ -760,7 +764,21 @@ class ScannerService:
                 },
             )
             stats.added_items += 1
-            index.videos[(current_parent_id, norm_video)] = video
+            index.tree_videos[(current_parent_id, video_key)] = video
+            index.videos[(current_parent_id, normalize_title(title))] = video
+        else:
+            changed = False
+            if video.title != title:
+                video.title = title
+                video.sort_title = normalize_title(title)
+                changed = True
+            if video.episode_no is not None:
+                video.episode_no = None
+                changed = True
+            if changed:
+                video.updated_at = utcnow()
+                session.add(video)
+            index.tree_videos[(current_parent_id, video_key)] = video
         return video
 
     # -- 媒体文件 ---------------------------------------------------------
