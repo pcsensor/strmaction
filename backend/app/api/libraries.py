@@ -33,7 +33,7 @@ from ..jobs import SchedulerService, TaskManager
 from ..players import clean_headers
 from ..scanner.walker import ensure_library_root
 from ..schemas import LibraryCreate, LibraryPatch, CurrentUser
-from ..serializers import library_payload
+from ..serializers import library_payload, ready_item_ids
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
 
@@ -42,14 +42,25 @@ VALID_PROVIDERS = {"tmdb", "tvdb"}
 
 
 def _counts(session: Session, library_id: int) -> dict[str, int]:
-    rows = session.exec(
-        select(Item.kind, func.count(Item.id))
-        .where(Item.library_id == library_id, Item.deleted_at == None)  # noqa: E711
-        .group_by(Item.kind)
-    ).all()
-    counts = {str(kind): int(count) for kind, count in rows}
+    ready = ready_item_ids(session, library_id)
+    counts: dict[str, int] = {}
+    if ready:
+        rows = session.exec(
+            select(Item.kind, func.count(Item.id))
+            .where(
+                Item.library_id == library_id,
+                Item.deleted_at == None,  # noqa: E711
+                Item.id.in_(ready),
+            )
+            .group_by(Item.kind)
+        ).all()
+        counts = {str(kind): int(count) for kind, count in rows}
     files = session.exec(
-        select(func.count(MediaFile.id)).where(MediaFile.library_id == library_id)
+        select(func.count(MediaFile.id)).where(
+            MediaFile.library_id == library_id,
+            MediaFile.invalid == False,  # noqa: E712
+            MediaFile.missing == False,  # noqa: E712
+        )
     ).one()
     counts["files"] = int(files or 0)
     return counts

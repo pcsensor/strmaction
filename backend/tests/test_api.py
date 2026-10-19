@@ -688,15 +688,20 @@ def test_missing_media_hidden_from_items_home_and_search():
         item_ids = [i["id"] for i in res["items"]]
         assert item_id not in item_ids
 
-        # 2. 搜索：不显示该影片
+        # 2. 媒体库信息统计：排除缺失文件和未就绪条目
+        lib_data = next(l for l in client.get("/api/libraries").json()["libraries"] if l["id"] == lib_id)
+        assert lib_data["counts"]["files"] == 0
+        assert lib_data["counts"].get("movie", 0) == 0
+
+        # 3. 搜索：不显示该影片
         res = client.get("/api/search", params={"q": "已删除文件"}).json()
         assert res["total"] == 0
 
-        # 3. 详情接口：media_files 为空
+        # 4. 详情接口：media_files 为空
         res = client.get(f"/api/items/{item_id}").json()
         assert res["media_files"] == []
 
-        # 4. 恢复 missing=False 后立即重新显示
+        # 5. 恢复 missing=False 后立即重新显示且 counts 更新
         with Session(engine) as session:
             mf_db = session.exec(select(MediaFile).where(MediaFile.item_id == item_id)).one()
             mf_db.missing = False
@@ -706,6 +711,10 @@ def test_missing_media_hidden_from_items_home_and_search():
         res = client.get(f"/api/items?library_id={lib_id}").json()
         item_ids = [i["id"] for i in res["items"]]
         assert item_id in item_ids
+
+        lib_data = next(l for l in client.get("/api/libraries").json()["libraries"] if l["id"] == lib_id)
+        assert lib_data["counts"]["files"] == 1
+        assert lib_data["counts"]["movie"] == 1
 
 
 

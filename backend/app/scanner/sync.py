@@ -25,6 +25,7 @@ from ..models import (
     utcnow,
 )
 from ..parser import PARSER_VERSION, Parsed, parse_path
+from ..serializers import ready_item_ids
 from ..text import normalize_title
 from .walker import WalkEntry, iter_strm_files, read_strm
 
@@ -339,10 +340,15 @@ class ScannerService:
         session.flush()
 
         result = stats.to_dict()
-        result["items_total"] = len(index.by_id)
+        ready_ids = ready_item_ids(session, library.id)
+        result["items_total"] = len(ready_ids)
         result["files_total"] = len(
             session.exec(
-                select(MediaFile).where(MediaFile.library_id == library.id)
+                select(MediaFile).where(
+                    MediaFile.library_id == library.id,
+                    MediaFile.invalid == False,  # noqa: E712
+                    MediaFile.missing == False,  # noqa: E712
+                )
             ).all()
         )
         # 先提交，再触发可能写数据库的进度回调
