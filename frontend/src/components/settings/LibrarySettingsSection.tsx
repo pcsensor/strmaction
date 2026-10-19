@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Film,
   FolderPlus,
@@ -19,6 +19,7 @@ import {
   useCreateLibrary,
   useDeleteLibrary,
   useLibraryTask,
+  useTasks,
   useUpdateLibrary,
 } from '../../api/hooks'
 import { Modal } from '../Modal'
@@ -220,6 +221,18 @@ export function LibrarySettingsSection({
   const createLibrary = useCreateLibrary()
   const updateLibrary = useUpdateLibrary()
   const toast = useToast()
+  const tasksQuery = useTasks()
+  const prevRunningRef = useRef(false)
+  const isRunning = tasksQuery.data?.tasks?.some(
+    (task) => task.status === 'running' && task.library_id != null
+  ) ?? false
+
+  useEffect(() => {
+    if (prevRunningRef.current && !isRunning) {
+      onRefresh()
+    }
+    prevRunningRef.current = isRunning
+  }, [isRunning, onRefresh])
 
   const [modalOpen, setModalOpen] = useState(false)
   const [editing, setEditing] = useState<LibraryInfo | null>(null)
