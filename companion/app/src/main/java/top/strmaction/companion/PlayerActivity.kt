@@ -34,6 +34,12 @@ import androidx.annotation.DrawableRes
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import top.strmaction.companion.player.PlayerDrawer
+import top.strmaction.companion.player.PlayerSpeedHelper
+import top.strmaction.companion.player.PlayerTrackHelper
+import top.strmaction.companion.player.dp
+import top.strmaction.companion.player.formatTime
+import top.strmaction.companion.player.rounded
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -99,15 +105,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var seekFeedbackBadge: TextView
     private lateinit var loadingView: LinearLayout
     private lateinit var loadingText: TextView
-    private lateinit var drawerOverlay: FrameLayout
-    private lateinit var drawerBackdrop: View
-    private lateinit var drawerContainer: LinearLayout
-    private lateinit var drawerTitleView: TextView
-    private lateinit var drawerSubtitleView: TextView
-    private lateinit var drawerBackBtn: ImageView
-    private lateinit var drawerCloseBtn: ImageView
-    private lateinit var drawerBody: FrameLayout
-    private var drawerBackAction: (() -> Unit)? = null
+    private lateinit var drawer: PlayerDrawer
 
     private var player: ExoPlayer? = null
     private var playerHeadersKey: String? = null
@@ -529,124 +527,16 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun initDrawer() {
-        drawerOverlay = FrameLayout(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            )
-            visibility = View.GONE
-            isClickable = true
-        }
-
-        drawerBackdrop = View(this).apply {
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            )
-            setBackgroundColor(0x88000000.toInt())
-            setOnClickListener { closeDrawer() }
-        }
-        drawerOverlay.addView(drawerBackdrop)
-
-        val screenW = resources.displayMetrics.widthPixels
-        val screenH = resources.displayMetrics.heightPixels
-        val targetW = if (screenW > screenH || fullscreen) {
-            (screenW * 0.40f).toInt()
-        } else {
-            (screenW * 0.70f).toInt().coerceAtLeast(dp(280))
-        }
-
-        drawerContainer = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = FrameLayout.LayoutParams(
-                targetW,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            ).apply {
-                gravity = Gravity.END
-            }
-            background = GradientDrawable().apply {
-                setColor(0xF713161F.toInt())
-                cornerRadii = floatArrayOf(
-                    dp(16).toFloat(), dp(16).toFloat(),
-                    0f, 0f,
-                    0f, 0f,
-                    dp(16).toFloat(), dp(16).toFloat(),
-                )
-            }
-            setPadding(dp(16), dp(16), dp(16), dp(16))
-            isClickable = true
-        }
-
-        val header = LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = dp(12)
+        drawer = PlayerDrawer(this, root) { isOpening ->
+            if (isOpening) {
+                main.removeCallbacks(hideControls)
+                setControlsVisible(false)
             }
         }
-
-        drawerBackBtn = iconButton(R.drawable.ic_back, "返回", dp(32), dp(6)) {
-            val back = drawerBackAction
-            if (back != null) back() else closeDrawer()
-        }.apply {
-            visibility = View.GONE
-        }
-        header.addView(drawerBackBtn)
-
-        val titleBox = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f).apply {
-                leftMargin = dp(4)
-            }
-        }
-        drawerTitleView = TextView(this).apply {
-            setTextColor(Color.WHITE)
-            textSize = 15.5f
-            typeface = android.graphics.Typeface.DEFAULT_BOLD
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-        }
-        drawerSubtitleView = TextView(this).apply {
-            setTextColor(Color.parseColor("#9AA2B1"))
-            textSize = 11f
-            maxLines = 1
-            ellipsize = android.text.TextUtils.TruncateAt.END
-            visibility = View.GONE
-        }
-        titleBox.addView(drawerTitleView)
-        titleBox.addView(drawerSubtitleView)
-        header.addView(titleBox)
-
-        drawerCloseBtn = iconButton(R.drawable.ic_close, "关闭", dp(32), dp(6)) {
-            closeDrawer()
-        }
-        header.addView(drawerCloseBtn)
-        drawerContainer.addView(header)
-
-        drawerContainer.addView(View(this).apply {
-            layoutParams = LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)).apply {
-                bottomMargin = dp(12)
-            }
-            setBackgroundColor(0x22FFFFFF)
-        })
-
-        drawerBody = FrameLayout(this).apply {
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                0,
-                1f,
-            )
-        }
-        drawerContainer.addView(drawerBody)
-        drawerOverlay.addView(drawerContainer)
-        root.addView(drawerOverlay)
     }
 
     private fun isDrawerOpen(): Boolean =
-        this::drawerOverlay.isInitialized && drawerOverlay.visibility == View.VISIBLE
+        this::drawer.isInitialized && drawer.isOpen()
 
     private fun openDrawer(
         title: String,
@@ -656,46 +546,13 @@ class PlayerActivity : AppCompatActivity() {
     ) {
         main.removeCallbacks(hideControls)
         setControlsVisible(false)
-        drawerTitleView.text = title
-        if (subtitle != null) {
-            drawerSubtitleView.text = subtitle
-            drawerSubtitleView.visibility = View.VISIBLE
-        } else {
-            drawerSubtitleView.visibility = View.GONE
-        }
-        drawerBackAction = onBack
-        drawerBackBtn.visibility = if (onBack != null) View.VISIBLE else View.GONE
-
-        val screenW = resources.displayMetrics.widthPixels
-        val screenH = resources.displayMetrics.heightPixels
-        val targetW = if (screenW > screenH || fullscreen) {
-            (screenW * 0.40f).toInt()
-        } else {
-            (screenW * 0.70f).toInt().coerceAtLeast(dp(280))
-        }
-        val lp = drawerContainer.layoutParams as FrameLayout.LayoutParams
-        lp.width = targetW
-        drawerContainer.layoutParams = lp
-
-        drawerBody.removeAllViews()
-        setupBody(drawerBody)
-
-        drawerOverlay.visibility = View.VISIBLE
-        drawerBackdrop.alpha = 0f
-        drawerBackdrop.animate().alpha(1f).setDuration(180).start()
-        drawerContainer.translationX = targetW.toFloat()
-        drawerContainer.animate().translationX(0f).setDuration(220).start()
+        drawer.open(title, subtitle, onBack, setupBody)
     }
 
     private fun closeDrawer() {
-        if (!isDrawerOpen()) return
-        drawerBackdrop.animate().alpha(0f).setDuration(160).start()
-        val targetW = drawerContainer.width.toFloat().takeIf { it > 0f } ?: dp(300).toFloat()
-        drawerContainer.animate().translationX(targetW).setDuration(180).withEndAction {
-            drawerOverlay.visibility = View.GONE
-            drawerBody.removeAllViews()
-            drawerBackAction = null
-        }.start()
+        if (this::drawer.isInitialized) {
+            drawer.close()
+        }
     }
 
     private fun setupPlayerGestures(view: View) {
@@ -925,204 +782,36 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun textTracks(): List<Pair<Tracks.Group, Int>> {
-        val result = mutableListOf<Pair<Tracks.Group, Int>>()
-        val groups = player?.currentTracks?.groups ?: return result
-        for (group in groups) {
-            if (group.type != C.TRACK_TYPE_TEXT) continue
-            for (index in 0 until group.length) {
-                if (group.isTrackSupported(index)) result.add(group to index)
-            }
-        }
-        return result
-    }
+    private fun textTracks(): List<Pair<Tracks.Group, Int>> =
+        PlayerTrackHelper.textTracks(player)
 
-    private fun audioTracks(): List<Pair<Tracks.Group, Int>> {
-        val result = mutableListOf<Pair<Tracks.Group, Int>>()
-        val groups = player?.currentTracks?.groups ?: return result
-        for (group in groups) {
-            if (group.type != C.TRACK_TYPE_AUDIO) continue
-            for (index in 0 until group.length) {
-                if (group.isTrackSupported(index)) result.add(group to index)
-            }
-        }
-        return result
-    }
-
-    private fun trackLabel(group: Tracks.Group, index: Int): String {
-        val format = group.getTrackFormat(index)
-        val label = format.label?.takeIf { it.isNotBlank() }
-            ?: format.language?.takeIf { it.isNotBlank() }
-            ?: "轨道 ${index + 1}"
-        return label
-    }
+    private fun audioTracks(): List<Pair<Tracks.Group, Int>> =
+        PlayerTrackHelper.audioTracks(player)
 
     private fun showSubtitleMenu() {
-        val tracks = textTracks()
-        if (tracks.isEmpty()) {
-            toast(getString(R.string.player_no_track))
-            return
-        }
-        openDrawer(getString(R.string.player_menu_subtitle), onBack = { showMenu() }) { container ->
-            val scroll = ScrollView(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                isVerticalScrollBarEnabled = false
-            }
-            val layout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-            }
-
-            val exo = player
-            val isOff = exo?.trackSelectionParameters?.disabledTrackTypes?.contains(C.TRACK_TYPE_TEXT) == true
-            layout.addView(drawerItem(getString(R.string.player_subtitle_off), isOff) {
-                exo?.trackSelectionParameters = exo?.trackSelectionParameters
-                    ?.buildUpon()
-                    ?.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
-                    ?.build() ?: return@drawerItem
-                closeDrawer()
-            })
-
-            tracks.forEach { (group, index) ->
-                val label = trackLabel(group, index)
-                val isSelected = !isOff && exo?.trackSelectionParameters?.overrides?.containsKey(group.mediaTrackGroup) == true
-                layout.addView(drawerItem(label, isSelected) {
-                    exo?.trackSelectionParameters = exo?.trackSelectionParameters
-                        ?.buildUpon()
-                        ?.setTrackTypeDisabled(C.TRACK_TYPE_TEXT, false)
-                        ?.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
-                        ?.build() ?: return@drawerItem
-                    closeDrawer()
-                })
-            }
-            scroll.addView(layout)
-            container.addView(scroll)
-        }
+        PlayerTrackHelper.showSubtitleMenu(this, drawer, player, { showMenu() }) { toast(it) }
     }
 
     private fun showAudioMenu() {
-        val tracks = audioTracks()
-        if (tracks.isEmpty()) {
-            toast(getString(R.string.player_no_track))
-            return
-        }
-        openDrawer(getString(R.string.player_menu_audio), onBack = { showMenu() }) { container ->
-            val scroll = ScrollView(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                isVerticalScrollBarEnabled = false
-            }
-            val layout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-            }
-            val exo = player
-            tracks.forEach { (group, index) ->
-                val label = trackLabel(group, index)
-                val isSelected = exo?.trackSelectionParameters?.overrides?.containsKey(group.mediaTrackGroup) == true
-                layout.addView(drawerItem(label, isSelected) {
-                    exo?.trackSelectionParameters = exo?.trackSelectionParameters
-                        ?.buildUpon()
-                        ?.setOverrideForType(TrackSelectionOverride(group.mediaTrackGroup, index))
-                        ?.build() ?: return@drawerItem
-                    closeDrawer()
-                })
-            }
-            scroll.addView(layout)
-            container.addView(scroll)
-        }
+        PlayerTrackHelper.showAudioMenu(this, drawer, player, { showMenu() }) { toast(it) }
     }
 
     private fun showSpeedMenu() {
-        openDrawer("播放速度") { container ->
-            val scroll = ScrollView(this).apply {
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                )
-                isVerticalScrollBarEnabled = false
-            }
-            val layout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-            }
-
-            layout.addView(TextView(this).apply {
-                text = "播放速度"
-                setTextColor(Color.parseColor("#8E96A8"))
-                textSize = 12f
-                setPadding(dp(4), dp(4), dp(4), dp(8))
-            })
-
-            val speeds = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
-            val speedLabels = mapOf(
-                0.5f to "0.5x",
-                0.75f to "0.75x",
-                1f to "1.0x (正常)",
-                1.25f to "1.25x",
-                1.5f to "1.5x",
-                2f to "2.0x",
-                3f to "3.0x",
-            )
-
-            speeds.forEach { speed ->
-                val isSelected = currentSpeed == speed
-                layout.addView(drawerItem(
-                    label = speedLabels[speed] ?: "${trimSpeed(speed)}x",
-                    selected = isSelected,
-                ) {
-                    applySpeed(speed)
-                    closeDrawer()
-                })
-            }
-
-            layout.addView(TextView(this).apply {
-                text = "长按加速倍速（按住屏幕时加速）"
-                setTextColor(Color.parseColor("#8E96A8"))
-                textSize = 12f
-                setPadding(dp(4), dp(16), dp(4), dp(8))
-            })
-
-            val longSpeeds = floatArrayOf(1.5f, 2.0f, 2.5f, 3.0f)
-            val longLabels = mapOf(
-                1.5f to "1.5x",
-                2.0f to "2.0x (默认)",
-                2.5f to "2.5x",
-                3.0f to "3.0x",
-            )
-            longSpeeds.forEach { speed ->
-                val isSelected = longPressSpeed == speed
-                layout.addView(drawerItem(
-                    label = longLabels[speed] ?: "${trimSpeed(speed)}x",
-                    selected = isSelected,
-                ) {
-                    longPressSpeed = speed
-                    getSharedPreferences("player_prefs", MODE_PRIVATE)
-                        .edit()
-                        .putFloat("long_press_speed", speed)
-                        .apply()
-                    toast(getString(R.string.player_speed_long_press_set, "${trimSpeed(speed)}x"))
-                    showSpeedMenu()
-                })
-            }
-
-            scroll.addView(layout)
-            container.addView(scroll)
-        }
+        PlayerSpeedHelper.showSpeedMenu(
+            context = this,
+            drawer = drawer,
+            currentSpeed = currentSpeed,
+            longPressSpeed = longPressSpeed,
+            onApplySpeed = { applySpeed(it) },
+            onApplyLongPressSpeed = { speed ->
+                longPressSpeed = speed
+                getSharedPreferences("player_prefs", MODE_PRIVATE)
+                    .edit()
+                    .putFloat("long_press_speed", speed)
+                    .apply()
+                toast(getString(R.string.player_speed_long_press_set, "${trimSpeed(speed)}x"))
+            },
+        )
     }
 
     private fun applySpeed(speed: Float) {
@@ -1134,11 +823,10 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun trimSpeed(speed: Float): String =
-        if (speed % 1f == 0f) String.format(Locale.US, "%.1f", speed)
-        else String.format(Locale.US, "%.2f", speed).trimEnd('0').trimEnd('.')
+        PlayerSpeedHelper.trimSpeed(speed)
 
     private fun speedLabel(): String =
-        if (currentSpeed == 1f) "倍速" else "${trimSpeed(currentSpeed)}x"
+        PlayerSpeedHelper.speedLabel(currentSpeed)
 
     private fun showPlaylist() {
         val playInfo = info ?: return
@@ -1238,82 +926,10 @@ class PlayerActivity : AppCompatActivity() {
         label: String,
         selected: Boolean,
         action: () -> Unit,
-    ): View =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            background = if (selected) {
-                rounded(0x33E8B06A.toInt(), 10f)
-            } else {
-                rounded(0x14FFFFFF, 10f)
-            }
-            isClickable = true
-            isFocusable = true
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = dp(8)
-            }
-            addView(TextView(this@PlayerActivity).apply {
-                text = label
-                setTextColor(if (selected) Color.parseColor("#E8B06A") else Color.WHITE)
-                textSize = 13.5f
-                if (selected) typeface = android.graphics.Typeface.DEFAULT_BOLD
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            })
-            if (selected) {
-                addView(TextView(this@PlayerActivity).apply {
-                    text = "✓"
-                    setTextColor(Color.parseColor("#E8B06A"))
-                    textSize = 14f
-                    typeface = android.graphics.Typeface.DEFAULT_BOLD
-                })
-            }
-            setOnClickListener { action() }
-        }
+    ): View = drawer.createItem(label, selected, action)
 
     private fun drawerActionRow(title: String, subtitle: String?, action: () -> Unit): View =
-        LinearLayout(this).apply {
-            orientation = LinearLayout.HORIZONTAL
-            gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(14), dp(13), dp(14), dp(13))
-            background = rounded(0x14FFFFFF, 10f)
-            isClickable = true
-            isFocusable = true
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                bottomMargin = dp(8)
-            }
-            addView(TextView(this@PlayerActivity).apply {
-                text = title
-                setTextColor(Color.WHITE)
-                textSize = 14f
-                layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
-            })
-            if (subtitle != null) {
-                addView(TextView(this@PlayerActivity).apply {
-                    text = subtitle
-                    setTextColor(Color.parseColor("#9AA2B1"))
-                    textSize = 12f
-                    layoutParams = LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ).apply {
-                        rightMargin = dp(6)
-                    }
-                })
-            }
-            addView(TextView(this@PlayerActivity).apply {
-                text = "›"
-                setTextColor(Color.parseColor("#66FFFFFF"))
-                textSize = 18f
-            })
-            setOnClickListener { action() }
-        }
+        drawer.createActionRow(title, subtitle, action)
 
     // ------------------------------------------------------------------
     // 加载与播放
