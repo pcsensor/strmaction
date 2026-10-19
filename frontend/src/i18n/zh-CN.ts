@@ -11,6 +11,7 @@ export const zhCN = {
   },
   nav: {
     home: '首页',
+    libraries: '媒体库',
     search: '搜索',
     tasks: '任务',
     settings: '设置',

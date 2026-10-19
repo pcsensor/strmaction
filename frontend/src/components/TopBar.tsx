@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { AlertTriangle, Clapperboard, LogOut, Search, Settings, Users } from 'lucide-react'
+import { AlertTriangle, Clapperboard, Library, LogOut, Search, Settings, Users } from 'lucide-react'
 import { useHome, useLogout } from '../api/hooks'
 import { useAuthState } from '../api/hooks'
 import { useScrollDirection } from '../hooks/useTVMode'
@@ -36,6 +36,7 @@ export function TopBar() {
   // 动态生成导航链接
   const links = [
     { to: '/', label: t('nav.home'), end: true, visible: true },
+    { to: '/libraries', label: t('nav.libraries'), visible: true },
     { to: '/search', label: t('nav.search'), visible: true },
     { to: '/users', label: '用户管理', visible: isAdmin },
     { to: '/tasks', label: t('nav.tasks'), visible: isAdmin },
@@ -126,6 +127,7 @@ export function BottomNav() {
 
   const mobileLinks = [
     { to: '/', label: t('nav.home'), end: true, icon: Clapperboard },
+    { to: '/libraries', label: t('nav.libraries'), icon: Library },
     { to: '/search', label: t('nav.search'), icon: Search },
     isAdmin && { to: '/users', label: '用户', icon: Users },
     isAdmin && { to: '/settings', label: t('nav.settings'), icon: Settings },

@@ -103,6 +103,7 @@ export function useItem(id: number | null) {
 
 export function useItems(params: {
   library_id?: number
+  parent_id?: string
   kind?: string
   q?: string
   genre?: string
