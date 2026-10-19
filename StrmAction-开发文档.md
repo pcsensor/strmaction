@@ -1212,7 +1212,7 @@ ui:
 2. **默认仅内网**：文档与启动日志提示不要直接暴露公网；如需外网，要求前置 HTTPS 反代 + 强密码。
 3. **路径穿越防护**：所有文件访问基于 `library.root_path` 做 `realpath` 校验。
 4. **TMDB 合规**：页面底部必须展示
-   > This product uses the TMDB API but is not endorsed or certified by TMDB.
+   > This product uses the TMDB API.
    并附 TMDB logo。图片仅在本地缓存用于展示。
 5. **多用户与权限隔离**：支持管理员与普通用户角色；密码使用 argon2 哈希；基于会话签名 Cookie 与服务端状态追踪；登录失败 5 次锁定 5 分钟；普通用户受媒体库访问权限隔离。
 6. **`play_token` 最小权限**：12h 有效、绑定单个 `item_id`、只能写该条目进度、不可读取任何列表或 URL；注销登录时不强制吊销（到期自然失效）。
