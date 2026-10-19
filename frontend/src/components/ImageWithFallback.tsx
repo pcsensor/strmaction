@@ -26,7 +26,7 @@ export function ImageWithFallback({
   const showImage = Boolean(src) && !failed
   const accent = color || (kind === 'folder' ? '#d97706' : '#2b3242')
   return (
-    <div className={`relative overflow-hidden bg-ink-850 ${className}`}>
+    <div className={`relative h-full w-full overflow-hidden bg-ink-850 ${className}`}>
       {showImage ? (
         <img
           src={src as string}
@@ -39,18 +39,18 @@ export function ImageWithFallback({
         />
       ) : (
         <div
-          className="flex h-full w-full items-center justify-center"
+          className="flex h-full w-full flex-col items-center justify-center p-3 text-center"
           style={{
             background: `radial-gradient(120% 120% at 20% 0%, ${accent}55 0%, #0b0d11 65%), linear-gradient(160deg, #131826, #07080a)`,
           }}
         >
-          <div className="flex flex-col items-center gap-2 px-3 text-center text-white/45">
+          <div className="flex flex-col items-center justify-center gap-2.5 px-2 text-center text-white/50">
             {kind === 'folder' ? (
-              <Folder className="h-8 w-8 text-amber-400/80" strokeWidth={1.5} />
+              <Folder className="h-8 w-8 text-amber-400/85" strokeWidth={1.5} />
             ) : (
-              <Film className="h-7 w-7" strokeWidth={1.4} />
+              <Film className="h-8 w-8 text-white/45" strokeWidth={1.4} />
             )}
-            <span className="line-clamp-2 text-[11px] font-medium leading-tight">{alt}</span>
+            <span className="line-clamp-3 text-[11.5px] font-medium leading-tight text-ink-200">{alt}</span>
           </div>
         </div>
       )}

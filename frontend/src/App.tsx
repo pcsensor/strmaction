@@ -11,6 +11,7 @@ import type { ItemDetailResponse } from './api/types'
 import { useSpatialNavigation, useTVMode } from './hooks/useTVMode'
 import { useUIStore } from './store/ui'
 import { HomePage } from './pages/HomePage'
+import { LibrariesPage } from './pages/LibrariesPage'
 import { DetailPage } from './pages/DetailPage'
 import { SearchPage } from './pages/SearchPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -198,6 +199,8 @@ export default function App() {
       <AppShell>
         <Routes>
           <Route path="/" element={<HomePage />} />
+          <Route path="/libraries" element={<LibrariesPage />} />
+          <Route path="/libraries/:id" element={<LibrariesPage />} />
           <Route path="/item/:id" element={<DetailPage />} />
           <Route path="/search" element={<SearchPage />} />
           <Route path="/users" element={<UsersPage />} />
