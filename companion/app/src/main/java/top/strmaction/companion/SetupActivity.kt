@@ -71,7 +71,10 @@ class SetupActivity : AppCompatActivity() {
         urlInput = EditText(this).apply {
             hint = getString(R.string.setup_hint)
             inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_VARIATION_URI
-            setText(prefs.getString(MainActivity.KEY_SERVER, "http://192.168.1.10:8080"))
+            val savedServer = prefs.getString(MainActivity.KEY_SERVER, null)
+            if (!savedServer.isNullOrBlank()) {
+                setText(savedServer)
+            }
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#5C6678"))
             setSingleLine(true)

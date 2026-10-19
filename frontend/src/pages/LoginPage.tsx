@@ -10,7 +10,7 @@ export function LoginPage() {
   const auth = useAuthState()
   const navigate = useNavigate()
   const location = useLocation()
-  const [username, setUsername] = useState('admin')
+  const [username, setUsername] = useState('')
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
 
@@ -89,6 +89,7 @@ export function LoginPage() {
                   id="username"
                   className="input"
                   autoComplete="username"
+                  autoFocus
                   value={username}
                   onChange={(event) => setUsername(event.target.value)}
                 />
@@ -102,7 +103,6 @@ export function LoginPage() {
                   type="password"
                   className="input"
                   autoComplete="current-password"
-                  autoFocus
                   value={password}
                   onChange={(event) => setPassword(event.target.value)}
                 />
@@ -121,7 +121,7 @@ export function LoginPage() {
 
               <button
                 type="submit"
-                disabled={login.isPending || !password}
+                disabled={login.isPending || !username.trim() || !password}
                 className="btn-primary w-full py-3.5 disabled:cursor-not-allowed disabled:opacity-50"
               >
                 {login.isPending ? t('login.submitting') : t('login.submit')}
