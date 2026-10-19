@@ -1,10 +1,11 @@
 import { Link } from 'react-router-dom'
-import { Check, Play, Star } from 'lucide-react'
+import { Check, Play, Star, X } from 'lucide-react'
 import type { ContinueItem, ItemSummary } from '../api/types'
 import { ImageWithFallback } from './ImageWithFallback'
 import { ProgressBar } from './ProgressBar'
+import { useDismissContinue } from '../api/hooks'
 import { useStartPlayback } from '../hooks/useStartPlayback'
-import { useUIStore } from '../store/ui'
+import { useToast, useUIStore } from '../store/ui'
 import { t } from '../i18n/zh-CN'
 
 interface PosterCardProps {
@@ -110,7 +111,23 @@ export function PosterCard({
 
 export function ContinueCard({ item }: { item: ContinueItem }) {
   const start = useStartPlayback()
+  const dismissMutation = useDismissContinue()
+  const toast = useToast()
   const progress = item.progress?.progress ?? 0
+
+  const handleDismiss = (event: React.MouseEvent) => {
+    event.preventDefault()
+    event.stopPropagation()
+    dismissMutation.mutate(item.continue_item_id, {
+      onSuccess: () => {
+        toast({ title: t('home.dismissedToast'), tone: 'success' })
+      },
+      onError: (err) => {
+        toast({ title: t('common.failed'), description: (err as Error).message, tone: 'error' })
+      },
+    })
+  }
+
   return (
     <div className="group relative w-[280px] shrink-0 overflow-hidden rounded-2xl border border-white/8 bg-ink-850 shadow-card transition duration-300 hover:-translate-y-1 hover:border-white/15 sm:w-[320px]">
       <Link to={`/item/${item.continue_item_id}`} className="block focus-ring rounded-2xl">
@@ -127,6 +144,15 @@ export function ContinueCard({ item }: { item: ContinueItem }) {
             <p className="mt-0.5 line-clamp-1 text-[11.5px] text-white/65">{item.subtitle}</p>
             <ProgressBar value={progress} className="mt-2" trackClassName="bg-white/20" />
           </div>
+          <button
+            type="button"
+            aria-label={t('home.dismissContinue')}
+            title={t('home.dismissContinue')}
+            onClick={handleDismiss}
+            className="absolute left-3 top-3 grid h-8 w-8 place-items-center rounded-full bg-black/60 text-white/70 opacity-0 backdrop-blur-md transition duration-300 hover:bg-black/90 hover:text-white group-hover:opacity-100 focus-ring"
+          >
+            <X className="h-4 w-4" />
+          </button>
           <button
             type="button"
             aria-label={t('common.resume')}

@@ -48,10 +48,11 @@ SUBTITLE_MIME = {
 
 
 def resolve_headers(library: Library | None, settings) -> dict[str, str]:
-    headers = parse_headers(library.play_headers if library else None)
-    if headers:
-        return headers
-    return clean_headers(settings.player().get("play_headers") or {})
+    # 库级请求头覆盖全局默认值，但不要丢掉全局默认值里的其他字段
+    headers = clean_headers(settings.player().get("play_headers") or {})
+    if library is not None:
+        headers.update(parse_headers(library.play_headers))
+    return headers
 
 
 def _subtitle_label(path: Path, media_stem: str) -> str:

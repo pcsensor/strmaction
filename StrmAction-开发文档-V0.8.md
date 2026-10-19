@@ -945,6 +945,17 @@ interface StrmActionNative {
 - **外部 mpv**：退出后回到 App 再起下一集，顶部 toast 给 5 秒取消窗口。
 - 两种路径都要遵守：下一集若已标记已看，则继续往后找，直到找到未看的一集或到剧终。
 
+### 12.11 从「继续观看」移除（保留进度）
+
+- **业务需求**：用户常希望清理首页「继续观看」中不想再追或临时点开的剧集/电影，但不能清空其播放进度（后续在媒体库或剧集详情中浏览时，各集进度条与已看打勾仍需正确保留）。
+- **字段支持**：`PlayProgress` 模型新增 `dismissed: bool = False` 字段（SQLite 数据库自迁移添加 `dismissed BOOLEAN DEFAULT 0`）。
+- **首页聚合**：`GET /home` 查出待看进度时过滤 `PlayProgress.dismissed == False`。
+- **移除接口**：`DELETE /api/items/{id}/continue` 与 `POST /api/items/{id}/dismiss-continue`：
+  - 针对电影/单集：将对应条目的 `dismissed` 置为 `True`；
+  - 针对电视剧（`kind == "series"`）：级联将整部剧名下所有单集的 `dismissed` 置为 `True`，确保整剧完全从首页继续观看行消失；
+  - 数据只标记隐藏，`position_ms`、`duration_ms` 与 `finished` 状态原样保留。
+- **重新激活**：当用户在详情页或媒体库再次播放该剧集并上报新进度（`POST /api/items/{id}/progress`）时，自动重置 `row.dismissed = False`，使重新观看的条目恢复回到首页「继续观看」。
+
 ## 13. API 规格
 
 统一前缀 `/api`，除 `/auth/login` 外全部需要会话 Cookie（`st_sess`，HttpOnly、SameSite=Lax）。
@@ -969,6 +980,7 @@ interface StrmActionNative {
 | POST | `/items/{id}/poster` | multipart 上传自定义海报/背景 |
 | POST | `/items/{id}/refresh` | 单条重刮 |
 | POST | `/items/{id}/watched` | `{finished: bool}` 手动标记已看/未看 |
+| DELETE/POST | `/items/{id}/continue` | 从首页「继续观看」移除该条目（保留其播放进度与已看记录，见 §12.11） |
 | GET | `/search` | 全库搜索（标题/别名/演职员） |
 | GET | `/home` | 首页聚合：`hero[]`, `continue[]`, `recent[]`, `rows[]` |
 | POST | `/play/{item_id}` | 返回 `mode / play_url / resume_ms / headers / play_token / next_item_id` |
@@ -1953,6 +1965,22 @@ private val playbackListener = object : Player.Listener {
 | `onStop` | 立即上报一次进度，停止心跳，`player.pause()` |
 | `onDestroy` | `player.release()` |
 | `onResume` | 恢复心跳（若仍在播） |
+
+**播放控件与手势规范（v0.8 现代化升级）**
+
+- **视觉与交互**：
+  - 全面使用简洁精炼的现代矢量图标（VectorDrawable）替代旧版文字按钮；
+  - 顶部栏：返回键、标题文本、画中画图标（仅支持设备）、更多菜单图标；
+  - 屏幕正中：半透明悬浮播放/暂停大图标；
+  - 屏幕右侧：半透明悬浮锁屏图标（锁定后收起所有控件并切换为解锁图标）；
+  - 底部控制栏：渐变黑遮罩底，上方为高亮带刻度拖拽进度条（SeekBar），下方为「播放/暂停」、「上一集」、「下一集」、当前时间/总时长、弹性留白，以及右侧「选集」胶囊按钮、「倍速」胶囊按钮、「全屏/退出全屏」图标按钮。
+- **手势控制**：
+  - 单击屏幕：呼出 / 收起播放控件（播放状态下 4.5 秒无操作自动淡出）；
+  - 双击左侧 35%：快退 10 秒，屏幕中心居中展示 `⏪ 快退 10 秒` 胶囊徽标并自动淡出；
+  - 双击右侧 35%：快进 10 秒，屏幕中心居中展示 `⏩ 快进 10 秒` 胶囊徽标并自动淡出；
+  - 双击中间区域：播放 / 暂停切换；
+  - **长按倍速**：在屏幕任意位置长按触发触觉震动反馈（HapticFeedback），实时将播放速度提升至配置倍速，顶部浮动提示 `▶▶ 2.0x 快速播放中`；手指抬起（`ACTION_UP`/`ACTION_CANCEL`）立刻平滑恢复原先倍速并隐藏浮标；
+  - **长按倍速设置**：在倍速弹出单选框底部或播放菜单中均提供「长按倍速设置」，支持快捷配置长按倍速（可选 1.5x / 2.0x（默认）/ 2.5x / 3.0x），配置值自动持久化至本地 `SharedPreferences`。
 
 ### E.5 进度心跳与 `play_token`
 

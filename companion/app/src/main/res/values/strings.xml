@@ -55,24 +55,29 @@
     <string name="player_speed_normal">正常</string>
     <string name="player_subtitle_hint">复杂 ASS 特效无法还原，需要原样显示请用 mpv 打开。</string>
 
-    <!-- 播放控件（v0.9） -->
+    <string name="player_prev">上一集</string>
     <string name="player_play">播放</string>
     <string name="player_pause">暂停</string>
+    <string name="player_next">下一集</string>
     <string name="player_playlist">选集</string>
     <string name="player_playlist_title">选集 · %1$s</string>
     <string name="player_no_playlist">当前没有可选的剧集</string>
     <string name="player_speed">倍速</string>
     <string name="player_speed_toast">播放速度：%1$s</string>
+    <string name="player_speed_long_press_set">已将长按倍速设置为 %1$s</string>
+    <string name="player_long_press_speed_title">长按倍速设置</string>
     <string name="player_fullscreen">全屏</string>
     <string name="player_exit_fullscreen">退出全屏</string>
     <string name="player_lock">锁</string>
     <string name="player_unlock">解锁</string>
     <string name="player_lock_hint">锁定屏幕控件</string>
     <string name="player_unlock_hint">解锁屏幕控件</string>
-    <string name="player_locked">已锁定，点击右侧「解锁」恢复控件</string>
+    <string name="player_locked">已锁定，再次点击恢复控件</string>
     <string name="player_unlocked">已解锁</string>
     <string name="player_no_next">没有下一集了</string>
     <string name="player_no_prev">没有上一集了</string>
+    <string name="player_compat_retry">直连较慢，正在尝试兼容模式…</string>
+    <string name="player_network_timeout">连接网盘超时，当前网络可能无法直接播放该片源。</string>
 
     <!-- 外部 mpv -->
     <string name="mpv_missing">未安装 mpv-android，请先安装 is.xyz.mpv</string>

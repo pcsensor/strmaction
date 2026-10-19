@@ -41,9 +41,9 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | 元数据 | 17 项字段、季/集详情、剧照、演职员头像、预告片、合集、分级、别名 |
 | 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
 | 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
-| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、选集/倍速/全屏/锁定）、外部 mpv 兜底、桌面 mpv spawn + JSON IPC、浏览器 `intent://`、复制链接 |
-| 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发 |
-| 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看、分类横滑、详情、选集、搜索、设置、任务、待修正列表、首次向导 |
+| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定）、外部 mpv 兜底、桌面 mpv spawn + JSON IPC、浏览器 `intent://`、复制链接 |
+| 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发、支持从「继续观看」移除（保留进度与断点） |
+| 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看（支持快捷移除且保留媒体库进度）、分类横滑、详情、选集、搜索、设置、任务、待修正列表、首次向导 |
 | TV | 伴侣 App 手机/电视通用、`?tv=1` 10-foot 布局、方向键空间导航 + 滚屏兜底、48px 安全区、焦点光晕 |
 | 运维 | 单容器 Docker、配置优先级 DB > yaml > 默认、导出/导入、任务日志、Provider 连通性测试 |
 
@@ -51,6 +51,10 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 
 - **播放**：伴侣 App 内置 Media3 成为默认路径；5 秒进度心跳、`play_token` 回传、播完无缝连播，
   外部 mpv 降级为兜底；播放请求头按媒体库下发。
+- **播放控件主流化与长按倍速**：全面重构伴侣 App 播放器 UI，换用现代主流矢量图标；新增屏幕中心
+  悬浮大播放键、双击左/右快退快进手势与反馈、长按触感震动极速播放，并支持自定义长按倍速（1.5x~3.0x）。
+- **「继续观看」管理**：支持将剧集/电影从首页继续观看行移除，且在媒体库与详情页中仍完整保留
+  已看集与进度条；再次播放自动重新激活回到首页。
 - **APK 手机优先**：WebView 触摸滚动不再被父容器/桥接层干扰；修复 JS 桥在 JavaBridge 线程
   访问 `WebView` 导致点击播放报「Java exception」；画中画只在真正播放后触发；支持网页里的
   海报上传；设置页「伴侣 App」可直接重开服务器配置。
@@ -332,13 +336,13 @@ mpv --no-terminal --force-window \
 源码在 [`companion/`](companion/README.md)。**已构建的签名 APK**：
 
 ```
-companion/strmaction-companion-v1.4.apk
+companion/strmaction-companion-v1.6.apk
 ```
 
 安装到手机或电视（同一局域网）：
 
 ```bash
-adb install -r companion/strmaction-companion-v1.4.apk
+adb install -r companion/strmaction-companion-v1.6.apk
 # 电视：adb connect <TV_IP>:5555 && adb install -r ...
 ```
 
@@ -485,3 +489,5 @@ Dockerfile / docker-compose.yml / docker-compose.cloud.yml / config.example.yaml
 | M4 播放分发（builtin / external / desktop / copy + play_token） | ✅ API 与 token 测试覆盖；桌面 mpv 需真机验证 |
 | M5 打磨（TV 布局/动效/任务页/待修正） | ✅ |
 | M6 伴侣 App + 内置 Media3（5s 心跳 / 续播 / 连播 / mpv 兜底） | ✅ 源码 + 已签名 APK，模拟器实机验证通过 |
+
+

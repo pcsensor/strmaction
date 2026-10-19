@@ -335,7 +335,14 @@ def get_item(item_id: int, engine=Depends(get_engine)):
                 )
             if all_episodes:
                 all_progress = _progress_map(session, [e.id for e in all_episodes])
-                target = _choose_play_target(session, target_series)
+                if item.kind == "episode":
+                    # 剧集详情页的播放按钮必须播放「当前这一集」，
+                    # 不能再用整部剧的「第一集未看」作为目标。
+                    target = item
+                elif item.kind == "season":
+                    target = _choose_play_target(session, item)
+                else:
+                    target = _choose_play_target(session, target_series)
                 try:
                     index = all_episodes.index(target)
                 except ValueError:
@@ -652,6 +659,7 @@ def report_progress(
             row.position_ms = position
             row.duration_ms = duration or row.duration_ms
             row.finished = finished
+            row.dismissed = False
             row.last_client_key = body.client_key
             row.updated_at = utcnow()
         session.add(row)
@@ -732,3 +740,34 @@ def merge_item(
         session.add(target)
         session.commit()
     return {"ok": True, "target_id": item_id, "merged_from": body.source_id}
+
+
+@router.delete("/{item_id}/continue")
+@router.post("/{item_id}/dismiss-continue")
+def dismiss_continue(
+    item_id: int,
+    engine=Depends(get_engine),
+):
+    """从「继续观看」移除该条目（保留其播放进度与已看记录）。"""
+    with Session(engine) as session:
+        item = _get_item(session, item_id)
+        if item.kind == "series":
+            sequence = _episode_sequence(session, item)
+            seq_ids = [ep.id for ep in sequence]
+            if seq_ids:
+                rows = session.exec(
+                    select(PlayProgress).where(PlayProgress.item_id.in_(seq_ids))
+                ).all()
+                for row in rows:
+                    row.dismissed = True
+                    session.add(row)
+        else:
+            row = session.exec(
+                select(PlayProgress).where(PlayProgress.item_id == item_id)
+            ).first()
+            if row is not None:
+                row.dismissed = True
+                session.add(row)
+        session.commit()
+    return {"ok": True, "item_id": item_id}
+

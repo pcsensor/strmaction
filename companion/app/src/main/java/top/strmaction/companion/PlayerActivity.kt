@@ -14,17 +14,22 @@ import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.util.Rational
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.KeyEvent
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
+import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.annotation.DrawableRes
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
@@ -38,6 +43,10 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DataSpec
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
@@ -48,6 +57,7 @@ import java.util.Locale
 import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
+import okhttp3.Protocol
 
 /**
  * v0.8 内置播放器：Media3 解码 + 5 秒心跳 + 无缝连播 + mpv 兜底。
@@ -55,6 +65,7 @@ import okhttp3.OkHttpClient
  * v0.9 播放控件：全部收拢到屏幕下方（选集 / 倍速 / 全屏），
  * 右侧中间提供锁定按钮；锁定后隐藏其它控件，只保留解锁入口。
  */
+@androidx.annotation.OptIn(UnstableApi::class)
 class PlayerActivity : AppCompatActivity() {
 
     companion object {
@@ -72,13 +83,19 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var titleView: TextView
     private lateinit var timeView: TextView
     private lateinit var seekBar: SeekBar
-    private lateinit var playPauseButton: TextView
-    private lateinit var prevButton: TextView
-    private lateinit var nextButton: TextView
+    private lateinit var backButton: ImageView
+    private lateinit var pipButton: ImageView
+    private lateinit var menuButton: ImageView
+    private lateinit var centerPlayButton: ImageView
+    private lateinit var playPauseButton: ImageView
+    private lateinit var prevButton: ImageView
+    private lateinit var nextButton: ImageView
     private lateinit var playlistButton: TextView
     private lateinit var speedButton: TextView
-    private lateinit var fullscreenButton: TextView
-    private lateinit var lockButton: TextView
+    private lateinit var fullscreenButton: ImageView
+    private lateinit var lockButton: ImageView
+    private lateinit var fastForwardBadge: TextView
+    private lateinit var seekFeedbackBadge: TextView
     private lateinit var loadingView: LinearLayout
     private lateinit var loadingText: TextView
 
@@ -88,6 +105,7 @@ class PlayerActivity : AppCompatActivity() {
     private var currentItemId: Int = 0
     private var loading = false
     private var advancing = false
+    private var playbackAttempt = 0
     private var wasPlaying = false
     private var playingSince = 0L
     private var nextTicker: Runnable? = null
@@ -96,6 +114,8 @@ class PlayerActivity : AppCompatActivity() {
     private var locked = false
     private var fullscreen = false
     private var currentSpeed = 1f
+    private var longPressSpeed = 2.0f
+    private var speedBeforeLongPress: Float? = null
     private var userSeeking = false
 
     private val main = Handler(Looper.getMainLooper())
@@ -119,6 +139,8 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
     private var heartbeatRunning = false
+    private var currentPlayUri: Uri? = null
+    private var resolvedMediaUri: Uri? = null
 
     private val progressTicker = object : Runnable {
         override fun run() {
@@ -170,7 +192,17 @@ class PlayerActivity : AppCompatActivity() {
         override fun onPlayerError(error: PlaybackException) {
             Log.e(TAG, "playback error: ${error.errorCodeName}", error)
             stopHeartbeat()
-            onPlaybackFailed(error)
+            if (playbackAttempt < 2 && info != null) {
+                val next = playbackAttempt + 1
+                toast(getString(R.string.player_compat_retry))
+                val playInfo = info!!
+                val resumePos = player?.currentPosition?.takeIf { it > 0 } ?: playInfo.resumeMs
+                main.post {
+                    playItem(playInfo, resumePos, attempt = next)
+                }
+            } else {
+                onPlaybackFailed(error)
+            }
         }
     }
 
@@ -192,6 +224,9 @@ class PlayerActivity : AppCompatActivity() {
             // 手机默认带系统栏；点「全屏」再隐藏系统栏并转横屏
             enterWindowedMode()
         }
+
+        longPressSpeed = getSharedPreferences("player_prefs", MODE_PRIVATE)
+            .getFloat("long_press_speed", 2.0f)
 
         buildUi()
         setContentView(root)
@@ -218,8 +253,8 @@ class PlayerActivity : AppCompatActivity() {
             setKeepContentOnPlayerReset(true)
             resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT
             setBackgroundColor(Color.BLACK)
-            setOnClickListener { onSurfaceTap() }
         }
+        setupPlayerGestures(playerView)
         root.addView(playerView)
 
         controls = FrameLayout(this).apply {
@@ -230,10 +265,11 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(controls)
 
+        // 顶部操作栏
         topBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(dp(16), dp(12), dp(16), dp(12))
+            setPadding(dp(12), dp(8), dp(12), dp(8))
             background = GradientDrawable(
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 intArrayOf(0xCC000000.toInt(), 0x00000000),
@@ -243,27 +279,26 @@ class PlayerActivity : AppCompatActivity() {
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             ).apply { gravity = Gravity.TOP }
         }
-        val backButton = TextView(this).apply {
-            text = "‹"
-            setTextColor(Color.WHITE)
-            textSize = 26f
-            gravity = Gravity.CENTER
-            setPadding(dp(12), 0, dp(14), dp(2))
-            isFocusable = true
-            isClickable = true
-            contentDescription = getString(R.string.common_back)
-            setOnClickListener { handleBack() }
+
+        backButton = iconButton(R.drawable.ic_back, getString(R.string.common_back), dp(40), dp(8)) {
+            handleBack()
         }
+        topBar.addView(backButton)
+
         titleView = TextView(this).apply {
             text = getString(R.string.player_loading)
             setTextColor(Color.WHITE)
-            textSize = 16f
+            textSize = 15f
             maxLines = 1
             ellipsize = android.text.TextUtils.TruncateAt.END
+            setPadding(dp(8), 0, dp(8), 0)
             layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
         }
-        val menuButton = pillButton(getString(R.string.player_menu), 12f) { showMenu() }
-        val pipButton = pillButton("画中画", 12f) { enterPip() }.apply {
+        topBar.addView(titleView)
+
+        pipButton = iconButton(R.drawable.ic_pip, "画中画", dp(40), dp(9)) {
+            enterPip()
+        }.apply {
             visibility = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
                 Device.isTouchDevice(this@PlayerActivity)
             ) {
@@ -272,15 +307,78 @@ class PlayerActivity : AppCompatActivity() {
                 View.GONE
             }
         }
-        topBar.addView(backButton)
-        topBar.addView(titleView)
         topBar.addView(pipButton)
+
+        menuButton = iconButton(R.drawable.ic_more, getString(R.string.player_menu), dp(40), dp(8)) {
+            showMenu()
+        }
         topBar.addView(menuButton)
         controls.addView(topBar)
 
+        // 屏幕中心大播放/暂停按钮
+        centerPlayButton = iconButton(R.drawable.ic_play, getString(R.string.player_play), dp(56), dp(14)) {
+            togglePlay()
+        }.apply {
+            background = rounded(0x55000000, 999f)
+            layoutParams = FrameLayout.LayoutParams(dp(56), dp(56)).apply {
+                gravity = Gravity.CENTER
+            }
+        }
+        controls.addView(centerPlayButton)
+
+        // 浮层：长按倍速提示徽标
+        fastForwardBadge = TextView(this).apply {
+            text = "▶▶ ${trimSpeed(longPressSpeed)}x 快速播放中"
+            setTextColor(Color.WHITE)
+            textSize = 13f
+            typeface = android.graphics.Typeface.DEFAULT_BOLD
+            gravity = Gravity.CENTER
+            background = rounded(0xB3181818.toInt(), 999f)
+            setPadding(dp(16), dp(8), dp(16), dp(8))
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.TOP or Gravity.CENTER_HORIZONTAL
+                topMargin = dp(56)
+            }
+        }
+        root.addView(fastForwardBadge)
+
+        // 浮层：双击快进快退反馈徽标
+        seekFeedbackBadge = TextView(this).apply {
+            setTextColor(Color.WHITE)
+            textSize = 14f
+            gravity = Gravity.CENTER
+            background = rounded(0xCC000000.toInt(), 999f)
+            setPadding(dp(18), dp(10), dp(18), dp(10))
+            visibility = View.GONE
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.CENTER
+            }
+        }
+        root.addView(seekFeedbackBadge)
+
+        // 右侧锁屏悬浮按钮
+        lockButton = iconButton(R.drawable.ic_unlock, getString(R.string.player_lock), dp(40), dp(9)) {
+            toggleLock()
+        }.apply {
+            background = rounded(0x66000000, 999f)
+            layoutParams = FrameLayout.LayoutParams(dp(40), dp(40)).apply {
+                gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                rightMargin = dp(16)
+            }
+        }
+        root.addView(lockButton)
+
+        // 底部控制栏
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(16), dp(8), dp(16), dp(16))
+            setPadding(dp(12), dp(8), dp(12), dp(12))
             background = GradientDrawable(
                 GradientDrawable.Orientation.BOTTOM_TOP,
                 intArrayOf(0xE6000000.toInt(), 0xAA000000.toInt(), 0x00000000),
@@ -291,26 +389,14 @@ class PlayerActivity : AppCompatActivity() {
             ).apply { gravity = Gravity.BOTTOM }
         }
 
-        timeView = TextView(this).apply {
-            text = "00:00 / 00:00"
-            setTextColor(Color.parseColor("#D6DCE6"))
-            textSize = 11.5f
-            gravity = Gravity.START
-            setPadding(dp(2), 0, 0, dp(2))
-            layoutParams = LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            )
-        }
-        bottomBar.addView(timeView)
-
+        // 进度条
         seekBar = SeekBar(this).apply {
             max = SEEK_MAX
             progress = 0
             progressTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
             progressBackgroundTintList = ColorStateList.valueOf(0x55FFFFFF)
             thumbTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
-            setPadding(0, 0, 0, 0)
+            setPadding(dp(6), 0, dp(6), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -342,55 +428,63 @@ class PlayerActivity : AppCompatActivity() {
         })
         bottomBar.addView(seekBar)
 
+        // 底部操作按钮行
         val actionRow = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
-            setPadding(0, dp(2), 0, 0)
+            setPadding(dp(4), dp(4), dp(4), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
                 ViewGroup.LayoutParams.WRAP_CONTENT,
             )
         }
-        prevButton = actionButton("上一集", 10.5f, dp(46)) { playPrevEpisode() }
-        playPauseButton = actionButton("暂停", 10.5f, dp(42)) { togglePlay() }
-        nextButton = actionButton("下一集", 10.5f, dp(46)) { playNextEpisode() }
+
+        playPauseButton = iconButton(R.drawable.ic_play, getString(R.string.player_play), dp(36), dp(6)) {
+            togglePlay()
+        }
+        prevButton = iconButton(R.drawable.ic_prev, getString(R.string.player_prev), dp(36), dp(7)) {
+            playPrevEpisode()
+        }
+        nextButton = iconButton(R.drawable.ic_next, getString(R.string.player_next), dp(36), dp(7)) {
+            playNextEpisode()
+        }
+
+        actionRow.addView(playPauseButton)
         actionRow.addView(prevButton)
-        actionRow.addView(playPauseButton, rowParams(dp(42), dp(34)))
         actionRow.addView(nextButton)
 
+        timeView = TextView(this).apply {
+            text = "00:00 / 00:00"
+            setTextColor(Color.parseColor("#D6DCE6"))
+            textSize = 12f
+            setPadding(dp(8), 0, dp(4), 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+        actionRow.addView(timeView)
+
+        // 弹性占位，将右侧功能区推至最右
         actionRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
 
-        playlistButton = actionButton("选集", 10.5f, dp(44)) { showPlaylist() }
-        speedButton = actionButton(speedLabel(), 10.5f, dp(44)) { showSpeedMenu() }
-        fullscreenButton = actionButton(fullscreenLabel(), 10.5f, dp(64)) {
+        playlistButton = pillButton(getString(R.string.player_playlist), 11.5f) { showPlaylist() }
+        speedButton = pillButton(speedLabel(), 11.5f) { showSpeedMenu() }
+        fullscreenButton = iconButton(
+            if (fullscreen) R.drawable.ic_fullscreen_exit else R.drawable.ic_fullscreen,
+            fullscreenLabel(),
+            dp(36),
+            dp(7),
+        ) {
             toggleFullscreen()
         }
+
         actionRow.addView(playlistButton)
         actionRow.addView(speedButton)
         actionRow.addView(fullscreenButton)
+
         bottomBar.addView(actionRow)
         controls.addView(bottomBar)
-
-        lockButton = TextView(this).apply {
-            text = getString(R.string.player_lock)
-            setTextColor(Color.WHITE)
-            textSize = 12f
-            gravity = Gravity.CENTER
-            background = rounded(0x99000000.toInt(), 999f)
-            setPadding(dp(12), dp(10), dp(12), dp(10))
-            isFocusable = true
-            isClickable = true
-            contentDescription = getString(R.string.player_lock_hint)
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-            ).apply {
-                gravity = Gravity.END or Gravity.CENTER_VERTICAL
-                rightMargin = dp(10)
-            }
-            setOnClickListener { toggleLock() }
-        }
-        root.addView(lockButton)
 
         loadingView = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -418,6 +512,114 @@ class PlayerActivity : AppCompatActivity() {
         root.addView(loadingView)
     }
 
+    private fun setupPlayerGestures(view: View) {
+        val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
+                onSurfaceTap()
+                return true
+            }
+
+            override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (locked) return false
+                val width = view.width
+                if (width <= 0) return false
+                val x = e.x
+                when {
+                    x < width * 0.35f -> {
+                        seekRelative(-10_000L)
+                        showSeekFeedback("⏪ 快退 10 秒")
+                    }
+                    x > width * 0.65f -> {
+                        seekRelative(10_000L)
+                        showSeekFeedback("⏩ 快进 10 秒")
+                    }
+                    else -> togglePlay()
+                }
+                return true
+            }
+
+            override fun onLongPress(e: MotionEvent) {
+                if (locked) return
+                if (player?.isPlaying == true) {
+                    view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
+                    startLongPressSpeed()
+                }
+            }
+        })
+
+        view.setOnTouchListener { _, event ->
+            gestureDetector.onTouchEvent(event)
+            if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
+                if (speedBeforeLongPress != null) {
+                    stopLongPressSpeed()
+                }
+            }
+            true
+        }
+    }
+
+    private fun startLongPressSpeed() {
+        if (speedBeforeLongPress != null) return
+        val exo = player ?: return
+        speedBeforeLongPress = currentSpeed
+        val targetSpeed = longPressSpeed
+        exo.setPlaybackSpeed(targetSpeed)
+        fastForwardBadge.text = "▶▶ ${trimSpeed(targetSpeed)}x 快速播放中"
+        fastForwardBadge.visibility = View.VISIBLE
+    }
+
+    private fun stopLongPressSpeed() {
+        val prev = speedBeforeLongPress ?: return
+        speedBeforeLongPress = null
+        player?.setPlaybackSpeed(prev)
+        fastForwardBadge.visibility = View.GONE
+    }
+
+    private fun seekRelative(deltaMs: Long) {
+        val exo = player ?: return
+        val duration = currentDuration()
+        val current = exo.currentPosition
+        val target = (current + deltaMs).coerceIn(0L, if (duration > 0) duration else Long.MAX_VALUE)
+        exo.seekTo(target)
+        updateProgressUi()
+    }
+
+    private val hideSeekFeedback = Runnable {
+        seekFeedbackBadge.visibility = View.GONE
+    }
+
+    private fun showSeekFeedback(text: String) {
+        seekFeedbackBadge.text = text
+        seekFeedbackBadge.visibility = View.VISIBLE
+        main.removeCallbacks(hideSeekFeedback)
+        main.postDelayed(hideSeekFeedback, 800L)
+    }
+
+    private fun iconButton(
+        @DrawableRes resId: Int,
+        contentDesc: String,
+        sizeDp: Int,
+        iconPaddingDp: Int,
+        action: () -> Unit,
+    ): ImageView =
+        ImageView(this).apply {
+            setImageResource(resId)
+            contentDescription = contentDesc
+            scaleType = ImageView.ScaleType.FIT_CENTER
+            setPadding(iconPaddingDp, iconPaddingDp, iconPaddingDp, iconPaddingDp)
+            isFocusable = true
+            isClickable = true
+            val outValue = android.util.TypedValue()
+            if (context.theme.resolveAttribute(android.R.attr.selectableItemBackgroundBorderless, outValue, true)) {
+                setBackgroundResource(outValue.resourceId)
+            }
+            layoutParams = LinearLayout.LayoutParams(sizeDp, sizeDp).apply {
+                leftMargin = dp(2)
+                rightMargin = dp(2)
+            }
+            setOnClickListener { action() }
+        }
+
     private fun pillButton(label: String, size: Float, action: () -> Unit): TextView =
         TextView(this).apply {
             text = label
@@ -425,30 +627,17 @@ class PlayerActivity : AppCompatActivity() {
             textSize = size
             gravity = Gravity.CENTER
             background = rounded(0x33FFFFFF, 999f)
-            setPadding(dp(14), dp(7), dp(14), dp(7))
+            setPadding(dp(12), dp(6), dp(12), dp(6))
             isFocusable = true
             isClickable = true
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(32),
+            ).apply {
+                leftMargin = dp(4)
+                rightMargin = dp(4)
+            }
             setOnClickListener { action() }
-        }
-
-    private fun actionButton(label: String, size: Float, width: Int, action: () -> Unit): TextView =
-        TextView(this).apply {
-            text = label
-            setTextColor(Color.WHITE)
-            textSize = size
-            gravity = Gravity.CENTER
-            background = rounded(0x33FFFFFF, 10f)
-            setPadding(dp(6), dp(8), dp(6), dp(8))
-            isFocusable = true
-            isClickable = true
-            layoutParams = rowParams(width, dp(34))
-            setOnClickListener { action() }
-        }
-
-    private fun rowParams(width: Int, height: Int): LinearLayout.LayoutParams =
-        LinearLayout.LayoutParams(width, height).apply {
-            leftMargin = dp(3)
-            rightMargin = dp(3)
         }
 
     private fun onSurfaceTap() {
@@ -487,13 +676,13 @@ class PlayerActivity : AppCompatActivity() {
     private fun toggleLock() {
         locked = !locked
         if (locked) {
-            lockButton.text = getString(R.string.player_unlock)
+            lockButton.setImageResource(R.drawable.ic_lock)
             lockButton.contentDescription = getString(R.string.player_unlock_hint)
             controls.visibility = View.GONE
             lockButton.visibility = View.VISIBLE
             toast(getString(R.string.player_locked))
         } else {
-            lockButton.text = getString(R.string.player_lock)
+            lockButton.setImageResource(R.drawable.ic_unlock)
             lockButton.contentDescription = getString(R.string.player_lock_hint)
             setControlsVisible(true)
             toast(getString(R.string.player_unlocked))
@@ -507,6 +696,7 @@ class PlayerActivity : AppCompatActivity() {
             Entry(getString(R.string.player_menu_subtitle)) { showSubtitleMenu() },
             Entry(getString(R.string.player_menu_audio)) { showAudioMenu() },
             Entry(getString(R.string.player_menu_speed)) { showSpeedMenu() },
+            Entry(getString(R.string.player_long_press_speed_title)) { showLongPressSpeedSettings() },
         )
         if (info?.nextItemId != null) {
             val suffix = info?.nextTitle?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
@@ -610,12 +800,38 @@ class PlayerActivity : AppCompatActivity() {
         val speeds = floatArrayOf(0.5f, 0.75f, 1f, 1.25f, 1.5f, 2f, 3f)
         val labels = speeds.map { speed ->
             if (speed == 1f) "1.0x（正常）" else "${trimSpeed(speed)}x"
-        }.toTypedArray()
+        }.toMutableList()
+        labels.add("⚙️ 长按倍速设置（当前：${trimSpeed(longPressSpeed)}x）")
+
         val checked = speeds.indexOfFirst { it == currentSpeed }.coerceAtLeast(0)
         AlertDialog.Builder(this)
             .setTitle(R.string.player_menu_speed)
+            .setSingleChoiceItems(labels.toTypedArray(), checked) { dialog, which ->
+                if (which < speeds.size) {
+                    applySpeed(speeds[which])
+                } else {
+                    showLongPressSpeedSettings()
+                }
+                dialog.dismiss()
+            }
+            .setNegativeButton(android.R.string.cancel, null)
+            .show()
+    }
+
+    private fun showLongPressSpeedSettings() {
+        val speeds = floatArrayOf(1.5f, 2.0f, 2.5f, 3.0f)
+        val labels = arrayOf("1.5x", "2.0x（默认）", "2.5x", "3.0x")
+        val checked = speeds.indexOfFirst { it == longPressSpeed }.coerceAtLeast(1)
+        AlertDialog.Builder(this)
+            .setTitle(R.string.player_long_press_speed_title)
             .setSingleChoiceItems(labels, checked) { dialog, which ->
-                applySpeed(speeds[which])
+                val selected = speeds[which]
+                longPressSpeed = selected
+                getSharedPreferences("player_prefs", MODE_PRIVATE)
+                    .edit()
+                    .putFloat("long_press_speed", selected)
+                    .apply()
+                toast(getString(R.string.player_speed_long_press_set, "${trimSpeed(selected)}x"))
                 dialog.dismiss()
             }
             .setNegativeButton(android.R.string.cancel, null)
@@ -697,14 +913,19 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun playItem(playInfo: PlayInfo, startMs: Long) {
+    private fun playItem(playInfo: PlayInfo, startMs: Long, attempt: Int = 0) {
+        playbackAttempt = attempt
         info = playInfo
         currentItemId = playInfo.itemId
         advancing = false
         titleView.text = playInfo.title
         loadingView.visibility = View.GONE
+        currentPlayUri = Uri.parse(playInfo.playUrl)
+        if (attempt == 0) {
+            resolvedMediaUri = null
+        }
 
-        val exo = ensurePlayer(playInfo)
+        val exo = ensurePlayer(playInfo, attempt)
         val subtitles = playInfo.subtitles.mapIndexed { index, subtitle ->
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitle.url))
                 .setMimeType(subtitle.mime)
@@ -728,36 +949,45 @@ class PlayerActivity : AppCompatActivity() {
         setControlsVisible(true)
     }
 
-    private fun ensurePlayer(playInfo: PlayInfo): ExoPlayer {
-        val headersKey = playInfo.headers.entries
+    private fun ensurePlayer(playInfo: PlayInfo, attempt: Int): ExoPlayer {
+        val headers = playInfo.headers.toMutableMap()
+        headers.putIfAbsent("Accept-Encoding", "identity")
+        val headersKey = headers.entries
             .sortedBy { it.key.lowercase() }
             .joinToString("|") { "${it.key.lowercase()}=${it.value}" }
         val existing = player
-        if (existing != null && playerHeadersKey == headersKey) return existing
+        if (existing != null && playerHeadersKey == headersKey && attempt == 0 && !existing.isReleased) return existing
         if (existing != null) {
-            // 不同媒体库的 UA/Referer 不同：换源时必须重建播放器，否则请求头还是上一集的
+            // 不同媒体库的 UA 不同：换源时必须重建播放器，否则请求头还是上一集的
             runCatching { existing.release() }
             player = null
             playerView.player = null
         }
-        val client = OkHttpClient.Builder()
+        val clientBuilder = OkHttpClient.Builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(30, TimeUnit.SECONDS)
             .followRedirects(true)
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
+            .protocols(listOf(Protocol.HTTP_1_1))
             .addInterceptor { chain ->
                 val request = chain.request()
                 Log.d(
                     TAG,
-                    "http ${request.method} ${request.url.host}${request.url.encodedPath.takeLast(28)}",
+                    "http ${request.method} " +
+                        "${request.url.host}${request.url.encodedPath.takeLast(28)} " +
+                        "UA=${request.header("User-Agent")} " +
+                        "Range=${request.header("Range")}",
                 )
                 try {
                     val response = chain.proceed(request)
                     Log.d(
                         TAG,
-                        "http ${response.code} ${response.header("Content-Type")} " +
-                            "${response.header("Content-Length")} ${request.url.host}",
+                        "http ${response.code} " +
+                            "${response.header("Content-Type")} " +
+                            "len=${response.header("Content-Length")} " +
+                            "range=${response.header("Content-Range")} " +
+                            "loc=${response.header("Location")?.let { runCatching { Uri.parse(it).host }.getOrNull() }}",
                     )
                     response
                 } catch (error: Exception) {
@@ -765,11 +995,24 @@ class PlayerActivity : AppCompatActivity() {
                     throw error
                 }
             }
-            .build()
-        val http = OkHttpDataSource.Factory(client)
-            .setDefaultRequestProperties(playInfo.headers)
+        val httpFactory = OkHttpDataSource.Factory(clientBuilder.build())
+            .setDefaultRequestProperties(headers)
+        val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
+        if (!ua.isNullOrBlank()) {
+            httpFactory.setUserAgent(ua)
+        }
+        val resolvingFactory = RedirectResolvingDataSourceFactory(
+            upstreamFactory = httpFactory,
+            getOriginalVideoUri = { currentPlayUri },
+            getRedirectUri = { resolvedMediaUri },
+            onRedirectUri = { uri ->
+                Log.d(TAG, "cached 302 stream direct url: ${uri.host}")
+                resolvedMediaUri = uri
+            },
+        )
+        val defaultDataSourceFactory = DefaultDataSource.Factory(this, resolvingFactory)
         val exo = ExoPlayer.Builder(this)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(http))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(defaultDataSourceFactory))
             .setRenderersFactory(
                 DefaultRenderersFactory(this).setEnableDecoderFallback(true),
             )
@@ -780,6 +1023,59 @@ class PlayerActivity : AppCompatActivity() {
         playerHeadersKey = headersKey
         playerView.player = exo
         return exo
+    }
+
+    private class RedirectResolvingDataSource(
+        private val upstream: DataSource,
+        private val originalVideoUri: Uri?,
+        private val getRedirectUri: () -> Uri?,
+        private val onRedirectUri: (Uri) -> Unit,
+    ) : DataSource {
+        override fun addTransferListener(transferListener: TransferListener) {
+            upstream.addTransferListener(transferListener)
+        }
+
+        override fun open(dataSpec: DataSpec): Long {
+            val redirectUri = getRedirectUri()
+            val effectiveSpec = if (redirectUri != null && originalVideoUri != null && dataSpec.uri == originalVideoUri) {
+                dataSpec.buildUpon().setUri(redirectUri).build()
+            } else {
+                dataSpec
+            }
+            val length = upstream.open(effectiveSpec)
+            val resolved = upstream.uri
+            if (resolved != null && originalVideoUri != null && dataSpec.uri == originalVideoUri && resolved != originalVideoUri) {
+                onRedirectUri(resolved)
+            }
+            return length
+        }
+
+        override fun read(buffer: ByteArray, offset: Int, length: Int): Int =
+            upstream.read(buffer, offset, length)
+
+        override fun getUri(): Uri? = upstream.uri ?: getRedirectUri()
+
+        override fun getResponseHeaders(): Map<String, List<String>> =
+            upstream.responseHeaders
+
+        override fun close() {
+            upstream.close()
+        }
+    }
+
+    private class RedirectResolvingDataSourceFactory(
+        private val upstreamFactory: DataSource.Factory,
+        private val getOriginalVideoUri: () -> Uri?,
+        private val getRedirectUri: () -> Uri?,
+        private val onRedirectUri: (Uri) -> Unit,
+    ) : DataSource.Factory {
+        override fun createDataSource(): DataSource =
+            RedirectResolvingDataSource(
+                upstream = upstreamFactory.createDataSource(),
+                originalVideoUri = getOriginalVideoUri(),
+                getRedirectUri = getRedirectUri,
+                onRedirectUri = onRedirectUri,
+            )
     }
 
     private fun startHeartbeat() {
@@ -903,8 +1199,12 @@ class PlayerActivity : AppCompatActivity() {
             }
             timeView.text = "${formatTime(exo.currentPosition)} / ${formatTime(duration)}"
         }
-        playPauseButton.text =
-            if (exo.isPlaying) getString(R.string.player_pause) else getString(R.string.player_play)
+        val isPlaying = exo.isPlaying
+        playPauseButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        playPauseButton.contentDescription =
+            if (isPlaying) getString(R.string.player_pause) else getString(R.string.player_play)
+        centerPlayButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+        centerPlayButton.contentDescription = playPauseButton.contentDescription
         updateEpisodeButtons()
     }
 
@@ -942,10 +1242,11 @@ class PlayerActivity : AppCompatActivity() {
             } else {
                 android.content.pm.ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
             }
+            fullscreenButton.setImageResource(R.drawable.ic_fullscreen_exit)
         } else {
             enterWindowedMode()
         }
-        fullscreenButton.text = fullscreenLabel()
+        fullscreenButton.contentDescription = fullscreenLabel()
         setControlsVisible(true)
     }
 
@@ -959,7 +1260,8 @@ class PlayerActivity : AppCompatActivity() {
         WindowCompat.setDecorFitsSystemWindows(window, true)
         showSystemBars()
         if (this::fullscreenButton.isInitialized) {
-            fullscreenButton.text = fullscreenLabel()
+            fullscreenButton.setImageResource(R.drawable.ic_fullscreen)
+            fullscreenButton.contentDescription = fullscreenLabel()
         }
         requestedOrientation =
             android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED

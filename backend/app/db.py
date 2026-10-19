@@ -60,6 +60,7 @@ INDEXES = [
 # 新增字段时在这里登记即可，启动时按 PRAGMA 结果幂等补齐。
 COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "library": [("play_headers", "TEXT")],
+    "play_progress": [("dismissed", "BOOLEAN DEFAULT 0")],
 }
 
 

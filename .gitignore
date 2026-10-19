@@ -2,8 +2,7 @@
 # StrmAction
 #
 # 原则：不提交依赖、构建产物、运行时数据、密钥与本地环境配置。
-# 例外：companion/strmaction-companion-v1.apk 是已签名交付物，保留在仓库；
-#       它的构建目录与签名 keystore 仍然不提交。
+# 不提交任何 apk 构建产物或二进制包。
 # ---------------------------------------------------------------------------
 
 # --- Python ----------------------------------------------------------------
@@ -67,16 +66,24 @@ tmp_*
 # --- Android / Gradle ------------------------------------------------------
 .gradle/
 .kotlin/
+companion/.gradle/
 companion/captures/
+companion/gradle/wrapper/gradle-wrapper.jar
+companion/gradlew
+companion/gradlew.bat
 .cxx/
 .externalNativeBuild/
 local.properties
 *.jks
 *.keystore
+*.apk
+*.aab
+*.idsig
 *.apk.idsig
 
 # 其余 app/build 下的 APK/AAB 均由上面的 build/ 规则忽略
 companion/**/build/
+build/
 
 # --- IDE / 操作系统 --------------------------------------------------------
 .idea/

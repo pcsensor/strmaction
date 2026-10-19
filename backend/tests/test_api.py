@@ -118,7 +118,20 @@ def test_full_flow():
         series_detail = client.get(f"/api/items/{series['id']}").json()
         assert series_detail["seasons"][0]["episode_count"] == 2
         episode_id = series_detail["seasons"][0]["episodes"][0]["id"]
+        episode2_id = series_detail["seasons"][0]["episodes"][1]["id"]
         assert series_detail["item"]["play_target_id"] == episode_id
+
+        # 剧集详情页：播放目标必须是当前这一集，而不是整部剧的第一集
+        episode2_detail = client.get(f"/api/items/{episode2_id}").json()
+        assert episode2_detail["item"]["play_target_id"] == episode2_id
+        assert episode2_detail["prev_episode_id"] == episode_id
+        assert episode2_detail["next_episode_id"] is None
+
+        # 季详情页：播放目标应为该季第一集
+        season_detail = client.get(
+            f"/api/items/{series_detail['seasons'][0]['id']}"
+        ).json()
+        assert season_detail["item"]["play_target_id"] == episode_id
 
         # 首页 / 搜索
         home = client.get("/api/home").json()
@@ -307,6 +320,7 @@ def test_play_token_headers_and_subtitles():
         assert play.status_code == 200, play.text
         data = play.json()
         assert data["headers"]["User-Agent"] == "pan.baidu.com"
+        assert "Referer" not in data["headers"]
         assert data["headers_hint"].startswith("User-Agent: pan.baidu.com")
         assert data["play_token"].startswith("pt_")
         assert data["play_token_expires_at"]
@@ -397,3 +411,57 @@ def test_play_token_headers_and_subtitles():
         after = client.post(f"/api/play/{series['id']}", json={}).json()
         assert after["item_id"] == other_id
         assert after["next_item_id"] is None
+
+
+def test_dismiss_continue_watching():
+    """从「继续观看」移除后首页不再出现，但媒体库及详情中仍展示播放进度。"""
+    app = create_app()
+    with TestClient(app) as client:
+        client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        libraries = client.get("/api/libraries").json()["libraries"]
+        tv = next(lib for lib in libraries if lib["type"] == "tv")
+        items = client.get("/api/items", params={"library_id": tv["id"]}).json()["items"]
+        series = next(i for i in items if i["title"] == "三体")
+        detail = client.get(f"/api/items/{series['id']}").json()
+        ep0 = detail["seasons"][0]["episodes"][0]
+
+        # 1. 产生播放进度（在看 30 秒 / 120 秒）
+        progress_res = client.post(
+            f"/api/items/{ep0['id']}/progress",
+            json={"position_ms": 30000, "duration_ms": 120000},
+        )
+        assert progress_res.status_code == 200
+
+        # 2. 首页「继续观看」中应存在三体
+        home1 = client.get("/api/home").json()
+        continue_ids = [c["continue_item_id"] for c in home1["continue"]]
+        assert ep0["id"] in continue_ids
+
+        # 3. 从继续观看中移除（传 series ID 或 episode ID 均可）
+        dismiss = client.delete(f"/api/items/{series['id']}/continue")
+        assert dismiss.status_code == 200
+
+        # 4. 再次获取首页：继续观看中已被移除
+        home2 = client.get("/api/home").json()
+        continue_ids2 = [c["continue_item_id"] for c in home2["continue"]]
+        assert ep0["id"] not in continue_ids2
+
+        # 5. 但从媒体库/详情进入：进度依然保留且正确展示
+        detail_after = client.get(f"/api/items/{series['id']}").json()
+        ep0_after = detail_after["seasons"][0]["episodes"][0]
+        assert ep0_after["progress"] is not None
+        assert ep0_after["progress"]["position_ms"] == 30000
+        assert ep0_after["progress"]["duration_ms"] == 120000
+
+        # 6. 用户再次观看并上报新进度：自动重新出现在「继续观看」
+        client.post(
+            f"/api/items/{ep0['id']}/progress",
+            json={"position_ms": 45000, "duration_ms": 120000},
+        )
+        home3 = client.get("/api/home").json()
+        continue_ids3 = [c["continue_item_id"] for c in home3["continue"]]
+        assert ep0["id"] in continue_ids3
+

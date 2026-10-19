@@ -351,6 +351,16 @@ export function useUnlockItem() {
   })
 }
 
+export function useDismissContinue() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.delete<{ ok: boolean }>(`/api/items/${id}/continue`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.home })
+    },
+  })
+}
+
 export function useUploadPoster() {
   const queryClient = useQueryClient()
   return useMutation({

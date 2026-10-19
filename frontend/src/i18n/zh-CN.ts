@@ -69,6 +69,8 @@ export const zhCN = {
   home: {
     featured: '本周精选',
     continue: '继续观看',
+    dismissContinue: '从继续观看移除',
+    dismissedToast: '已从继续观看中移除',
     recent: '最近添加',
     topRated: '评分最高',
     libraries: '我的媒体库',

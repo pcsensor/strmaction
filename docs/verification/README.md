@@ -1,7 +1,7 @@
 # 修复验证记录（Android 模拟器）
 
 - 设备：Android 14（API 34）模拟器，Pixel 6，1080×2400
-- APK：`companion/strmaction-companion-v1.4.apk`（versionName 1.4 / versionCode 5）
+- APK：`companion/strmaction-companion-v1.6.apk`（versionName 1.6 / versionCode 7）
 - 测试媒体库类型故意设为 **电影**，目录结构为：
   `媒体库根/卿卿日常 2022/Season 01/S01E01-S01E40/S01E01.strm`，
   同库还有 `狂飙/S01E01.strm`（无 Season 目录）、`漫长的季节 2023/S01E01-S01E12/01.strm`、
@@ -23,3 +23,5 @@
 > 说明：本机到百度 CDN 的链路被限速（Chrome 也超时），因此无法在模拟器上直接验证云端直链的实时速度；
 > APK v1.4 已改用 Media3 `OkHttpDataSource`（自动跟随 AList → 百度 CDN 的 302、HTTP/2、TLS 重试）。
 > 云端媒体库结构已通过真实服务器的扫描结果确认：40 集全部归入「卿卿日常 / 第1季 / S01E01–S01E40」。
+
+

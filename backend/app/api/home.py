@@ -64,6 +64,7 @@ def home(engine=Depends(get_engine)):
             .where(
                 PlayProgress.finished == False,  # noqa: E712
                 PlayProgress.position_ms > 0,
+                PlayProgress.dismissed == False,  # noqa: E712
             )
             .order_by(PlayProgress.updated_at.desc())
             .limit(24)

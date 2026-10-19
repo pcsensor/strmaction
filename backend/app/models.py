@@ -112,6 +112,7 @@ class PlayProgress(SQLModel, table=True):
     position_ms: int = 0
     duration_ms: int | None = None
     finished: bool = False
+    dismissed: bool = False
     updated_at: str = Field(default_factory=utcnow)
     last_client_key: str | None = None
 
