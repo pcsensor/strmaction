@@ -18,6 +18,28 @@ from ..serializers import item_summary, ready_item_ids
 router = APIRouter(tags=["search"])
 
 
+def _genre_filter_clause(genre_term: str):
+    escaped = json.dumps(genre_term, ensure_ascii=True).strip('"')
+    if escaped != genre_term:
+        return or_(
+            Item.genres.like(f'%"{genre_term}"%'),
+            Item.genres.like(f'%"{escaped}"%'),
+        )
+    return Item.genres.like(f'%"{genre_term}"%')
+
+
+def _item_has_genre(item: Item, genre_term: str) -> bool:
+    if not item.genres:
+        return False
+    try:
+        val = json.loads(item.genres)
+        if isinstance(val, list):
+            return genre_term in val
+    except Exception:
+        pass
+    return f'"{genre_term}"' in item.genres
+
+
 @router.get("/search")
 def search(
     q: str = Query("", min_length=0, max_length=100),
@@ -28,6 +50,7 @@ def search(
 ):
     """v0.9: 全库搜索，按用户可访问库过滤。"""
     term = (q or "").strip()
+    genre_term = (genre or "").strip() or None
 
     with Session(engine) as session:
         # 获取用户可访问的库
@@ -44,41 +67,47 @@ def search(
                 return {"q": term, "items": [], "total": 0, "genres": []}
             base_query = base_query.where(Item.library_id.in_(accessible_ids))
 
+        ready = ready_item_ids(session)
+
         if not term:
-            ready = ready_item_ids(session)
+            query = base_query.where(Item.kind.in_(["movie", "series"]))
+            if genre_term:
+                query = query.where(_genre_filter_clause(genre_term))
             rows = session.exec(
-                base_query
-                .where(Item.kind.in_(["movie", "series"]))
-                .order_by(Item.rating.desc())
-                .limit(limit)
+                query.order_by(Item.rating.desc(), Item.created_at.desc())
             ).all()
             rows = [r for r in rows if r.id in ready]
+            if genre_term:
+                rows = [r for r in rows if _item_has_genre(r, genre_term)]
+            total = len(rows)
+            results = rows[:limit]
             genres = _genre_counts(session, ready, accessible_ids)
             return {
                 "q": "",
-                "items": [item_summary(r) for r in rows],
-                "total": len(rows),
+                "items": [item_summary(r) for r in results],
+                "total": total,
                 "genres": genres,
             }
 
         pattern = f"%{term}%"
+        query = base_query.where(
+            Item.kind.in_(["movie", "series", "video"]),
+            or_(
+                Item.title.like(pattern),
+                Item.original_title.like(pattern),
+                Item.alt_titles.like(pattern),
+                Item.cast.like(pattern),
+            ),
+        )
+        if genre_term:
+            query = query.where(_genre_filter_clause(genre_term))
+
         rows = session.exec(
-            base_query
-            .where(
-                Item.kind.in_(["movie", "series", "video"]),
-                or_(
-                    Item.title.like(pattern),
-                    Item.original_title.like(pattern),
-                    Item.alt_titles.like(pattern),
-                    Item.cast.like(pattern),
-                ),
-            )
-            .order_by(Item.rating.desc(), Item.created_at.desc())
+            query.order_by(Item.rating.desc(), Item.created_at.desc())
         ).all()
-        ready = ready_item_ids(session)
         rows = [r for r in rows if r.id in ready]
-        if genre:
-            rows = [r for r in rows if f'"{genre}"' in (r.genres or "")]
+        if genre_term:
+            rows = [r for r in rows if _item_has_genre(r, genre_term)]
         total = len(rows)
         results = rows[:limit]
         lowered = term.lower()
