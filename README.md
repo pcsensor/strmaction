@@ -42,13 +42,19 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
 | 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
 | 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定）、外部 mpv 兜底、桌面 mpv spawn + JSON IPC、浏览器 `intent://`、复制链接 |
-| 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发、支持从「继续观看」移除（保留进度与断点） |
-| 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看（支持快捷移除且保留媒体库进度）、分类横滑、详情、选集、搜索、设置、任务、待修正列表、首次向导 |
+| 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发、支持从「继续观看」移除（保留进度与断点）、多用户隔离 |
+| 用户与权限 | 多用户体系（管理员 + 普通用户）、细粒度媒体库访问授权、播放进度与已看记录多用户完全隔离、用户管理与密码重置后台（`/users`） |
+| 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看（支持快捷移除且保留媒体库进度）、分类横滑、详情、选集、搜索、用户管理、设置、任务、待修正列表、首次向导 |
 | TV | 伴侣 App 手机/电视通用、`?tv=1` 10-foot 布局、方向键空间导航 + 滚屏兜底、48px 安全区、焦点光晕 |
 | 运维 | 单容器 Docker、配置优先级 DB > yaml > 默认、导出/导入、任务日志、Provider 连通性测试 |
 
 ## 核心特性与架构设计
 
+- **多用户与权限隔离体系（v0.9）**：
+  - **角色与权限**：清晰划分为管理员（admin）与普通用户（user）；管理员拥有系统全权（库管理、任务调度、系统配置与用户管理），普通用户仅能浏览与播放被显式授权的媒体库。
+  - **全局内容隔离**：首页 Hero 轮播、继续观看、最近添加、分类横滑、搜索与条目详情全局按用户媒体库授权范围严格过滤，彻底杜绝越权访问。
+  - **播放进度与已看独立**：每个用户的播放进度、断点与已看状态完全独立，换设备换账号互不干扰。
+  - **后台与个人管理**：内置 `/users` 用户管理控制台，管理员可直观增删改查用户、重置密码、勾选媒体库分配；支持各用户自主修改个人登录密码。
 - **播放**：伴侣 App 内置 Media3 成为默认路径；5 秒进度心跳、`play_token` 回传、播完无缝连播，
   外部 mpv 降级为兜底；播放请求头按媒体库下发。
 - **播放控件主流化与长按倍速**：全面重构伴侣 App 播放器 UI，换用现代主流矢量图标；新增屏幕中心
@@ -423,7 +429,7 @@ python scripts/seed_demo.py --base-url http://127.0.0.1:8080
 ## 安全
 
 1. **播放 URL 视为凭证**：所有返回 URL 的接口鉴权；日志打码；不写入任务日志。
-2. 单管理员，密码 argon2；登录失败 5 次锁定 5 分钟；HttpOnly Cookie。
+2. **多用户与权限隔离**：密码使用 argon2 哈希；基于会话签名 Cookie 与服务端状态追踪；登录失败 5 次自动锁定 5 分钟；普通用户受媒体库授权范围严格隔离。
 3. 路径穿越防护：文件访问基于 `library.root_path` 的 realpath 校验。
 4. 默认只在内网使用。公网暴露前请加 HTTPS 反代 + 强密码。
 5. 本产品使用 TMDB API，但未经 TMDB 认可或认证。图片仅在本地缓存用于展示。
@@ -434,7 +440,6 @@ python scripts/seed_demo.py --base-url http://127.0.0.1:8080
 - ❌ 视频流中转 / 反代 / 缓存
 - ❌ 网盘登录 / Alist 替代
 - ❌ 依赖 Jellyfin / Emby / Plex
-- ❌ 多用户 / 权限体系
 - ❌ 内嵌 `<video>` 播放器
 - ❌ 多语言 UI（v1 仅中文，文案集中在 `src/i18n/zh-CN.ts`）
 - ❌ iOS / tvOS 伴侣 App
@@ -458,7 +463,7 @@ backend/
 ├─ app/
 │  ├─ main.py            FastAPI 入口 + 静态托管 + 鉴权中间件
 │  ├─ config.py / config_store.py / db.py / models.py / schemas.py
-│  ├─ api/               auth libraries items search home play tasks settings system
+│  ├─ api/               auth libraries items search home play tasks settings system users
 │  ├─ scanner/           walker（遍历 + .strm 读取）/ sync（增量入库）
 │  ├─ parser/            rules（模板 + 中文规则）/ guess（guessit 兜底）
 │  ├─ scraper/           base / registry / tmdb / tvdb / nfo / matcher / merge / service / cache
@@ -469,8 +474,8 @@ backend/
 └─ tests/
 
 frontend/src/
-├─ pages/                Home Detail Search Settings Tasks Fix Login Setup
-├─ components/           HeroCarousel PosterCard Row EpisodeCard settings/ Modal ...
+├─ pages/                Home Detail Search Settings Tasks Fix Login Setup Users
+├─ components/           HeroCarousel PosterCard Row EpisodeCard settings/ UserEditDialog Modal ...
 ├─ api/                  client.ts types.ts hooks.ts
 ├─ i18n/zh-CN.ts         全部界面文案
 └─ hooks/                useStartPlayback useTVMode（空间导航）
@@ -488,6 +493,7 @@ Dockerfile / docker-compose.yml / docker-compose.cloud.yml / config.example.yaml
 | 模块 | 状态 |
 |---|---|
 | 服务骨架 + 鉴权 + `/api/health` | ✅ 自动化测试覆盖 |
+| 多用户体系与权限隔离（管理员/普通用户/分库授权/进度隔离/用户管理UI） | ✅ 自动化测试覆盖，前端构建通过 |
 | 目录扫描 + 文件解析（增量/多版本/规范支持） | ✅ 解析/扫描单测覆盖 |
 | 元数据刮削（双源 + @register_provider + 匹配 + 修正 + 刷新 + 图片透明WebP + NFO） | ✅ 映射/打分/跨源/锁定测试覆盖；真实 Key 需自行联调 |
 | 前端浏览（轮播横滑/继续观看移除管理/详情/选集/搜索/骨架屏） | ✅ 截图验证 |
