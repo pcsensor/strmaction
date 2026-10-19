@@ -217,12 +217,14 @@ strmaction/
 │  │  │  └─ types.py             # Parsed 数据类
 │  │  ├─ scraper/
 │  │  │  ├─ base.py              # MetadataProvider 接口 + CanonicalMeta
+│  │  │  ├─ registry.py          # Provider 插件注册中心（@register_provider 开放扩展）
+│  │  │  ├─ service.py           # 刮削核心调度编排
 │  │  │  ├─ tmdb.py              # 附录 D.2
 │  │  │  ├─ tvdb.py              # 附录 D.3
 │  │  │  ├─ nfo.py               # 本地 .nfo（可选）
 │  │  │  ├─ matcher.py           # 归一化 + 打分（D.4）
 │  │  │  └─ merge.py             # 跨源补空（D.5.1）
-│  │  ├─ images.py               # 下载队列、转码、取色（D.7）
+│  │  ├─ images.py               # 下载队列、转码（保留RGBA透明）、取色（D.7）
 │  │  ├─ players/
 │  │  │  ├─ base.py
 │  │  │  ├─ web_intent.py
@@ -233,7 +235,11 @@ strmaction/
 ├─ frontend/
 │  ├─ src/
 │  │  ├─ pages/                  # Home / Detail / Search / Settings / Tasks
-│  │  ├─ components/             # HeroCarousel / PosterCard / EpisodeList ...
+│  │  ├─ components/
+│  │  │  ├─ settings/            # 设置模块化子组件（Library / Scraper / Player / System）
+│  │  │  ├─ HeroCarousel.tsx
+│  │  │  ├─ PosterCard.tsx
+│  │  │  └─ ...
 │  │  ├─ i18n/zh-CN.ts           # 全部界面文案（唯一来源，不许散落组件）
 │  │  ├─ api/                    # client.ts / hooks.ts
 │  │  ├─ store/
@@ -244,7 +250,11 @@ strmaction/
 │     ├─ MainActivity.kt         # WebView 壳 + JS 桥
 │     ├─ JsBridge.kt
 │     ├─ PlayerActivity.kt       # Media3 内置播放器
-│     ├─ PlayerController.kt     # 心跳 / 续播 / 连播
+│     ├─ player/                 # 播放器解耦模块
+│     │  ├─ PlayerDrawer.kt      # 40% 抽屉交互与集数渲染
+│     │  ├─ PlayerTrackHelper.kt # 音轨 / 字幕选择
+│     │  ├─ PlayerSpeedHelper.kt # 播放倍速与长按倍速菜单
+│     │  └─ PlayerUiHelper.kt    # 样式与时间格式化
 │     ├─ ProgressReporter.kt     # play_token 进度上报
 │     └─ MpvFallback.kt          # 外部 mpv 兜底
 ├─ Dockerfile
