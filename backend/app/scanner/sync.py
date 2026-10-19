@@ -214,6 +214,7 @@ class ScannerService:
                         old.missing = False
                         old.missing_count = 0
                         stats.restored += 1
+                        self._restore_item_hierarchy(session, old.item_id)
                     stats.skipped += 1
                     continue
 
@@ -287,6 +288,7 @@ class ScannerService:
                 media.missing = False
                 media.missing_count = 0
                 media.invalid = False
+                self._restore_item_hierarchy(session, media.item_id)
             except Exception as exc:  # pragma: no cover - 单文件失败不阻塞扫描
                 stats.invalid_examples.append(f"{entry.rel_path} ({exc})")
                 continue
@@ -296,7 +298,7 @@ class ScannerService:
             if media.abs_path in seen:
                 continue
             if media.missing:
-                media.missing_count = (media.missing_count or 0)
+                media.missing_count = (media.missing_count or 0) + 1
             else:
                 media.missing = True
                 media.missing_count = (media.missing_count or 0) + 1
@@ -348,6 +350,25 @@ class ScannerService:
         if progress_cb:
             progress_cb({"phase": "done", "stats": result})
         return result
+
+    def _restore_item_hierarchy(self, session: Session, item_id: int | None) -> None:
+        """当媒体文件重新出现时，解除条目及其祖先节点的软删除状态。"""
+        if not item_id:
+            return
+        item = session.get(Item, item_id)
+        if not item:
+            return
+        if item.deleted_at:
+            item.deleted_at = None
+            item.updated_at = utcnow()
+            session.add(item)
+        parent_node = session.get(Item, item.parent_id) if item.parent_id else None
+        while parent_node:
+            if parent_node.deleted_at:
+                parent_node.deleted_at = None
+                parent_node.updated_at = utcnow()
+                session.add(parent_node)
+            parent_node = session.get(Item, parent_node.parent_id) if parent_node.parent_id else None
 
     # -- 条目解析到结构 ---------------------------------------------------
     def _compatible_item(self, item: Item, parsed: Parsed) -> bool:

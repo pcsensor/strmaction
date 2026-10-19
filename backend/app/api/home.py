@@ -268,10 +268,11 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
         )
         if accessible_ids is not None:
             episodes_query = episodes_query.where(Item.library_id.in_(accessible_ids))
+        episodes_all = session.exec(episodes_query).all()
         stats = {
             "movies": sum(1 for i in playable if i.kind == "movie"),
             "series": sum(1 for i in playable if i.kind == "series"),
-            "episodes": len(session.exec(episodes_query).all()),
+            "episodes": sum(1 for i in episodes_all if i.id in ready),
             "videos": sum(1 for i in playable if i.kind == "video"),
         }
 

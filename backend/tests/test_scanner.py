@@ -19,6 +19,7 @@ from app.models import (
     Setting,
 )
 from app.scanner.sync import ScannerService
+from app.serializers import ready_item_ids
 
 
 def make_file(root: Path, rel: str, url: str = "https://example.com/video.m3u8") -> Path:
@@ -145,13 +146,47 @@ def test_missing_mark_and_move(env, tmp_path):
         assert media.missing is False
         assert len(session.exec(select(Item).where(Item.kind == "episode")).all()) == 1
 
-    # 删除文件 → missing=1
+    # 删除文件 → 第一次扫描：missing=True, missing_count=1，且立即从 ready_item_ids 中排除
     new_path.unlink()
     scanner.scan_library(lib_id)
     with Session(db.engine) as session:
         media = session.exec(select(MediaFile)).one()
         assert media.missing is True
         assert media.missing_count == 1
+        item = session.get(Item, item_id)
+        assert item.deleted_at is None
+        ready = ready_item_ids(session, lib_id)
+        assert item_id not in ready
+
+    # 第二次扫描：missing_count 递增至 2
+    scanner.scan_library(lib_id)
+    with Session(db.engine) as session:
+        media = session.exec(select(MediaFile)).one()
+        assert media.missing is True
+        assert media.missing_count == 2
+        item = session.get(Item, item_id)
+        assert item.deleted_at is None
+
+    # 第三次扫描：missing_count 递增至 3，触发软删除
+    scanner.scan_library(lib_id)
+    with Session(db.engine) as session:
+        media = session.exec(select(MediaFile)).one()
+        assert media.missing is True
+        assert media.missing_count == 3
+        item = session.get(Item, item_id)
+        assert item.deleted_at is not None
+
+    # 恢复文件 → 第四次扫描：清除 missing，清除 deleted_at，重新出现在 ready_item_ids 中
+    make_file(root, new_rel)
+    scanner.scan_library(lib_id)
+    with Session(db.engine) as session:
+        media = session.exec(select(MediaFile)).one()
+        assert media.missing is False
+        assert media.missing_count == 0
+        item = session.get(Item, item_id)
+        assert item.deleted_at is None
+        ready = ready_item_ids(session, lib_id)
+        assert item_id in ready
 
 
 def test_movie_library_with_tv_structure(env, tmp_path):
