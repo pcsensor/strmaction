@@ -60,6 +60,12 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
   海报上传；设置页「伴侣 App」可直接重开服务器配置。
 - **前端**：Hero 轮播支持手指横滑；TV 遥控方向键在没有可聚焦元素时整页滚动；详情页移动端
   背景高度收敛，首屏操作按钮更早出现。
+- **模块化架构与可维护性重构**：
+  - 后端刮削体系引入开放式的 `@register_provider` 插件注册中心，解耦核心调度与 Provider，支持第三方元数据源轻松扩展。
+  - 数据模型层安全封装 `locked_fields` 等字段的读写，消除各层手动 JSON 序列化样板。
+  - Web 前端 `SettingsPage` 拆解为 `Library` / `Scraper` / `Player` / `System` 独立领域组件。
+  - Android 伴侣端播放器解耦 40% 右侧抽屉 (`PlayerDrawer`)、音轨字幕 (`PlayerTrackHelper`) 与倍速管理 (`PlayerSpeedHelper`)。
+  - 修复后端图片处理误转 RGB 导致 Logo 出现黑框的问题，原生保留 WebP 8-bit Alpha 透明通道。
 - **后端**：`config.example.yaml` 与 v0.8 的 `player.*`（builtin / 心跳 / `play_token` /
   请求头 / mpv 包名）对齐。
 
