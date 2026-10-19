@@ -17,9 +17,10 @@ from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatc
 from sqlmodel import Session
 
 from .config_store import SettingsService
-from .models import PlayToken
+from .models import PlayToken, User
 from .models import Session as SessionRow
 from .models import utcnow
+from .schemas import CurrentUser
 
 SESSION_COOKIE = "st_sess"
 SESSION_TTL_DAYS = 30
@@ -65,24 +66,45 @@ class AuthService:
 
     # -- 密码 -------------------------------------------------------------
     def needs_setup(self) -> bool:
-        return not bool(self.settings.password_hash())
+        """v0.9: 检查是否有设置了有效密码的管理员用户存在。"""
+        with Session(self.engine) as db:
+            from sqlmodel import select, func
+            count = db.exec(
+                select(func.count(User.id)).where(
+                    User.role == "admin",
+                    User.password_hash != "",
+                )
+            ).first()
+            return (count or 0) == 0
 
     def hash_password(self, password: str) -> str:
         return self._hasher.hash(password)
 
-    def verify_password(self, password: str) -> bool:
-        stored = self.settings.password_hash()
-        if not stored:
+    def verify_password(self, password: str, password_hash: str) -> bool:
+        """v0.9: 验证密码与哈希。"""
+        if not password_hash:
             return False
-        if not stored.startswith("$argon2"):
+        if not password_hash.startswith("$argon2"):
             # 兼容 config.yaml 里填写明文密码的初始化方式
-            return hmac.compare_digest(stored, password)
+            return hmac.compare_digest(password_hash, password)
         try:
-            return self._hasher.verify(stored, password)
+            return self._hasher.verify(password_hash, password)
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             return False
 
+    def verify_user(self, username: str, password: str) -> User | None:
+        """v0.9: 验证用户名密码，返回用户对象。"""
+        with Session(self.engine) as db:
+            from sqlmodel import select
+            user = db.exec(select(User).where(User.username == username)).first()
+            if not user or not user.enabled:
+                return None
+            if not self.verify_password(password, user.password_hash):
+                return None
+            return user
+
     def set_password(self, password: str) -> None:
+        """遗留方法：v0.9 前设置管理员密码到 setting 表。"""
         self.settings.set_password_hash(self.hash_password(password))
 
     def check_password_strength(self, password: str) -> str | None:
@@ -121,24 +143,37 @@ class AuthService:
         digest = hmac.new(self._secret, payload.encode(), hashlib.sha256).digest()
         return _b64e(digest)
 
-    def create_session(self, username: str) -> tuple[str, datetime]:
+    def create_session(self, user: User) -> tuple[str, datetime]:
+        """v0.9: 创建会话，传入 User 对象。"""
         jti = secrets.token_urlsafe(24)
         expires = datetime.now(timezone.utc) + timedelta(days=SESSION_TTL_DAYS)
         with Session(self.engine) as session:
             session.add(
                 SessionRow(
                     jti=jti,
-                    username=username,
+                    user_id=user.id,
+                    username=user.username,
+                    role=user.role,
                     created_at=utcnow(),
                     expires_at=expires.isoformat(timespec="seconds"),
                 )
             )
             session.commit()
+
+            # 更新用户最后登录时间
+            db_user = session.get(User, user.id)
+            if db_user:
+                db_user.last_login_at = utcnow()
+                session.add(db_user)
+                session.commit()
+
         payload = _b64e(
             json.dumps(
                 {
                     "jti": jti,
-                    "u": username,
+                    "uid": user.id,
+                    "u": user.username,
+                    "r": user.role,
                     "exp": int(expires.timestamp()),
                 },
                 separators=(",", ":"),
@@ -146,7 +181,8 @@ class AuthService:
         )
         return f"{payload}.{self._sign(payload)}", expires
 
-    def validate_session(self, token: str | None) -> str | None:
+    def validate_session(self, token: str | None) -> CurrentUser | None:
+        """v0.9: 验证会话并返回 CurrentUser。"""
         if not token or "." not in token:
             return None
         payload, signature = token.rsplit(".", 1)
@@ -170,7 +206,18 @@ class AuthService:
                 return None
             if row_exp < datetime.now(timezone.utc):
                 return None
-            return row.username
+
+            # 检查用户是否仍然存在且启用
+            user = session.get(User, row.user_id)
+            if not user or not user.enabled:
+                return None
+
+            return CurrentUser(
+                id=user.id,
+                username=user.username,
+                role=user.role,
+                display_name=user.display_name,
+            )
 
     def revoke_session(self, token: str | None) -> None:
         if not token or "." not in token:
@@ -216,7 +263,8 @@ class AuthService:
             value = 12
         return min(max(value, 1), 72)
 
-    def create_play_token(self, item_id: int) -> tuple[str, str]:
+    def create_play_token(self, user_id: int, item_id: int) -> tuple[str, str]:
+        """v0.9: 创建播放凭证，绑定用户和条目。"""
         token = "pt_" + secrets.token_urlsafe(32)
         hours = self.play_token_ttl_hours()
         expires = datetime.now(timezone.utc) + timedelta(hours=hours)
@@ -224,6 +272,7 @@ class AuthService:
             session.add(
                 PlayToken(
                     token=token,
+                    user_id=user_id,
                     item_id=item_id,
                     created_at=utcnow(),
                     expires_at=expires.isoformat(timespec="seconds"),
@@ -252,3 +301,21 @@ class AuthService:
             if expires < datetime.now(timezone.utc):
                 return "expired"
             return "ok"
+
+    def get_user_from_play_token(self, token: str) -> CurrentUser | None:
+        """v0.9: 从 play_token 获取用户信息。"""
+        if not token or not token.startswith("pt_"):
+            return None
+        with Session(self.engine) as session:
+            row = session.get(PlayToken, token)
+            if row is None or row.revoked:
+                return None
+            user = session.get(User, row.user_id)
+            if not user or not user.enabled:
+                return None
+            return CurrentUser(
+                id=user.id,
+                username=user.username,
+                role=user.role,
+                display_name=user.display_name,
+            )

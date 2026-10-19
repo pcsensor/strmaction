@@ -226,8 +226,61 @@ export interface PlayResponse {
 export interface AuthState {
   needs_setup: boolean
   authenticated: boolean
-  username: string | null
+  user: CurrentUser | null
   version?: string
+}
+
+// v0.9 多用户体系
+export interface CurrentUser {
+  id: number
+  username: string
+  role: 'admin' | 'user'
+  display_name: string | null
+}
+
+export interface UserOut {
+  id: number
+  username: string
+  display_name: string | null
+  role: 'admin' | 'user'
+  enabled: boolean
+  library_count: number | null
+  last_login_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface UserDetail {
+  id: number
+  username: string
+  display_name: string | null
+  role: 'admin' | 'user'
+  enabled: boolean
+  libraries: Array<{
+    id: number
+    name: string
+    type: LibraryType
+    enabled: boolean
+  }>
+  last_login_at: string | null
+  created_at: string
+  updated_at: string
+  created_by: number | null
+}
+
+export interface UserCreateInput {
+  username: string
+  password: string
+  display_name?: string
+  role?: 'admin' | 'user'
+  library_ids?: number[]
+}
+
+export interface UserPatchInput {
+  password?: string
+  display_name?: string
+  enabled?: boolean
+  role?: 'admin' | 'user'
 }
 
 export interface ProviderConfig {

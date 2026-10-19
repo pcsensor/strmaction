@@ -1,17 +1,10 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { AlertTriangle, Clapperboard, LogOut, Search, Settings } from 'lucide-react'
+import { AlertTriangle, Clapperboard, LogOut, Search, Settings, Users } from 'lucide-react'
 import { useHome, useLogout } from '../api/hooks'
 import { useAuthState } from '../api/hooks'
 import { useScrollDirection } from '../hooks/useTVMode'
 import { t } from '../i18n/zh-CN'
-
-const links = [
-  { to: '/', label: t('nav.home'), end: true },
-  { to: '/search', label: t('nav.search') },
-  { to: '/tasks', label: t('nav.tasks') },
-  { to: '/settings', label: t('nav.settings') },
-]
 
 export function Logo({ compact = false }: { compact?: boolean }) {
   return (
@@ -38,6 +31,16 @@ export function TopBar() {
   const logout = useLogout()
   const auth = useAuthState()
   const needsAttention = home.data?.needs_attention ?? 0
+  const isAdmin = auth.data?.user?.role === 'admin'
+
+  // 动态生成导航链接
+  const links = [
+    { to: '/', label: t('nav.home'), end: true, visible: true },
+    { to: '/search', label: t('nav.search'), visible: true },
+    { to: '/users', label: '用户管理', visible: isAdmin },
+    { to: '/tasks', label: t('nav.tasks'), visible: isAdmin },
+    { to: '/settings', label: t('nav.settings'), visible: isAdmin },
+  ].filter((link) => link.visible)
 
   return (
     <header
@@ -107,7 +110,7 @@ export function TopBar() {
             onClick={() => logout.mutate()}
             className="btn-icon"
             aria-label={t('nav.logout')}
-            title={auth.data?.username ? `${auth.data.username} · ${t('nav.logout')}` : t('nav.logout')}
+            title={auth.data?.user?.username ? `${auth.data.user.username} · ${t('nav.logout')}` : t('nav.logout')}
           >
             <LogOut className="h-[18px] w-[18px]" />
           </button>
@@ -117,14 +120,17 @@ export function TopBar() {
   )
 }
 
-const mobileLinks = [
-  { to: '/', label: t('nav.home'), end: true, icon: Clapperboard },
-  { to: '/search', label: t('nav.search'), icon: Search },
-  { to: '/tasks', label: t('nav.tasks'), icon: AlertTriangle },
-  { to: '/settings', label: t('nav.settings'), icon: Settings },
-]
-
 export function BottomNav() {
+  const auth = useAuthState()
+  const isAdmin = auth.data?.user?.role === 'admin'
+
+  const mobileLinks = [
+    { to: '/', label: t('nav.home'), end: true, icon: Clapperboard },
+    { to: '/search', label: t('nav.search'), icon: Search },
+    isAdmin && { to: '/users', label: '用户', icon: Users },
+    isAdmin && { to: '/settings', label: t('nav.settings'), icon: Settings },
+  ].filter(Boolean) as Array<{ to: string; label: string; icon: any; end?: boolean }>
+
   return (
     <nav className="safe-bottom fixed inset-x-0 bottom-0 z-50 border-t border-white/8 bg-[#0a0c11]/95 backdrop-blur-xl md:hidden">
       <div className="mx-auto flex max-w-lg items-stretch justify-around px-2 py-1.5">

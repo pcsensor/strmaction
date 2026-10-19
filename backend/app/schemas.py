@@ -91,3 +91,55 @@ class MergeBody(BaseModel):
 class ImportBody(BaseModel):
     data: dict[str, Any]
     settings: bool = False
+
+
+# v0.9 多用户体系
+class UserCreate(BaseModel):
+    username: str = Field(min_length=3, max_length=50)
+    password: str = Field(min_length=8)
+    display_name: str | None = None
+    role: Literal["admin", "user"] = "user"
+    library_ids: list[int] = Field(default_factory=list)
+
+
+class UserPatch(BaseModel):
+    password: str | None = Field(default=None, min_length=8)
+    display_name: str | None = None
+    enabled: bool | None = None
+    role: Literal["admin", "user"] | None = None
+
+
+class UserLibrariesUpdate(BaseModel):
+    library_ids: list[int]
+
+
+class UserOut(BaseModel):
+    id: int
+    username: str
+    display_name: str | None
+    role: str
+    enabled: bool
+    library_count: int | None = None
+    last_login_at: str | None = None
+    created_at: str
+    updated_at: str
+
+
+class UserDetail(BaseModel):
+    id: int
+    username: str
+    display_name: str | None
+    role: str
+    enabled: bool
+    libraries: list[dict[str, Any]]
+    last_login_at: str | None = None
+    created_at: str
+    updated_at: str
+    created_by: int | None = None
+
+
+class CurrentUser(BaseModel):
+    id: int
+    username: str
+    role: str
+    display_name: str | None

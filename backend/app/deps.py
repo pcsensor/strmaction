@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from fastapi import Request
+from fastapi import Depends, Request
+from sqlmodel import Session, select
 
 from .config import ConfigManager
 from .config_store import SettingsService
@@ -10,6 +11,8 @@ from .db import Database
 from .errors import APIError
 from .images import ImageService
 from .jobs import SchedulerService, TaskManager
+from .models import User, UserLibraryAccess
+from .schemas import CurrentUser
 from .security import AuthService
 
 
@@ -69,21 +72,74 @@ def get_scheduler(request: Request) -> SchedulerService:
     return get_state(request).scheduler
 
 
-def current_user(request: Request) -> str | None:
+def current_user_legacy(request: Request) -> str | None:
+    """遗留方法：返回用户名。v0.9 后建议使用 get_current_user。"""
     return getattr(request.state, "user", None)
 
 
-def authorize_item_access(request: Request, item_id: int) -> None:
-    """Cookie 会话或 play_token 二选一；都不可用时返回 401/403（§12.7）。"""
-    if getattr(request.state, "user", None):
-        return
+def get_current_user(request: Request) -> CurrentUser:
+    """v0.9 多用户鉴权：从 session 获取当前用户信息。"""
+    state = get_state(request)
+    session_user = getattr(request.state, "session_user", None)
+
+    if not session_user:
+        raise APIError(401, "UNAUTHORIZED", "请先登录")
+
+    # session_user 是从 security.py 中间件设置的
+    return session_user
+
+
+def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """要求管理员权限。"""
+    if user.role != "admin":
+        raise APIError(403, "FORBIDDEN", "需要管理员权限")
+    return user
+
+
+def get_accessible_library_ids(user: CurrentUser, engine) -> list[int] | None:
+    """
+    获取用户可访问的媒体库 ID 列表。
+
+    返回：
+    - None: 管理员，可访问所有库
+    - list[int]: 普通用户授权的库 ID 列表
+    """
+    if user.role == "admin":
+        return None  # 管理员访问所有库
+
+    with Session(engine) as db:
+        access_rows = db.exec(
+            select(UserLibraryAccess.library_id).where(
+                UserLibraryAccess.user_id == user.id
+            )
+        ).all()
+        return list(access_rows)
+
+
+def authorize_item_access(request: Request, item_id: int) -> CurrentUser | None:
+    """
+    Cookie 会话或 play_token 二选一；都不可用时返回 401/403（§12.7）。
+
+    v0.9: 返回 CurrentUser 对象，用于后续权限检查。
+    """
+    # 优先使用 Cookie 会话
+    session_user = getattr(request.state, "session_user", None)
+    if session_user:
+        return session_user
+
+    # 降级使用 play_token（原生播放器）
     token = getattr(request.state, "play_token", None)
     if not token:
         raise APIError(401, "UNAUTHORIZED", "请先登录")
+
     state = request.app.state.app_state
     result = state.auth.validate_play_token(token, item_id)
+
     if result == "ok":
-        return
+        # 从 play_token 获取 user_id，构造 CurrentUser
+        token_user = state.auth.get_user_from_play_token(token)
+        return token_user
+
     if result == "expired":
         raise APIError(401, "PLAY_TOKEN_EXPIRED", "播放凭证已过期，请回到列表重新播放")
     if result == "mismatch":

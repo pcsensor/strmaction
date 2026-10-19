@@ -2,6 +2,7 @@
 
 v0.8：默认路径为伴侣 App 内置 Media3；服务端只负责下发 URL / 请求头 / play_token。
 进度回传支持 Cookie 与 `Authorization: Bearer <play_token>`（见 §12.7）。
+v0.9：支持多用户权限检查，play_token 绑定 user_id。
 """
 
 from __future__ import annotations
@@ -13,9 +14,10 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import FileResponse
 from sqlmodel import Session, select
 
-from ..deps import authorize_item_access, get_engine, get_settings
+from ..deps import authorize_item_access, get_engine, get_settings, get_current_user, get_accessible_library_ids
 from ..errors import APIError
 from ..models import Item, Library, MediaFile, PlayProgress
+from ..schemas import CurrentUser
 from ..players import (
     ClipboardAdapter,
     MpvIpcAdapter,
@@ -113,9 +115,9 @@ def _lang_from_label(name: str) -> str:
 
 
 def _next_unwatched(
-    session: Session, target: Item, series: Item | None
+    session: Session, target: Item, series: Item | None, user_id: int
 ) -> tuple[int | None, str | None, str | None]:
-    """下一集 → 跳过已看，避免连播到看过的一集（§12.10）。"""
+    """v0.9: 下一集 → 跳过已看，按 user_id 过滤。"""
     if not series or target.kind != "episode":
         return None, None, None
     sequence = _episode_sequence(session, series)
@@ -123,7 +125,10 @@ def _next_unwatched(
     if target.id not in ids:
         return None, None, None
     progress_rows = session.exec(
-        select(PlayProgress).where(PlayProgress.item_id.in_(ids))
+        select(PlayProgress).where(
+            PlayProgress.user_id == user_id,
+            PlayProgress.item_id.in_(ids)
+        )
     ).all()
     watched = {row.item_id for row in progress_rows if row.finished}
     for episode in sequence[ids.index(target.id) + 1 :]:
@@ -199,18 +204,29 @@ async def play(
     item_id: int,
     request: Request,
     body: PlayBody | None = None,
+    user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
     settings=Depends(get_settings),
 ):
+    """v0.9: 播放分发，检查用户权限，play_token 绑定 user_id。"""
     body = body or PlayBody()
     with Session(engine) as session:
         item = session.get(Item, item_id)
         if item is None or item.deleted_at:
             raise APIError(404, "ITEM_NOT_FOUND", "条目不存在")
-        target = _choose_play_target(session, item)
+
+        # 检查用户是否有权访问该条目所属的库
+        accessible_ids = get_accessible_library_ids(user, engine)
+        if accessible_ids is not None and item.library_id not in accessible_ids:
+            raise APIError(403, "FORBIDDEN", "无权访问该条目")
+
+        target = _choose_play_target(session, item, user.id)
         media = _pick_media(session, target.id, body.media_file_id)
         progress = session.exec(
-            select(PlayProgress).where(PlayProgress.item_id == target.id)
+            select(PlayProgress).where(
+                PlayProgress.user_id == user.id,
+                PlayProgress.item_id == target.id
+            )
         ).first()
         resume_ms = 0
         if progress and not progress.finished:
@@ -226,7 +242,7 @@ async def play(
                 x for x in [series_obj.title, code, target.title] if x
             ).strip()
         next_episode_id, next_title, next_code = _next_unwatched(
-            session, target, series_obj
+            session, target, series_obj, user.id
         )
         # 播放器「选集」：同一部剧的全部剧集（跨季按季/集排序）。
         playlist: list[dict] = []
@@ -255,6 +271,7 @@ async def play(
                 sequence_ids = [episode.id for episode in sequence]
                 progress_rows = session.exec(
                     select(PlayProgress).where(
+                        PlayProgress.user_id == user.id,
                         PlayProgress.item_id.in_(sequence_ids)
                     )
                 ).all()
@@ -286,7 +303,7 @@ async def play(
         subtitles = list_subtitles(media)
         media_path = media.abs_path
 
-    token, expires_at = request.app.state.app_state.auth.create_play_token(target_id)
+    token, expires_at = request.app.state.app_state.auth.create_play_token(user.id, target_id)
 
     user_agent = request.headers.get("user-agent", "")
     is_companion = (
@@ -414,13 +431,22 @@ def download_subtitle(
     request: Request,
     engine=Depends(get_engine),
 ):
-    """外挂字幕下载：Cookie 或 `?pt=play_token`（Media3 不便带自定义头）。"""
-    authorize_item_access(request, item_id)
+    """v0.9: 外挂字幕下载：Cookie 或 `?pt=play_token`，支持多用户权限检查。"""
+    current_user = authorize_item_access(request, item_id)
+    if not current_user:
+        raise APIError(401, "UNAUTHORIZED", "请先登录")
+
     with Session(engine) as session:
         item = session.get(Item, item_id)
         if item is None or item.deleted_at:
             raise APIError(404, "ITEM_NOT_FOUND", "条目不存在")
-        target = _choose_play_target(session, item)
+
+        # 检查用户是否有权访问该条目所属的库
+        accessible_ids = get_accessible_library_ids(current_user, engine)
+        if accessible_ids is not None and item.library_id not in accessible_ids:
+            raise APIError(403, "FORBIDDEN", "无权访问该条目")
+
+        target = _choose_play_target(session, item, current_user.id)
         media = _pick_media(session, target.id, None)
         subtitles = list_subtitles(media)
         if index < 0 or index >= len(subtitles):

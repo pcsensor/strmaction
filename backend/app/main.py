@@ -124,9 +124,10 @@ def create_app() -> FastAPI:
         path = request.url.path
         if path.startswith("/api") and path not in PUBLIC_API_PATHS:
             state: AppState = request.app.state.app_state
-            user = state.auth.validate_session(request.cookies.get(SESSION_COOKIE))
-            if user:
-                request.state.user = user
+            session_user = state.auth.validate_session(request.cookies.get(SESSION_COOKIE))
+            if session_user:
+                request.state.session_user = session_user
+                request.state.user = session_user.username  # 遗留兼容
             else:
                 match = PLAY_TOKEN_PATHS.match(path)
                 token = _play_token_from_request(request) if match else None
@@ -142,9 +143,10 @@ def create_app() -> FastAPI:
                     )
         elif path in PUBLIC_API_PATHS:
             state = request.app.state.app_state
-            user = state.auth.validate_session(request.cookies.get(SESSION_COOKIE))
-            if user:
-                request.state.user = user
+            session_user = state.auth.validate_session(request.cookies.get(SESSION_COOKIE))
+            if session_user:
+                request.state.session_user = session_user
+                request.state.user = session_user.username  # 遗留兼容
         return await call_next(request)
 
     app.include_router(api_router)
