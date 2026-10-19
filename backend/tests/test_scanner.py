@@ -9,7 +9,7 @@ from sqlmodel import Session, select
 from app.config import ConfigManager
 from app.config_store import SettingsService
 from app.db import Database
-from app.models import Item, Library, MediaFile
+from app.models import Item, Library, MediaFile, Setting
 from app.scanner.sync import ScannerService
 
 
@@ -144,6 +144,96 @@ def test_missing_mark_and_move(env, tmp_path):
         media = session.exec(select(MediaFile)).one()
         assert media.missing is True
         assert media.missing_count == 1
+
+
+def test_movie_library_with_tv_structure(env, tmp_path):
+    """电影库里的电视剧：按剧名/季/集入库，多个剧并列互不干扰。"""
+    config, db, settings = env
+    root = tmp_path / "mixed"
+    make_file(root, "卿卿日常 2022/Season 01/S01E01-S01E40/S01E01.strm", "https://example.com/q1.m3u8")
+    make_file(root, "卿卿日常 2022/Season 01/S01E01-S01E40/S01E02.strm", "https://example.com/q2.m3u8")
+    make_file(root, "狂飙/S01E01.strm", "https://example.com/k1.m3u8")
+    make_file(root, "狂飙/第2集.strm", "https://example.com/k2.m3u8")
+    make_file(root, "流浪地球2 (2023)/流浪地球2 (2023).strm")
+
+    lib_id = _library(db, root, "movie")
+    scanner = ScannerService(db.engine, settings)
+    scanner.scan_library(lib_id)
+
+    with Session(db.engine) as session:
+        series = {
+            s.title: s
+            for s in session.exec(select(Item).where(Item.kind == "series")).all()
+        }
+        assert set(series) == {"卿卿日常", "狂飙"}
+        assert series["卿卿日常"].year == 2022
+
+        seasons = session.exec(
+            select(Item).where(
+                Item.parent_id == series["卿卿日常"].id, Item.kind == "season"
+            )
+        ).all()
+        assert [s.season_no for s in seasons] == [1]
+        episodes = session.exec(
+            select(Item).where(
+                Item.parent_id == seasons[0].id, Item.kind == "episode"
+            )
+        ).all()
+        assert sorted(e.episode_no for e in episodes) == [1, 2]
+        assert {e.title for e in episodes} == {"第1集", "第2集"}
+
+        # 电影仍然是电影，没有被剧集规则吞掉
+        movie = session.exec(
+            select(Item).where(Item.kind == "movie")
+        ).one()
+        assert movie.title == "流浪地球2"
+
+
+def test_existing_library_is_reparsed_after_parser_upgrade(env, tmp_path):
+    """升级后首次扫描必须重解析旧文件，把「一部 Season 01 电影」拆回剧集。"""
+    config, db, settings = env
+    root = tmp_path / "legacy"
+    make_file(root, "卿卿日常 2022/Season 01/S01E01.strm")
+    make_file(root, "卿卿日常 2022/Season 01/S01E02.strm")
+    lib_id = _library(db, root, "movie")
+    scanner = ScannerService(db.engine, settings)
+    scanner.scan_library(lib_id)
+
+    # 模拟 v1 的入库结果：整季被当成一部标题为 Season 01 的电影，多个版本
+    with Session(db.engine) as session:
+        legacy = Item(
+            library_id=lib_id,
+            kind="movie",
+            title="Season 01",
+            match_state="pending",
+        )
+        session.add(legacy)
+        session.flush()
+        for media in session.exec(select(MediaFile)).all():
+            media.item_id = legacy.id
+            session.add(media)
+        for kind in ("episode", "season", "series"):
+            for item in session.exec(select(Item).where(Item.kind == kind)).all():
+                session.delete(item)
+        setting = session.get(Setting, f"scanner:parser_version:{lib_id}")
+        if setting is not None:
+            session.delete(setting)
+        session.commit()
+
+    stats = scanner.scan_library(lib_id)
+    assert stats["parsed"] == 2
+    assert stats["skipped"] == 0
+
+    with Session(db.engine) as session:
+        series = session.exec(select(Item).where(Item.kind == "series")).one()
+        assert series.title == "卿卿日常"
+        assert session.exec(select(Item).where(Item.kind == "movie")).all() == []
+        episodes = session.exec(select(Item).where(Item.kind == "episode")).all()
+        assert sorted(e.episode_no for e in episodes) == [1, 2]
+
+    # 解析版本已记录，下一次扫描恢复增量跳过
+    stats2 = scanner.scan_library(lib_id)
+    assert stats2["skipped"] == 2
 
 
 def test_home_and_course(env, tmp_path):

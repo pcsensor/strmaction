@@ -41,7 +41,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | 元数据 | 17 项字段、季/集详情、剧照、演职员头像、预告片、合集、分级、别名 |
 | 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
 | 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
-| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播）、外部 mpv 兜底、桌面 mpv spawn + JSON IPC、浏览器 `intent://`、复制链接 |
+| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、选集/倍速/全屏/锁定）、外部 mpv 兜底、桌面 mpv spawn + JSON IPC、浏览器 `intent://`、复制链接 |
 | 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发 |
 | 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看、分类横滑、详情、选集、搜索、设置、任务、待修正列表、首次向导 |
 | TV | 伴侣 App 手机/电视通用、`?tv=1` 10-foot 布局、方向键空间导航 + 滚屏兜底、48px 安全区、焦点光晕 |
@@ -196,12 +196,20 @@ cd frontend && npm run build
 
 /media/strm/tv/
 ├─ 三体 (2023)/Season 01/三体 - S01E01.strm
+├─ 卿卿日常 2022/Season 01/S01E01-S01E40/S01E01.strm
 ├─ 漫长的季节 (2023)/S01/漫长的季节.01.strm
 ├─ 狂飙/第一季/第12集.strm
 └─ Some.Show.2020/Season 02/Some.Show.S02E03.1080p.strm
 ```
 
 - 多版本 → 同一 `item` 下多个 `media_file`，详情页可切换；
+- **季目录可省略**：`剧名/Season 01/S01E01.strm`、`剧名/S01E01.strm`、`剧名/第1集.strm`、
+  `剧名 2022/S01E01-S01E40/01.strm` 都能识别为同一部剧的季/集；
+- **电影库自动识别剧集**：即使把电视剧放进了「电影」库，只要路径带 Season 目录或
+  `SxxExx` / 第 N 集等强信号，也会按「剧 → 季 → 集」入库，不会再把整季拆成一部
+  「Season 01」电影的多个版本；同一库内并列的多部剧按剧名目录分别归组；
+- 解析规则升级后，升级后的**第一次扫描会自动重解析**全部文件（只强制一次），
+  旧库不需要删除重建；
 - `CD1/CD2`、`part1/part2` → 同一个 `media_file` 序列；
 - 家庭视频 / 课程按目录树分组，不刮削；
 - `.strm` 读取**首行**，兼容 UTF-8 BOM，`#` 开头视为注释；非 `http(s)` 标记 invalid，不进列表；
@@ -268,7 +276,9 @@ next_item_id`。`play_token` 是 item 级、12 小时有效的进度写入凭证
 - 从 `resume_ms` 起播，硬解失败自动回退软解；暂停、退后台、播完各补写一次进度；
 - `STATE_ENDED` 用 `next_item_id` 无缝连播，不黑屏、不跳转；
 - 播放器错误 → 弹窗「用 mpv 打开」；菜单支持字幕/音轨/倍速/下一集/外部 mpv；
-- 手机端支持画中画，电视端支持遥控器左右 ±10s、确定暂停、上下呼出菜单。
+- 底部控制条：上一集 / 播放暂停 / 下一集、进度条、**选集（同剧全部剧集）/ 倍速 / 全屏**；
+  右侧中间提供**锁定**按钮，锁定后只保留解锁入口；
+- 手机端支持画中画和全屏横屏，电视端支持遥控器左右 ±10s、确定暂停、上下呼出菜单。
 
 ### 外部 mpv（兜底）
 
@@ -321,13 +331,13 @@ mpv --no-terminal --force-window \
 源码在 [`companion/`](companion/README.md)。**已构建的签名 APK**：
 
 ```
-companion/strmaction-companion-v1.apk
+companion/strmaction-companion-v1.3.apk
 ```
 
 安装到手机或电视（同一局域网）：
 
 ```bash
-adb install -r companion/strmaction-companion-v1.apk
+adb install -r companion/strmaction-companion-v1.3.apk
 # 电视：adb connect <TV_IP>:5555 && adb install -r ...
 ```
 
@@ -394,7 +404,7 @@ python scripts/make_samples.py --dest sample-media --big 1000   # 压力测试
 python scripts/seed_demo.py --base-url http://127.0.0.1:8080
 ```
 
-当前测试：**37 项全部通过**。截图脚本：`frontend/scripts/screenshot.mjs`（Playwright + Chrome）。
+当前测试：**48 项全部通过**。截图脚本：`frontend/scripts/screenshot.mjs`（Playwright + Chrome）。
 
 > `scripts/seed_demo.py` 会从 Picsum 下载随机示例照片并合成演示海报，仅用于本地预览与截图；
 > 真实媒体库请通过 TMDB / TVDB 或本地 `.nfo` 获取图片。

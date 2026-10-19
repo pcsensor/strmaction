@@ -135,6 +135,14 @@ def test_full_flow():
         assert play_data["play_url"].startswith("http")
         assert play_data["item_id"] == episode_id
         assert play_data["resume_ms"] == 0
+        # 播放器「选集」：同一部剧的全部剧集
+        assert play_data["series_title"] == "三体"
+        assert [entry["code"] for entry in play_data["playlist"]] == [
+            "S01E01",
+            "S01E02",
+        ]
+        assert play_data["current_index"] == 0
+        assert play_data["playlist"][0]["current"] is True
 
         progress = client.post(
             f"/api/items/{episode_id}/progress",

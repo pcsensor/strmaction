@@ -24,7 +24,28 @@ data class PlayInfo(
     val mpvPackage: String,
     val subtitles: List<SubtitleInfo>,
     val mode: String,
+    val seriesTitle: String?,
+    val playlist: List<PlayEntry>,
+    val currentIndex: Int,
 )
+
+/** 播放器「选集」里的一集。 */
+data class PlayEntry(
+    val id: Int,
+    val title: String,
+    val seasonNo: Int?,
+    val episodeNo: Int?,
+    val code: String?,
+    val watched: Boolean,
+    val current: Boolean,
+) {
+    fun displayLabel(): String {
+        val prefix = code ?: episodeNo?.let { "第 ${it} 集" } ?: ""
+        val name = title.takeIf { it.isNotBlank() && it != prefix }
+        return listOf(prefix, name).filter { !it.isNullOrBlank() }.joinToString("  ")
+            .ifBlank { "第 ${episodeNo ?: id} 集" }
+    }
+}
 
 data class SubtitleInfo(
     val label: String,

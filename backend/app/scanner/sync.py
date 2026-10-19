@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -11,8 +12,8 @@ from typing import Any, Callable
 from sqlmodel import Session, select
 
 from ..config_store import SettingsService
-from ..models import Item, Library, MediaFile, utcnow
-from ..parser import Parsed, parse_path
+from ..models import Item, Library, MediaFile, Setting, utcnow
+from ..parser import PARSER_VERSION, Parsed, parse_path
 from ..text import normalize_title
 from .walker import WalkEntry, iter_strm_files, read_strm
 
@@ -164,6 +165,7 @@ class ScannerService:
             select(Item).where(Item.library_id == library.id)
         ).all()
         index = ItemIndex([i for i in existing_items if not i.deleted_at])
+        parser_current = self._parser_version_current(session, library)
 
         media_files = session.exec(
             select(MediaFile).where(MediaFile.library_id == library.id)
@@ -191,7 +193,12 @@ class ScannerService:
             seen.add(entry.abs_path)
             old = by_path.get(entry.abs_path)
             try:
-                if old and old.mtime == entry.mtime and old.size_bytes == entry.size:
+                if (
+                    old
+                    and old.mtime == entry.mtime
+                    and old.size_bytes == entry.size
+                    and parser_current
+                ):
                     if old.missing:
                         old.missing = False
                         old.missing_count = 0
@@ -216,6 +223,7 @@ class ScannerService:
                     entry.rel_path,
                     template=library.template,
                     season_type=season_type,
+                    root_name=os.path.basename(library.root_path.rstrip("/\\")) or None,
                 )
                 stats.parsed += 1
 
@@ -299,6 +307,7 @@ class ScannerService:
                         stats.deleted_items += 1
 
         self._prune_orphans(session, library.id)
+        self._mark_parser_version(session, library.id or 0)
         library.last_scan_at = utcnow()
         session.add(library)
         session.flush()
@@ -365,14 +374,16 @@ class ScannerService:
         course_sequence: dict[int, list[int]],
     ) -> Item:
         stype = library.type
-        if stype == "movie" or (stype == "tv" and parsed.kind == "movie"):
-            return self._resolve_movie(session, library, index, parsed, stats)
-        if parsed.kind == "episode":
+        # 剧集结构优先于库类型：电影库/电视剧库里混入的剧集都要按
+        # series → season → episode 入库，否则整季会被当成一部电影的多版本。
+        if parsed.kind == "episode" and stype not in {"home", "course"}:
             return self._resolve_episode(session, library, index, parsed, stats)
         if stype == "course":
             return self._resolve_course(session, library, index, parsed, stats, course_sequence)
         if stype == "home":
             return self._resolve_home(session, library, index, parsed, stats)
+        if stype == "movie" or (stype == "tv" and parsed.kind == "movie"):
+            return self._resolve_movie(session, library, index, parsed, stats)
         if stype == "tv":
             return self._resolve_tv_orphan(session, library, index, parsed, stats)
         return self._resolve_movie(session, library, index, parsed, stats)
@@ -771,6 +782,25 @@ class ScannerService:
             media.labels = json.dumps(parsed.labels, ensure_ascii=False)
             session.add(media)
         return media, created
+
+    # -- 解析规则版本 -----------------------------------------------------
+    @staticmethod
+    def _parser_version_key(library_id: int) -> str:
+        return f"scanner:parser_version:{library_id}"
+
+    def _parser_version_current(self, session: Session, library: Library) -> bool:
+        row = session.get(Setting, self._parser_version_key(library.id or 0))
+        return row is not None and row.value == str(PARSER_VERSION)
+
+    def _mark_parser_version(self, session: Session, library_id: int) -> None:
+        key = self._parser_version_key(library_id)
+        row = session.get(Setting, key)
+        if row is None:
+            row = Setting(key=key, value=str(PARSER_VERSION), updated_at=utcnow())
+        else:
+            row.value = str(PARSER_VERSION)
+            row.updated_at = utcnow()
+        session.add(row)
 
     # -- 清理 -------------------------------------------------------------
     def _prune_orphans(self, session: Session, library_id: int) -> None:

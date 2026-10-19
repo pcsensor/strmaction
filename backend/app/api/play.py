@@ -227,6 +227,51 @@ async def play(
         next_episode_id, next_title, next_code = _next_unwatched(
             session, target, series_obj
         )
+        # 播放器「选集」：同一部剧的全部剧集（跨季按季/集排序）。
+        playlist: list[dict] = []
+        current_index = -1
+        if series_obj is not None:
+            sequence = _episode_sequence(session, series_obj)
+            sequence_ids = [episode.id for episode in sequence]
+            if sequence_ids:
+                # 选集只列可播放的集数，避免选中缺失/损坏的文件
+                playable_ids = {
+                    row
+                    for row in session.exec(
+                        select(MediaFile.item_id).where(
+                            MediaFile.item_id.in_(sequence_ids),
+                            MediaFile.invalid == False,  # noqa: E712
+                            MediaFile.missing == False,  # noqa: E712
+                        )
+                    ).all()
+                    if row
+                }
+                sequence = [
+                    episode
+                    for episode in sequence
+                    if episode.id in playable_ids or episode.id == target.id
+                ]
+                sequence_ids = [episode.id for episode in sequence]
+                progress_rows = session.exec(
+                    select(PlayProgress).where(
+                        PlayProgress.item_id.in_(sequence_ids)
+                    )
+                ).all()
+                watched_ids = {row.item_id for row in progress_rows if row.finished}
+                for index, episode in enumerate(sequence):
+                    playlist.append(
+                        {
+                            "id": episode.id,
+                            "title": episode.title,
+                            "season_no": episode.season_no,
+                            "episode_no": episode.episode_no,
+                            "code": episode_code(episode),
+                            "watched": episode.id in watched_ids,
+                            "current": episode.id == target.id,
+                        }
+                    )
+                    if episode.id == target.id:
+                        current_index = index
         target_id = target.id
         target_kind = target.kind
         duration_ms = progress.duration_ms if progress else None
@@ -297,6 +342,9 @@ async def play(
         "next_item_id": next_episode_id,
         "next_title": next_title,
         "next_episode_code": next_code,
+        "series_title": series_obj.title if series_obj else None,
+        "playlist": playlist,
+        "current_index": current_index,
     }
 
     # 非原生路径：让服务端适配器生成 intent / spawn / 复制提示

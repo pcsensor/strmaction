@@ -19,14 +19,14 @@
 
 ## 已构建产物
 
-`strmaction-companion-v1.apk`（本目录）已签名，可直接安装（版本 1.2 / versionCode 3）：
+`strmaction-companion-v1.3.apk`（本目录）已签名，可直接安装（版本 1.3 / versionCode 4）：
 
 ```bash
-adb install -r strmaction-companion-v1.apk
+adb install -r strmaction-companion-v1.3.apk
 
 # 电视 / 盒子
 adb connect <TV_IP>:5555
-adb install -r strmaction-companion-v1.apk
+adb install -r strmaction-companion-v1.3.apk
 ```
 
 签名证书为本地生成的演示 keystore（`release.keystore`，口令 `strmaction`，
@@ -79,6 +79,17 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
                  ├─ 播完 → 上报 finished + 用 next_item_id 无缝连播
                  └─ 失败 → 弹窗 → 外部 mpv 兜底
 ```
+
+### 播放控件
+
+底部控制条统一放置全部操作：
+
+- **选集**：列出同一部剧的全部剧集（跨季），当前集与已看集有标记，选中即切换；
+- **倍速**：0.5x / 0.75x / 1x / 1.25x / 1.5x / 2x / 3x，按钮显示当前倍速；
+- **全屏**：底部右下角，进入后隐藏系统栏并横屏，可再次点击退出；
+- 上一集 / 播放暂停 / 下一集、进度条与时间同样在底部；
+- **锁定**：右侧中间的「锁」按钮，锁定后隐藏全部控件，只保留「解锁」入口；
+  再按一次恢复。返回键按「解锁 → 退全屏 → 收起控件 → 退出」逐级处理。
 
 ### 关键实现
 

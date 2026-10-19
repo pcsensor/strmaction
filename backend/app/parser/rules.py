@@ -13,6 +13,10 @@ from functools import lru_cache
 from ..text import cn_num_to_int, normalize_title
 from .types import Parsed
 
+# 解析规则版本：升级后扫描器会对所有文件强制重解析一次，
+# 避免「增量跳过」让老库永远停留在旧结构（例如整季被识别成一部电影）。
+PARSER_VERSION = 2
+
 _VIDEO_EXT_RE = re.compile(
     r"\.(?:strm|mp4|mkv|avi|mov|m2ts|ts|webm|flv|wmv|iso|rmvb)$", re.I
 )
@@ -46,6 +50,15 @@ _CN_EP_RE = re.compile(r"第\s*([零〇一二三四五六七八九十百两\d]+)
 _CN_SEASON_RE = re.compile(r"第\s*([零〇一二三四五六七八九十百两\d]+)\s*季")
 _SEASON_DIR_RE = re.compile(r"(?i)^season[\s._\-]*(\d{1,2})(?:$|[\s._\-].*)")
 _S_SEASON_DIR_RE = re.compile(r"(?i)^s(\d{1,2})(?:$|[\s._\-].*)")
+# 合集目录：S01E01-S01E40 / S01E01-E40 / E01-E40 / S01E01-40
+# 这种目录在 SmartStrm 输出里很常见，它既是季信息，又不是「剧名」。
+_EP_RANGE_DIR_RE = re.compile(
+    r"(?i)^(?:s(\d{1,2}))?[\s._\-]*e(\d{1,4})"
+    r"(?:[\s._\-]*(?:-|~|—|–|－|至|to)[\s._\-]*(?:s(\d{1,2}))?[\s._\-]*e?(\d{1,4}))?$"
+)
+_EPISODE_DIR_RE = re.compile(r"(?i)^s?\d{1,2}[\s._\-]*e[\s._\-]*\d{1,4}$")
+# 剧名目录里常见但不应被当成剧集的分类名
+_JUNK_DIRS = {"season", "specials", "extras", "featurettes", "samples", "sample"}
 _SXXEXX_RE = re.compile(
     r"(?i)(?:^|[^a-z0-9])s(\d{1,2})[\s._\-]*e(\d{1,4})(?=[^0-9]|$)"
 )
@@ -191,6 +204,12 @@ def _split(rel_path: str) -> list[str]:
 
 def season_from_dir(name: str) -> int | None:
     text = _nfkc(name).strip()
+    match = _EP_RANGE_DIR_RE.match(text)
+    if match:
+        if match.group(1):
+            return int(match.group(1))
+        if match.group(3):
+            return int(match.group(3))
     match = _CN_SEASON_RE.search(text)
     if match:
         return cn_num_to_int(match.group(1))
@@ -205,6 +224,47 @@ def season_from_dir(name: str) -> int | None:
         if digits:
             return int(digits[-1])
     return None
+
+
+def is_season_dir(name: str) -> bool:
+    text = _nfkc(name).strip()
+    if not text:
+        return False
+    return season_from_dir(text) is not None or bool(_EP_RANGE_DIR_RE.match(text))
+
+
+def is_range_dir(name: str) -> bool:
+    """S01E01-S01E40 这类合集目录（不是单集目录）。"""
+    match = _EP_RANGE_DIR_RE.match(_nfkc(name).strip())
+    if not match:
+        return False
+    return bool(match.group(4) or (match.group(1) and match.group(2)))
+
+
+def is_episode_dir(name: str) -> bool:
+    return bool(_EPISODE_DIR_RE.match(_nfkc(name).strip()))
+
+
+def looks_like_episode_path(rel_path: str) -> bool:
+    """判断路径是否明显是剧集（用于电影库里混入电视剧时的自动识别）。
+
+    只看强信号：季目录、SxxExx / xXy / 第 N 集 / EPxx、合集目录。
+    普通电影目录（片名 + 年份 + 版本）不会被误判。
+    """
+    parts = _split(rel_path)
+    if len(parts) < 2:
+        return False
+    filename = parts[-1]
+    dirs = parts[:-1]
+    if any(is_season_dir(d) or is_range_dir(d) for d in dirs):
+        return True
+    stem = strip_extension(_nfkc(filename))
+    return bool(
+        _SXXEXX_RE.search(stem)
+        or _XRE_RE.search(stem)
+        or _CN_EP_RE.search(stem)
+        or _EP_PREFIX_RE.search(stem)
+    )
 
 
 def _episode_from_name(name: str) -> tuple[int | None, int | None, float]:
@@ -246,11 +306,33 @@ def _strip_episode_tokens(name: str) -> str:
     return parse_name(stem).title
 
 
-def parse_movie(rel_path: str, template: str | None = None) -> Parsed:
+def _movie_parent_name(parts: list[str], root_name: str | None) -> str | None:
+    """电影条目的父目录；跳过 Season/Extras/S01E01-S01E40 这类剧集目录。"""
+    for idx in range(len(parts) - 2, -1, -1):
+        name = parts[idx]
+        if (
+            not name
+            or name.lower() in _JUNK_DIRS
+            or is_season_dir(name)
+            or is_range_dir(name)
+            or is_episode_dir(name)
+        ):
+            continue
+        return name
+    # 媒体库根目录本身可能就是剧名（用户把根目录指向了剧集文件夹）
+    if root_name and not is_season_dir(root_name) and not is_range_dir(root_name):
+        return root_name
+    return None
+
+
+def parse_movie(
+    rel_path: str, template: str | None = None, root_name: str | None = None
+) -> Parsed:
     parts = _split(rel_path)
     filename = parts[-1] if parts else ""
     file_info = parse_name(filename)
-    parent_info = parse_name(parts[-2]) if len(parts) >= 2 else None
+    parent_name = _movie_parent_name(parts, root_name)
+    parent_info = parse_name(parent_name) if parent_name else None
 
     title = file_info.title
     year = file_info.year
@@ -307,7 +389,44 @@ def parse_movie(rel_path: str, template: str | None = None) -> Parsed:
     )
 
 
-def parse_tv(rel_path: str, template: str | None = None) -> Parsed:
+def _tv_series_dir(
+    dirs: list[str], season_idx: int | None, root_name: str | None
+) -> str | None:
+    """找剧名目录：Season 目录的上一级；没有 Season 时取最深的有效目录。"""
+    if season_idx is not None:
+        # 可能有多层季/合集目录（如 Show/Season 01/S01E01-S01E40），
+        # 一路向前找到第一个真正的剧名目录。
+        for idx in range(season_idx - 1, -1, -1):
+            candidate = dirs[idx]
+            if (
+                candidate
+                and candidate.lower() not in _JUNK_DIRS
+                and not is_season_dir(candidate)
+                and not is_range_dir(candidate)
+                and not is_episode_dir(candidate)
+            ):
+                return candidate
+    else:
+        for idx in range(len(dirs) - 1, -1, -1):
+            candidate = dirs[idx]
+            if (
+                candidate
+                and candidate.lower() not in _JUNK_DIRS
+                and not is_season_dir(candidate)
+                and not is_range_dir(candidate)
+                and not is_episode_dir(candidate)
+            ):
+                return candidate
+    # 媒体库根目录就是剧名目录（例如 root 指向 "卿卿日常 2022"）
+    if root_name and root_name.lower() not in _JUNK_DIRS:
+        if not (is_season_dir(root_name) or is_range_dir(root_name)):
+            return root_name
+    return None
+
+
+def parse_tv(
+    rel_path: str, template: str | None = None, root_name: str | None = None
+) -> Parsed:
     parts = _split(rel_path)
     filename = parts[-1] if parts else ""
     dirs = parts[:-1]
@@ -319,20 +438,27 @@ def parse_tv(rel_path: str, template: str | None = None) -> Parsed:
         if value is not None:
             season_no, season_idx = value, idx
             break
+    if season_idx is None:
+        # S01E01-S01E40 目录没有 group(1) 时 season_from_dir 会返回 None，
+        # 但合集目录本身说明这是第一季/某季，交给剧名目录和文件名判断。
+        for idx in range(len(dirs) - 1, -1, -1):
+            if is_range_dir(dirs[idx]):
+                season_idx = idx
+                break
 
     episode_no, season_in_name, ep_confidence = _episode_from_name(filename)
     if season_in_name is not None:
-        season_no = season_no if season_no is not None else season_in_name
+        # 文件名里的 SxxExx 比目录名更具体
+        season_no = season_in_name
+    elif season_no is None:
+        # 合集目录 S01E01-S01E40：从目录名补季号
+        for name in reversed(dirs):
+            match = _EP_RANGE_DIR_RE.match(_nfkc(name).strip())
+            if match and match.group(1):
+                season_no = int(match.group(1))
+                break
 
-    series_dir = None
-    if season_idx is not None:
-        if season_idx >= 1:
-            series_dir = dirs[season_idx - 1]
-        elif len(dirs) >= 2:
-            series_dir = dirs[-1]
-    elif dirs:
-        series_dir = dirs[-1]
-
+    series_dir = _tv_series_dir(dirs, season_idx, root_name)
     if series_dir:
         series_info = parse_name(series_dir)
         series_title = series_info.title
@@ -347,7 +473,7 @@ def parse_tv(rel_path: str, template: str | None = None) -> Parsed:
     explicit = extract_explicit_ids(" ".join(parts))
     version, labels = detect_version(filename)
 
-    if episode_no is None:
+    if not episode_no:
         title = parse_name(filename).title
         return Parsed(
             kind="video",
@@ -607,16 +733,29 @@ def parse_path(
     rel_path: str,
     template: str | None = None,
     season_type: str = "default",
+    root_name: str | None = None,
 ) -> Parsed:
-    """按库类型解析相对路径；模板优先，规则兜底。"""
+    """按库类型解析相对路径；模板优先，规则兜底。
+
+    电影库如果出现明显的剧集结构（Season 目录 / SxxExx / 第 N 集 / 合集目录），
+    也会自动按剧集解析：SmartStrm 用户经常把电视剧放进「电影」库，
+    只按库类型硬切会把整季拆成一部「Season 01」电影的多个版本。
+    """
     if library_type in {"movie", "tv"}:
-        parsed = parse_with_template(rel_path, library_type, template)
-        if parsed:
-            return parsed
+        tv_like = looks_like_episode_path(rel_path)
+        # 电影模板里的 {title}/{title}.strm 会误吃 "剧名/S01E01.strm"，
+        # 因此电影库遇到明显剧集路径时跳过模板，直接走剧集规则。
+        if library_type == "tv" or not tv_like:
+            parsed = parse_with_template(rel_path, library_type, template)
+            if parsed:
+                return parsed
     if library_type == "movie":
-        parsed = parse_movie(rel_path, template)
+        if looks_like_episode_path(rel_path):
+            parsed = parse_tv(rel_path, template, root_name=root_name)
+        else:
+            parsed = parse_movie(rel_path, template, root_name=root_name)
     elif library_type == "tv":
-        parsed = parse_tv(rel_path, template)
+        parsed = parse_tv(rel_path, template, root_name=root_name)
     elif library_type == "course":
         parsed = parse_course(rel_path)
     else:

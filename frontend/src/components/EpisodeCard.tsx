@@ -19,6 +19,12 @@ export function EpisodeCard({ episode, active = false, posterFallback, color }: 
   const code =
     episode.episode_code ||
     (episode.episode_no ? `E${String(episode.episode_no).padStart(2, '0')}` : '')
+  const episodeLabel = episode.episode_no ? `第${episode.episode_no}集` : ''
+  const title = (() => {
+    if (!episode.title) return episodeLabel || t('detail.episodeN', { n: episode.episode_no ?? '' })
+    if (!episodeLabel || /第\s*\d+\s*[集话]/.test(episode.title)) return episode.title
+    return `${episodeLabel} · ${episode.title}`
+  })()
 
   return (
     <Link
@@ -70,7 +76,7 @@ export function EpisodeCard({ episode, active = false, posterFallback, color }: 
       <div className="min-w-0 flex-1 py-1 pr-1">
         <div className="flex items-start justify-between gap-2">
           <h3 className="line-clamp-1 text-[13.5px] font-medium text-ink-100">
-            {episode.title || t('detail.episodeN', { n: episode.episode_no ?? '' })}
+            {title}
           </h3>
           {episode.runtime_min ? (
             <span className="shrink-0 text-[10.5px] text-ink-500">{episode.runtime_min} 分钟</span>

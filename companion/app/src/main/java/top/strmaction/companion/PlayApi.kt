@@ -92,6 +92,25 @@ object PlayApi {
         ).filter { it.isNotBlank() }.joinToString(" ")
         val duration = json.optLong("duration_ms", 0L)
         val interval = json.optLong("progress_interval_ms", 5000L)
+
+        val playlist = mutableListOf<PlayEntry>()
+        val playlistArray = json.optJSONArray("playlist")
+        if (playlistArray != null) {
+            for (index in 0 until playlistArray.length()) {
+                val entry = playlistArray.optJSONObject(index) ?: continue
+                val id = entry.optInt("id", 0)
+                if (id <= 0) continue
+                playlist += PlayEntry(
+                    id = id,
+                    title = entry.optString("title"),
+                    seasonNo = entry.optInt("season_no", 0).takeIf { it > 0 },
+                    episodeNo = entry.optInt("episode_no", 0).takeIf { it > 0 },
+                    code = entry.optString("code").takeIf { it.isNotBlank() },
+                    watched = entry.optBoolean("watched", false),
+                    current = entry.optBoolean("current", false),
+                )
+            }
+        }
         return PlayInfo(
             serverUrl = base,
             itemId = json.optInt("item_id", itemId),
@@ -108,6 +127,9 @@ object PlayApi {
             mpvPackage = json.optString("mpv_package").ifBlank { mpvPackage(context) },
             subtitles = subtitles,
             mode = json.optString("mode").ifBlank { "builtin" },
+            seriesTitle = json.optString("series_title").takeIf { it.isNotBlank() },
+            playlist = playlist,
+            currentIndex = json.optInt("current_index", -1),
         ).also {
             if (it.playUrl.isBlank()) throw PlayApiException(status, "服务器没有返回播放地址")
             if (it.playToken.isBlank()) throw PlayApiException(status, "服务器没有返回播放凭证")
