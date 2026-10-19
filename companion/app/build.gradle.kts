@@ -11,8 +11,8 @@ android {
         applicationId = "top.strmaction.companion"
         minSdk = 24
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
     }
 
     buildTypes {
@@ -48,4 +48,6 @@ dependencies {
     implementation("androidx.media3:media3-ui:1.4.1")
     implementation("androidx.media3:media3-common:1.4.1")
     implementation("androidx.media3:media3-datasource:1.4.1")
+    // 云服务器 / Cloudflare 后的网盘直链：OkHttp 对 302、TLS、HTTP/2 的兼容性更好
+    implementation("androidx.media3:media3-datasource-okhttp:1.4.1")
 }

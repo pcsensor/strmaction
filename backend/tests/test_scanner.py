@@ -197,6 +197,17 @@ def test_movie_library_with_tv_structure(env, tmp_path):
         assert movie.title == "流浪地球2"
 
 
+def test_movie_library_becomes_tv_when_only_episodes(env, tmp_path):
+    config, db, settings = env
+    root = tmp_path / "only_tv"
+    make_file(root, "卿卿日常 2022/Season 01/S01E01.strm")
+    make_file(root, "卿卿日常 2022/Season 01/S01E02.strm")
+    lib_id = _library(db, root, "movie")
+    ScannerService(db.engine, settings).scan_library(lib_id)
+    with Session(db.engine) as session:
+        assert session.get(Library, lib_id).type == "tv"
+
+
 def test_existing_library_is_reparsed_after_parser_upgrade(env, tmp_path):
     """升级后首次扫描必须重解析旧文件，把「一部 Season 01 电影」拆回剧集。"""
     config, db, settings = env

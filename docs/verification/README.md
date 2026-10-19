@@ -1,7 +1,7 @@
 # 修复验证记录（Android 模拟器）
 
 - 设备：Android 14（API 34）模拟器，Pixel 6，1080×2400
-- APK：`companion/strmaction-companion-v1.3.apk`（versionName 1.3 / versionCode 4）
+- APK：`companion/strmaction-companion-v1.4.apk`（versionName 1.4 / versionCode 5）
 - 测试媒体库类型故意设为 **电影**，目录结构为：
   `媒体库根/卿卿日常 2022/Season 01/S01E01-S01E40/S01E01.strm`，
   同库还有 `狂飙/S01E01.strm`（无 Season 目录）、`漫长的季节 2023/S01E01-S01E12/01.strm`、
@@ -16,5 +16,10 @@
 | `player-playlist.png` | 选集弹窗列出同一部剧的全部剧集（S01E01–S01E03），当前集、已看集有标记 |
 | `player-fullscreen.png` | 全屏后隐藏系统栏并横屏，右下角按钮变为「退出全屏」 |
 | `player-locked.png` | 锁定后隐藏全部控件，仅保留右侧「解锁」入口 |
+| `real-stream-playback.png` | 真实云端剧集（HEVC 1080p + EAC3，46:57，1.2GB）播放验证；用云服务器取首 40MB 后本地回放，确认 APK 可解码并播放该片源 |
 
-后端 `pytest`：48 项全部通过。
+后端 `pytest`：49 项全部通过。
+
+> 说明：本机到百度 CDN 的链路被限速（Chrome 也超时），因此无法在模拟器上直接验证云端直链的实时速度；
+> APK v1.4 已改用 Media3 `OkHttpDataSource`（自动跟随 AList → 百度 CDN 的 302、HTTP/2、TLS 重试）。
+> 云端媒体库结构已通过真实服务器的扫描结果确认：40 集全部归入「卿卿日常 / 第1季 / S01E01–S01E40」。

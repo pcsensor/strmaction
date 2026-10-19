@@ -318,6 +318,19 @@ class ScannerService:
                         stats.deleted_items += 1
 
         self._prune_orphans(session, library.id)
+        # 纯剧集内容的「电影」库：把库类型纠正为 tv，避免 UI 继续显示「电影 / 0 部电影」。
+        # 以清理后的实际条目为准，增量跳过时也能纠正。
+        remaining_kinds = {
+            row
+            for row in session.exec(
+                select(Item.kind).where(
+                    Item.library_id == library.id,
+                    Item.deleted_at == None,  # noqa: E711
+                )
+            ).all()
+        }
+        if library.type == "movie" and "episode" in remaining_kinds and "movie" not in remaining_kinds:
+            library.type = "tv"
         self._mark_parser_version(session, library.id or 0)
         library.last_scan_at = utcnow()
         session.add(library)

@@ -19,14 +19,14 @@
 
 ## 已构建产物
 
-`strmaction-companion-v1.3.apk`（本目录）已签名，可直接安装（版本 1.3 / versionCode 4）：
+`strmaction-companion-v1.4.apk`（本目录）已签名，可直接安装（版本 1.4 / versionCode 5）：
 
 ```bash
-adb install -r strmaction-companion-v1.3.apk
+adb install -r strmaction-companion-v1.4.apk
 
 # 电视 / 盒子
 adb connect <TV_IP>:5555
-adb install -r strmaction-companion-v1.3.apk
+adb install -r strmaction-companion-v1.4.apk
 ```
 
 签名证书为本地生成的演示 keystore（`release.keystore`，口令 `strmaction`，
@@ -93,8 +93,8 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 
 ### 关键实现
 
-- 数据源：`DefaultHttpDataSource.Factory().setDefaultRequestProperties(headers)`
-  + `setAllowCrossProtocolRedirects(true)`（302 https→http 必需）；
+- 数据源：Media3 `OkHttpDataSource` + `setDefaultRequestProperties(headers)`；
+  OkHttp 自动跟随 302（AList → 百度 CDN）、支持 HTTP/2/TLS 重试，云端媒体库兼容性更好；
 - 换库/换源时自动重建播放器，保证请求头跟随当前媒体库；
 - 心跳失败不阻塞播放：本地队列最多 3 条，下一跳补发；`401` 提示重新播放；
 - 进度钳制：`0 <= position <= duration`；暂停、`onStop`、`STATE_ENDED` 各补写一次；

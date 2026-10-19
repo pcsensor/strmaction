@@ -272,7 +272,8 @@ next_item_id`。`play_token` 是 item 级、12 小时有效的进度写入凭证
 
 ### 伴侣 App 内置播放器（默认）
 
-- 数据源带库级 `play_headers`（不同网盘/架子可分别配 UA、Referer），`setAllowCrossProtocolRedirects(true)` 兼容 302 https→http；
+- 数据源带库级 `play_headers`（不同网盘/架子可分别配 UA、Referer），
+  使用 Media3 `OkHttpDataSource` 自动跟随 AList → 百度 CDN 的 302，兼容 HTTP/2/TLS 重试；
 - 从 `resume_ms` 起播，硬解失败自动回退软解；暂停、退后台、播完各补写一次进度；
 - `STATE_ENDED` 用 `next_item_id` 无缝连播，不黑屏、不跳转；
 - 播放器错误 → 弹窗「用 mpv 打开」；菜单支持字幕/音轨/倍速/下一集/外部 mpv；
@@ -331,13 +332,13 @@ mpv --no-terminal --force-window \
 源码在 [`companion/`](companion/README.md)。**已构建的签名 APK**：
 
 ```
-companion/strmaction-companion-v1.3.apk
+companion/strmaction-companion-v1.4.apk
 ```
 
 安装到手机或电视（同一局域网）：
 
 ```bash
-adb install -r companion/strmaction-companion-v1.3.apk
+adb install -r companion/strmaction-companion-v1.4.apk
 # 电视：adb connect <TV_IP>:5555 && adb install -r ...
 ```
 
@@ -404,7 +405,7 @@ python scripts/make_samples.py --dest sample-media --big 1000   # 压力测试
 python scripts/seed_demo.py --base-url http://127.0.0.1:8080
 ```
 
-当前测试：**48 项全部通过**。截图脚本：`frontend/scripts/screenshot.mjs`（Playwright + Chrome）。
+当前测试：**49 项全部通过**。截图脚本：`frontend/scripts/screenshot.mjs`（Playwright + Chrome）。
 
 > `scripts/seed_demo.py` 会从 Picsum 下载随机示例照片并合成演示海报，仅用于本地预览与截图；
 > 真实媒体库请通过 TMDB / TVDB 或本地 `.nfo` 获取图片。

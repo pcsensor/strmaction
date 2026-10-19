@@ -38,7 +38,7 @@ import androidx.media3.common.Player
 import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
-import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -46,6 +46,8 @@ import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import java.util.Locale
 import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import okhttp3.OkHttpClient
 
 /**
  * v0.8 内置播放器：Media3 解码 + 5 秒心跳 + 无缝连播 + mpv 兜底。
@@ -738,11 +740,34 @@ class PlayerActivity : AppCompatActivity() {
             player = null
             playerView.player = null
         }
-        val http = DefaultHttpDataSource.Factory()
+        val client = OkHttpClient.Builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(30, TimeUnit.SECONDS)
+            .followRedirects(true)
+            .followSslRedirects(true)
+            .retryOnConnectionFailure(true)
+            .addInterceptor { chain ->
+                val request = chain.request()
+                Log.d(
+                    TAG,
+                    "http ${request.method} ${request.url.host}${request.url.encodedPath.takeLast(28)}",
+                )
+                try {
+                    val response = chain.proceed(request)
+                    Log.d(
+                        TAG,
+                        "http ${response.code} ${response.header("Content-Type")} " +
+                            "${response.header("Content-Length")} ${request.url.host}",
+                    )
+                    response
+                } catch (error: Exception) {
+                    Log.e(TAG, "http failed ${request.url.host}", error)
+                    throw error
+                }
+            }
+            .build()
+        val http = OkHttpDataSource.Factory(client)
             .setDefaultRequestProperties(playInfo.headers)
-            .setAllowCrossProtocolRedirects(true)
-            .setConnectTimeoutMs(15_000)
-            .setReadTimeoutMs(30_000)
         val exo = ExoPlayer.Builder(this)
             .setMediaSourceFactory(DefaultMediaSourceFactory(http))
             .setRenderersFactory(
