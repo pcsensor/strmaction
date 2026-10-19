@@ -706,19 +706,6 @@ def report_progress(
                 last_client_key=body.client_key,
             )
         else:
-            if (
-                not finished
-                and not row.finished
-                and row.position_ms - position > 5000
-            ):
-                # 防御：不允许非完成状态下进度大幅倒退
-                return {
-                    "position_ms": row.position_ms,
-                    "duration_ms": row.duration_ms,
-                    "finished": bool(row.finished),
-                    "updated_at": row.updated_at,
-                    "ignored": True,
-                }
             row.position_ms = position
             row.duration_ms = duration or row.duration_ms
             row.finished = finished

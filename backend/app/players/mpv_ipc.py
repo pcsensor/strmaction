@@ -54,12 +54,6 @@ def write_progress(
                 updated_at=utcnow(),
             )
         else:
-            if (
-                not finished
-                and row.position_ms - position_ms > 5000
-                and not row.finished
-            ):
-                return
             row.position_ms = position_ms
             row.duration_ms = duration_ms or row.duration_ms
             row.finished = finished
