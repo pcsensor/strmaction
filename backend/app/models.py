@@ -46,7 +46,7 @@ class Item(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     library_id: int = Field(foreign_key="library.id", index=True)
     parent_id: int | None = Field(default=None, foreign_key="item.id", index=True)
-    kind: str = "movie"  # movie | series | season | episode | video
+    kind: str = "movie"  # movie | series | season | episode | video | folder
     title: str = ""
     original_title: str | None = None
     sort_title: str | None = None

@@ -331,24 +331,25 @@ def test_home_and_course(env, tmp_path):
     scanner.scan_library(course_id)
 
     with Session(db.engine) as session:
-        groups = session.exec(
-            select(Item).where(Item.kind == "series", Item.library_id == home_id)
+        folders = session.exec(
+            select(Item).where(Item.kind == "folder", Item.library_id == home_id)
         ).all()
-        assert [g.title for g in groups] == ["2024-06-01 生日"]
+        assert [f.title for f in folders] == ["2024-06-01 生日"]
         videos = session.exec(
             select(Item).where(Item.kind == "video", Item.library_id == home_id)
         ).all()
-        assert [v.title for v in videos] == ["VID 20240601"]
+        assert [v.title for v in videos] == ["VID_20240601"]
+        assert videos[0].parent_id == folders[0].id
 
-        course = session.exec(
-            select(Item).where(Item.kind == "series", Item.library_id == course_id)
+        course_root_folder = session.exec(
+            select(Item).where(Item.kind == "folder", Item.library_id == course_id, Item.parent_id == None)  # noqa: E711
         ).one()
-        assert course.title == "Rust 实战"
-        chapter = session.exec(
-            select(Item).where(Item.kind == "season", Item.parent_id == course.id)
+        assert course_root_folder.title == "Rust 实战"
+        sub_folder = session.exec(
+            select(Item).where(Item.kind == "folder", Item.parent_id == course_root_folder.id)
         ).one()
-        assert chapter.title == "所有权"
-        eps = session.exec(
-            select(Item).where(Item.kind == "episode", Item.parent_id == chapter.id)
+        assert sub_folder.title == "01 所有权"
+        course_videos = session.exec(
+            select(Item).where(Item.kind == "video", Item.parent_id == sub_folder.id)
         ).all()
-        assert sorted(e.episode_no for e in eps) == [1, 2]
+        assert sorted(v.episode_no for v in course_videos) == [1, 2]

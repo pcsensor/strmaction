@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Literal
 
-Kind = Literal["movie", "series", "episode", "video"]
+Kind = Literal["movie", "series", "episode", "video", "folder"]
 
 
 @dataclass
@@ -21,9 +21,10 @@ class Parsed:
     part: int | None = None
     labels: list[str] = field(default_factory=list)
     explicit_ids: dict[str, str] = field(default_factory=dict)
-    # 分组信息（home / course / tv 兜底）
+    # 分组与目录层级（home / course / 目录树）
     group_title: str | None = None
     chapter_title: str | None = None
+    folder_parts: list[str] = field(default_factory=list)
     warning: str | None = None
     parser: str = "rules"  # template | rules | guessit | fallback
 
@@ -42,6 +43,7 @@ class Parsed:
             "explicit_ids": self.explicit_ids,
             "group_title": self.group_title,
             "chapter_title": self.chapter_title,
+            "folder_parts": self.folder_parts,
             "warning": self.warning,
             "parser": self.parser,
         }

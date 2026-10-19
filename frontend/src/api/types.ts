@@ -1,4 +1,4 @@
-export type ItemKind = 'movie' | 'series' | 'season' | 'episode' | 'video'
+export type ItemKind = 'movie' | 'series' | 'season' | 'episode' | 'video' | 'folder'
 export type MatchState = 'pending' | 'auto' | 'manual' | 'failed' | 'skipped'
 export type LibraryType = 'movie' | 'tv' | 'home' | 'course'
 
@@ -109,11 +109,20 @@ export interface LibraryInfo {
   counts?: Record<string, number>
 }
 
+export interface AncestorInfo {
+  id: number
+  title: string
+  kind: ItemKind
+}
+
 export interface ItemDetailResponse {
   item: ItemDetail
   library: LibraryInfo | null
   series: ItemSummary | null
   parent: ItemSummary | null
+  ancestors?: AncestorInfo[]
+  folders?: ItemSummary[]
+  videos?: ItemSummary[]
   seasons: SeasonPayload[]
   episodes: EpisodeSummary[]
   media_files: MediaFileInfo[]

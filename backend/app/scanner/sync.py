@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -91,6 +92,7 @@ class ItemIndex:
         self.by_id: dict[int, Item] = {i.id: i for i in items if i.id is not None}
         self.movies: dict[str, list[Item]] = defaultdict(list)
         self.series: dict[str, list[Item]] = defaultdict(list)
+        self.folders: dict[tuple[int | None, str], Item] = {}
         self.seasons: dict[tuple[int, int], Item] = {}
         self.seasons_by_title: dict[tuple[int, str], Item] = {}
         self.episodes: dict[tuple[int, int], Item] = {}
@@ -108,6 +110,8 @@ class ItemIndex:
             self.movies[key].append(item)
         elif item.kind == "series":
             self.series[key].append(item)
+        elif item.kind == "folder":
+            self.folders[(item.parent_id, normalize_title(item.title))] = item
         elif item.kind == "season" and item.parent_id is not None:
             self.seasons[(item.parent_id, item.season_no or 0)] = item
             self.seasons_by_title[(item.parent_id, normalize_title(item.title))] = item
@@ -429,10 +433,8 @@ class ScannerService:
         # series → season → episode 入库，否则整季会被当成一部电影的多版本。
         if parsed.kind == "episode" and stype not in {"home", "course"}:
             return self._resolve_episode(session, library, index, parsed, stats)
-        if stype == "course":
-            return self._resolve_course(session, library, index, parsed, stats, course_sequence)
-        if stype == "home":
-            return self._resolve_home(session, library, index, parsed, stats)
+        if stype in {"home", "course"}:
+            return self._resolve_tree_item(session, library, index, parsed, stats)
         if stype == "movie" or (stype == "tv" and parsed.kind == "movie"):
             return self._resolve_movie(session, library, index, parsed, stats)
         if stype == "tv":
@@ -695,88 +697,70 @@ class ScannerService:
             stats.added_items += 1
         return video
 
-    def _resolve_course(
+    def _resolve_tree_item(
         self,
         session: Session,
         library: Library,
         index: ItemIndex,
         parsed: Parsed,
         stats: ScanStats,
-        course_sequence: dict[int, list[int]],
     ) -> Item:
-        course_title = parsed.group_title or "未分类课程"
-        norm_course = normalize_title(course_title)
-        course = None
-        for candidate in index.series.get(norm_course, []):
-            if candidate.parent_id is None:
-                course = candidate
-                break
-        if course is None:
-            course = self._new_item(
-                session,
-                library,
-                index,
-                kind="series",
-                title=course_title,
-                match_state="skipped",
-                parse_payload={"group_title": course_title},
-            )
-            stats.added_items += 1
+        """课程 / 家庭视频：按实际物理目录保留层级，支持任意多级层级。
 
-        chapter_title = parsed.chapter_title or "默认章节"
-        chapter = index.seasons_by_title.get(
-            (course.id, normalize_title(chapter_title))
-        )
-        if chapter is None:
-            chapter_no = parsed.season
-            if not chapter_no:
-                siblings = [
-                    c
-                    for c in index.children.get(course.id, [])
-                    if c.kind == "season"
-                ]
-                chapter_no = len(siblings) + 1
-            chapter = self._new_item(
-                session,
-                library,
-                index,
-                kind="season",
-                title=chapter_title,
-                parent_id=course.id,
-                season_no=chapter_no,
-                match_state="skipped",
-                parse_payload={"chapter_title": chapter_title, "season_no": chapter_no},
-            )
-            stats.added_items += 1
+        中间各层目录均为 Item(kind='folder')，最后一层直接包含的视频为 Item(kind='video')。
+        """
+        current_parent_id: int | None = None
+        for depth, folder_name in enumerate(parsed.folder_parts):
+            clean_name = folder_name.strip()
+            norm_folder = normalize_title(clean_name)
+            folder = index.folders.get((current_parent_id, norm_folder))
+            if folder is None:
+                match = re.match(
+                    r"^\s*(?:\[(\d{1,4})\]|(\d{1,4}))\s*(?:--|-|–|—|[\s._\-])*\s*",
+                    clean_name,
+                )
+                folder_no = (
+                    int(match.group(1) or match.group(2))
+                    if match
+                    else (depth + 1)
+                )
+                folder = self._new_item(
+                    session,
+                    library,
+                    index,
+                    kind="folder",
+                    title=clean_name,
+                    parent_id=current_parent_id,
+                    episode_no=folder_no,
+                    match_state="skipped",
+                    parse_payload={
+                        "folder_path": parsed.folder_parts[: depth + 1]
+                    },
+                )
+                stats.added_items += 1
+                index.folders[(current_parent_id, norm_folder)] = folder
+            current_parent_id = folder.id
 
-        norm_video = normalize_title(parsed.title)
-        video = index.videos.get((chapter.id, norm_video))
+        title = parsed.title or parsed.raw_name
+        norm_video = normalize_title(title)
+        video = index.videos.get((current_parent_id, norm_video))
         if video is None:
-            episode_no = parsed.episode
-            if not episode_no:
-                used = [
-                    c.episode_no or 0
-                    for c in index.children.get(chapter.id, [])
-                    if c.kind == "episode"
-                ]
-                episode_no = (max(used) if used else 0) + 1
             video = self._new_item(
                 session,
                 library,
                 index,
-                kind="episode",
-                title=parsed.title,
-                parent_id=chapter.id,
-                season_no=chapter.season_no,
-                episode_no=episode_no,
+                kind="video",
+                title=title,
+                parent_id=current_parent_id,
+                episode_no=parsed.episode,
                 match_state="skipped",
                 parse_payload={
-                    "parse_title": parsed.title,
-                    "chapter_title": chapter_title,
-                    "course_title": course_title,
+                    "parse_title": title,
+                    "folder_parts": parsed.folder_parts,
                 },
             )
             stats.added_items += 1
+            index.videos[(current_parent_id, norm_video)] = video
         return video
 
     # -- 媒体文件 ---------------------------------------------------------
@@ -880,8 +864,8 @@ class ScannerService:
                 children[item.parent_id].append(item.id)
 
         deletable: list[Item] = []
-        # 自底向上：先删除空 episode/video/movie，再删除空 season/series
-        order = {"episode": 0, "video": 0, "movie": 0, "season": 1, "series": 2}
+        # 自底向上：先删除空 episode/video/movie，再删除空 season/series/folder
+        order = {"episode": 0, "video": 0, "movie": 0, "season": 1, "series": 2, "folder": 3}
         for item in sorted(items, key=lambda i: order.get(i.kind, 3), reverse=True):
             if item.id is None:
                 continue

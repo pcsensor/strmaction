@@ -60,14 +60,12 @@ def test_tv_matrix(rel, series, year, season, episode, confidence):
 def test_home_and_course():
     home = parse_path("home", "2024-06-01 生日/VID_20240601.mp4.strm")
     assert home.kind == "video"
-    assert home.group_title == "2024-06-01 生日"
-    assert home.title == "VID 20240601"
+    assert home.folder_parts == ["2024-06-01 生日"]
+    assert home.title == "VID_20240601"
 
     course = parse_path("course", "Rust 实战/01 所有权/01 所有权.strm")
     assert course.kind == "video"
-    assert course.group_title == "Rust 实战"
-    assert course.chapter_title == "所有权"
-    assert course.season == 1
+    assert course.folder_parts == ["Rust 实战", "01 所有权"]
     assert course.episode == 1
     assert course.title == "所有权"
 

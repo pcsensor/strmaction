@@ -168,7 +168,7 @@ def ready_item_ids(session: Session, library_id: int | None = None) -> set[int]:
     for item_id in list(ready):
         current = parent_of.get(item_id)
         guard = 0
-        while current and guard < 8:
+        while current and guard < 32:
             if current in deleted:
                 ready.discard(item_id)
                 break

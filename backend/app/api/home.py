@@ -73,7 +73,7 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
         ready = ready_item_ids(session)
         query = select(Item).where(
             Item.deleted_at == None,  # noqa: E711
-            Item.kind.in_(["movie", "series", "video"]),
+            Item.kind.in_(["movie", "series", "video", "folder"]),
         )
 
         # 按用户权限过滤
@@ -232,15 +232,25 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
         libraries = session.exec(libraries_query).all()
 
         for library in libraries:
-            lib_items = [
-                i
-                for i in playable
-                if i.library_id == library.id
-                and i.kind in {"movie", "series", "video"}
-            ]
+            if library.type in {"home", "course"}:
+                lib_items = [
+                    i
+                    for i in playable
+                    if i.library_id == library.id
+                    and i.parent_id is None
+                    and i.kind in {"folder", "video"}
+                ]
+                lib_items.sort(key=lambda i: (i.episode_no or 0, i.title))
+            else:
+                lib_items = [
+                    i
+                    for i in playable
+                    if i.library_id == library.id
+                    and i.kind in {"movie", "series", "video"}
+                ]
+                lib_items.sort(key=lambda i: i.created_at or "", reverse=True)
             if not lib_items:
                 continue
-            lib_items.sort(key=lambda i: i.created_at or "", reverse=True)
             rows.append(
                 {
                     "key": f"library:{library.id}",
