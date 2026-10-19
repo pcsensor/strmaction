@@ -208,7 +208,14 @@ export function LibrariesPage() {
                 {activeLib.name}
               </h2>
               <span className="rounded-full border border-white/10 bg-white/5 px-2.5 py-0.5 text-xs text-ink-300">
-                {isTreeType ? `${folders.length} 个文件夹 · ${directVideos.length} 部视频` : `${total} 部作品`}
+                {isTreeType
+                  ? [
+                      folders.length ? `${folders.length} 个文件夹` : null,
+                      directVideos.length ? `${directVideos.length} 部视频` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(' · ') || '暂无内容'
+                  : `${total} 部作品`}
               </span>
             </div>
 
