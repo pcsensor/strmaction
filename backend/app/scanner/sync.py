@@ -272,7 +272,7 @@ class ScannerService:
                     session.add(item)
                 else:
                     item = self._resolve_item(
-                        session, library, index, parsed, entry, stats, course_sequence
+                        session, library, index, parsed, entry, stats, course_sequence, existing_media=old
                     )
                 old_abs = old.abs_path if old else None
                 media, created = self._upsert_media(
@@ -429,6 +429,7 @@ class ScannerService:
         entry: WalkEntry,
         stats: ScanStats,
         course_sequence: dict[int, list[int]],
+        existing_media: MediaFile | None = None,
     ) -> Item:
         stype = library.type
         # 剧集结构优先于库类型：电影库/电视剧库里混入的剧集都要按
@@ -436,7 +437,7 @@ class ScannerService:
         if parsed.kind == "episode" and stype not in {"home", "course"}:
             return self._resolve_episode(session, library, index, parsed, stats)
         if stype in {"home", "course"}:
-            return self._resolve_tree_item(session, library, index, parsed, stats)
+            return self._resolve_tree_item(session, library, index, parsed, stats, existing_media=existing_media)
         if stype == "movie" or (stype == "tv" and parsed.kind == "movie"):
             return self._resolve_movie(session, library, index, parsed, stats)
         if stype == "tv":
@@ -706,6 +707,7 @@ class ScannerService:
         index: ItemIndex,
         parsed: Parsed,
         stats: ScanStats,
+        existing_media: MediaFile | None = None,
     ) -> Item:
         """课程 / 家庭视频：按实际物理目录保留层级，支持任意多级层级。
 
@@ -745,9 +747,20 @@ class ScannerService:
 
         title = parsed.title or parsed.raw_name
         video_key = title.strip().lower()
-        video = index.tree_videos.get((current_parent_id, video_key))
+
+        video: Item | None = None
+        # 1. 如果此前已有 MediaFile 绑定到本目录下的某个有效视频，优先精准定位
+        if existing_media and existing_media.item_id:
+            cand = index.by_id.get(existing_media.item_id)
+            if cand and cand.parent_id == current_parent_id and cand.kind == "video" and not getattr(cand, "_claimed", False):
+                video = cand
+
+        # 2. 否则按当前目录下精确文件名查找
         if video is None:
-            video = index.videos.get((current_parent_id, normalize_title(title)))
+            cand = index.tree_videos.get((current_parent_id, video_key))
+            if cand and not getattr(cand, "_claimed", False):
+                video = cand
+
         if video is None:
             video = self._new_item(
                 session,
@@ -765,7 +778,6 @@ class ScannerService:
             )
             stats.added_items += 1
             index.tree_videos[(current_parent_id, video_key)] = video
-            index.videos[(current_parent_id, normalize_title(title))] = video
         else:
             changed = False
             if video.title != title:
@@ -779,6 +791,8 @@ class ScannerService:
                 video.updated_at = utcnow()
                 session.add(video)
             index.tree_videos[(current_parent_id, video_key)] = video
+
+        setattr(video, "_claimed", True)
         return video
 
     # -- 媒体文件 ---------------------------------------------------------

@@ -15,7 +15,7 @@ from .types import Parsed
 
 # 解析规则版本：升级后扫描器会对所有文件强制重解析一次，
 # 避免「增量跳过」让老库永远停留在旧结构（例如整季被识别成一部电影）。
-PARSER_VERSION = 4
+PARSER_VERSION = 5
 
 _VIDEO_EXT_RE = re.compile(
     r"\.(?:strm|mp4|mkv|avi|mov|m2ts|ts|webm|flv|wmv|iso|rmvb)$", re.I
