@@ -217,6 +217,25 @@ def test_image_variants_and_color(env, tmp_path):
     assert contrast_ratio(rgb, (7, 8, 10)) >= 4.5
 
 
+def test_image_logo_preserves_alpha(env, tmp_path):
+    config, db, settings, images = env
+    source = tmp_path / "logo.png"
+    # Create an image with transparent background and some content
+    image = Image.new("RGBA", (800, 200), (0, 0, 0, 0))
+    image.putpixel((100, 50), (255, 255, 255, 255))
+    image.save(source, "PNG")
+
+    sha = asyncio.run(images.ensure(str(source), "logo"))
+    assert sha
+    logo_400 = settings.image_dir / f"{sha}_400.webp"
+    assert logo_400.is_file()
+
+    loaded = Image.open(logo_400)
+    assert loaded.mode == "RGBA"
+    # Transparent area must preserve alpha == 0, not turn solid black
+    assert loaded.getpixel((0, 0))[3] == 0
+
+
 # ---------------------------------------------------------------------------
 # NFO
 # ---------------------------------------------------------------------------
