@@ -13,6 +13,7 @@ from sqlmodel import Session
 
 from ..config_store import SettingsService
 from ..models import ProviderToken, utcnow
+from .registry import register_provider
 from .base import (
     Candidate,
     CanonicalMeta,
@@ -83,6 +84,7 @@ def pick_artwork(
     return candidates[0]["image"]
 
 
+@register_provider("tvdb")
 class TvdbProvider:
     name = "tvdb"
     supports: set[Kind] = {"movie", "tv"}

@@ -451,3 +451,25 @@ def test_locked_fields_and_cross_source_fill(env, tmp_path):
         item = session.get(Item, item_id)
         assert item.title == "手动标题"  # 锁定字段不被覆盖
         assert item.overview == "来自 TVDB 的简介"  # 跨源补空
+
+
+def test_provider_registry_plugin(env):
+    config, db, settings, images = env
+    from app.scraper.registry import ProviderRegistry, register_provider, get_registered_providers
+
+    assert "tmdb" in get_registered_providers()
+    assert "tvdb" in get_registered_providers()
+
+    class CustomMockProvider:
+        name = "mock"
+        supports = {"movie"}
+        def __init__(self, s):
+            self.settings = s
+
+    register_provider("mock")(CustomMockProvider)
+    assert "mock" in get_registered_providers()
+
+    registry = ProviderRegistry(settings)
+    provider = registry.get("mock")
+    assert provider is not None
+    assert provider.name == "mock"
