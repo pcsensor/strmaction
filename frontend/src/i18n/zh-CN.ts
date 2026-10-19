@@ -375,7 +375,7 @@ export const zhCN = {
     },
     password: {
       title: '设置管理员密码',
-      desc: 'StrmAction 只有单管理员账号，所有接口都需要登录。',
+      desc: 'StrmAction 初始化将创建系统超级管理员账号，所有接口都需要登录。',
       username: '管理员账号',
       password: '密码',
       confirm: '确认密码',

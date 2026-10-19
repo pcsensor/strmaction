@@ -85,7 +85,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 4. 提供**手动匹配修正**：自动匹配失败或匹配错误时，管理员可搜索并重新绑定。
 5. 提供优雅的浏览界面：轮播首页、详情页、选集、搜索、继续观看（支持快速移除且保留断点）。
 6. 点播放 → 把 `.strm` 内容的 URL 交给播放器：**伴侣 App 内用内置 Media3 播放**（默认），失败或用户选择时降级到外部 mpv；桌面用进程/IPC；最终兜底为复制链接。
-7. 单管理员账号登录，全站需鉴权。
+7. **多用户体系与权限隔离**：提供管理员与普通用户角色划分；管理员统一管理媒体库与系统配置，普通用户按分配的媒体库浏览与播放；个人播放进度、断点与已看状态多用户完全隔离；全站鉴权与会话管理。
 8. **独立完整**：不依赖 Jellyfin / Emby / Plex 等任何媒体服务器，单容器即可提供完整媒体库体验。
 9. **元数据可维护**：支持重新刮削、单条刷新、手动编辑字段、手动绑定，保证库可以长期演进。
 10. **电视一等公民**：提供 Android 伴侣 App，内含 Media3 播放器，实现一键播放、**实时进度**、断点续播、无缝连播（见 §12.8）。
@@ -97,7 +97,6 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 - ❌ 不做视频流中转/反代/缓存
 - ❌ 不实现网盘登录、不做 Alist 的替代
 - ❌ **不依赖、不读取、不迁移任何 Jellyfin / Emby / Plex 的数据**（本项目是替代品，不是外挂）
-- ❌ 不做多用户/权限体系（仅单管理员）
 - ❌ 不做弹幕、评论、社交
 - ❌ 不做网页内嵌播放器（WebView 里的 `<video>` 不用于播视频流；播放由原生播放器承担）
 - ❌ 不做多语言 UI（目前仅中文；元数据语言可配，那是数据层不是 UI）
@@ -334,22 +333,59 @@ CREATE INDEX idx_media_item ON media_file(item_id);
 
 CREATE TABLE play_progress (
   id            INTEGER PRIMARY KEY,
+  user_id       INTEGER REFERENCES user(id) ON DELETE CASCADE, -- v0.9 多用户隔离
   item_id       INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
   position_ms   INTEGER NOT NULL,
   duration_ms   INTEGER,
   finished      INTEGER NOT NULL DEFAULT 0,
-  updated_at    TEXT NOT NULL
+  dismissed     INTEGER NOT NULL DEFAULT 0,  -- 从首页「继续观看」移除标记
+  updated_at    TEXT NOT NULL,
+  last_client_key TEXT                       -- 客户端上报幂等键
 );
-CREATE UNIQUE INDEX uq_progress_item ON play_progress(item_id);
+CREATE UNIQUE INDEX uq_progress_user_item ON play_progress(user_id, item_id);
 
 CREATE TABLE play_token (
   token         TEXT PRIMARY KEY,          -- pt_xxx
+  user_id       INTEGER REFERENCES user(id) ON DELETE CASCADE,
   item_id       INTEGER NOT NULL REFERENCES item(id) ON DELETE CASCADE,
   created_at    TEXT NOT NULL,
   expires_at    TEXT NOT NULL,             -- 12h；只允许写该条目的进度
   revoked       INTEGER NOT NULL DEFAULT 0
 );
 CREATE INDEX idx_play_token_item ON play_token(item_id);
+CREATE INDEX idx_play_token_user ON play_token(user_id);
+
+CREATE TABLE user (
+  id            INTEGER PRIMARY KEY,
+  username      TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'user', -- admin | user
+  display_name  TEXT,
+  enabled       INTEGER NOT NULL DEFAULT 1,
+  created_at    TEXT NOT NULL,
+  updated_at    TEXT NOT NULL,
+  last_login_at TEXT,
+  created_by    INTEGER REFERENCES user(id)
+);
+CREATE UNIQUE INDEX idx_user_username ON user(username);
+
+CREATE TABLE user_library_access (
+  id            INTEGER PRIMARY KEY,
+  user_id       INTEGER NOT NULL REFERENCES user(id) ON DELETE CASCADE,
+  library_id    INTEGER NOT NULL REFERENCES library(id) ON DELETE CASCADE,
+  created_at    TEXT NOT NULL
+);
+CREATE INDEX idx_user_lib_uid ON user_library_access(user_id);
+CREATE INDEX idx_user_lib_lid ON user_library_access(library_id);
+
+CREATE TABLE session (
+  jti           TEXT PRIMARY KEY,
+  user_id       INTEGER REFERENCES user(id) ON DELETE CASCADE,
+  username      TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'user',
+  created_at    TEXT NOT NULL,
+  expires_at    TEXT NOT NULL
+);
 
 CREATE TABLE task_log (
   id            INTEGER PRIMARY KEY,
@@ -970,27 +1006,36 @@ interface StrmActionNative {
 |---|---|---|
 | POST | `/auth/login` | `{username, password}` → 设置 Cookie |
 | POST | `/auth/logout` | 清除会话 |
-| GET | `/libraries` | 库列表（含条目数、最近扫描时间） |
+| GET | `/auth/status` | 获取初始化与当前会话状态（`initialized`, `logged_in`, `username`, `role`, `display_name`） |
+| GET | `/auth/me` | 当前登录用户信息 `{id, username, role, display_name}` |
+| GET | `/users` | （仅管理员）获取系统所有用户列表及各用户可访问的媒体库数量与最后登录时间 |
+| POST | `/users` | （仅管理员）新建用户 `{username, password, role, display_name, enabled, library_ids}` |
+| GET | `/users/{id}` | （仅管理员）获取指定用户详情及授权媒体库 ID 列表 |
+| PATCH | `/users/{id}` | （仅管理员）更新用户（角色、启用状态、重置密码、修改授权媒体库） |
+| DELETE | `/users/{id}` | （仅管理员）删除用户（不可删除自己或最后一名管理员） |
+| GET | `/users/me` | 当前用户获取个人信息 |
+| PATCH | `/users/me/password` | 当前用户修改个人密码 `{old_password, new_password}` |
+| GET | `/libraries` | 库列表（普通用户自动按授权范围过滤；含条目数、最近扫描时间） |
 | POST | `/libraries` | 新建库 `{name, root_path, type, scan_cron}` |
 | PATCH | `/libraries/{id}` | 修改（含启用/禁用） |
 | DELETE | `/libraries/{id}` | 删除库（含级联） |
 | POST | `/libraries/{id}/scan` | 触发扫描（异步，返回 task_id） |
 | POST | `/libraries/{id}/scrape` | 触发刮削（仅处理 `pending/failed`） |
 | POST | `/libraries/{id}/refresh` | 全库刷新元数据（跳过 `manual` 与锁定字段） |
-| GET | `/items` | 查询：`library_id, kind, q, genre, year, sort, page, page_size` |
-| GET | `/items/{id}` | 详情（含子项、media_files、进度） |
+| GET | `/items` | 查询：`library_id, kind, q, genre, year, sort, page, page_size`（受用户权限控制） |
+| GET | `/items/{id}` | 详情（含子项、media_files、当前用户进度） |
 | POST | `/items/{id}/match` | 手动绑定 `{provider, provider_id}` → `manual` |
 | POST | `/items/{id}/unmatch` | 解除绑定 → `failed` |
 | GET | `/items/{id}/match-candidates` | `?q=` → TMDB 候选列表 |
 | PATCH | `/items/{id}` | 手动编辑字段（标题/简介/年份/合集…），写入 `locked_fields` |
 | POST | `/items/{id}/poster` | multipart 上传自定义海报/背景 |
 | POST | `/items/{id}/refresh` | 单条重刮 |
-| POST | `/items/{id}/watched` | `{finished: bool}` 手动标记已看/未看 |
-| DELETE/POST | `/items/{id}/continue` 或 `POST /items/{id}/dismiss-continue` | 从首页「继续观看」移除该条目（保留其播放进度与已看记录，见 §12.11） |
-| GET | `/search` | 全库搜索（标题/别名/演职员） |
-| GET | `/home` | 首页聚合：`hero[]`, `continue[]`, `recent[]`, `rows[]` |
+| POST | `/items/{id}/watched` | `{finished: bool}` 手动标记当前用户已看/未看 |
+| DELETE/POST | `/items/{id}/continue` 或 `POST /items/{id}/dismiss-continue` | 从首页「继续观看」移除该条目（保留其当前用户播放进度与已看记录，见 §12.11） |
+| GET | `/search` | 全库搜索（标题/别名/演职员，受用户授权媒体库范围过滤） |
+| GET | `/home` | 首页聚合：`hero[]`, `continue[]`, `recent[]`, `rows[]`（受用户授权媒体库范围过滤，个人进度隔离） |
 | POST | `/play/{item_id}` | 返回 `mode / play_url / resume_ms / headers / play_token / next_item_id` |
-| POST | `/items/{id}/progress` | `{position_ms, duration_ms, finished}`；鉴权支持 Cookie 或 `Bearer <play_token>`（见 §12.7） |
+| POST | `/items/{id}/progress` | `{position_ms, duration_ms, finished}`；鉴权支持 Cookie 或 `Bearer <play_token>`（自动关联对应用户，见 §12.7） |
 | GET | `/tasks` | 任务列表与日志 |
 | GET | `/settings` | 读取配置（脱敏：`api_key` 返回 `sk-****`） |
 | PATCH | `/settings` | 修改（TMDB/TVDB Key、源优先级、语言、季集类型、默认播放器、模板） |
@@ -1026,9 +1071,10 @@ interface StrmActionNative {
 
 | 页面 | 内容 |
 |---|---|
-| 首页 `/` | Hero 轮播 + 继续观看 + 最近添加 + 分类横滑（按类型/年份/评分） |
+| 首页 `/` | Hero 轮播 + 继续观看 + 最近添加 + 分类横滑（按类型/年份/评分，受授权媒体库约束） |
 | 详情 `/item/:id` | 全屏背景（模糊 + 渐隐）、标题 logo、评分/年份/时长、简介、演职员、**选集**、播放按钮（伴侣 App 内走内置播放器）、版本切换、重新匹配入口 |
-| 搜索 `/search` | 即时搜索、热门标签、结果网格 |
+| 搜索 `/search` | 即时搜索、热门标签、结果网格（受授权媒体库约束） |
+| 用户管理 `/users` | （管理员专享）用户列表、新增用户、重置密码、修改角色、分配媒体库权限 |
 | 设置 `/settings` | 库管理（含播放请求头）、TMDB/TVDB Key、源优先级、语言、季集类型、播放方式（内置/外部）、目录模板、扫描计划 |
 | 任务 `/tasks` | 扫描/刮削进度、失败清单、日志 |
 
@@ -1168,7 +1214,7 @@ ui:
 4. **TMDB 合规**：页面底部必须展示
    > This product uses the TMDB API but is not endorsed or certified by TMDB.
    并附 TMDB logo。图片仅在本地缓存用于展示。
-5. **无账号体系**：单管理员；密码使用 argon2 哈希；登录失败 5 次锁定 5 分钟。
+5. **多用户与权限隔离**：支持管理员与普通用户角色；密码使用 argon2 哈希；基于会话签名 Cookie 与服务端状态追踪；登录失败 5 次锁定 5 分钟；普通用户受媒体库访问权限隔离。
 6. **`play_token` 最小权限**：12h 有效、绑定单个 `item_id`、只能写该条目进度、不可读取任何列表或 URL；注销登录时不强制吊销（到期自然失效）。
 7. **原生层不持有会话**：伴侣 App 的播放器只用 `play_token` 与后端通信，不在 native 层复制或持久化会话 Cookie。
 
@@ -1454,7 +1500,7 @@ demuxer-max-bytes=256MiB
 | 58 | 单容器 Docker 部署 | P0 | §20 |
 | 59 | 配置优先级（DB > yaml > 默认） | P0 | §15 |
 | 60 | 数据导出/导入 + SQLite 备份 | P1 | §20 |
-| 61 | 单管理员鉴权（argon2、登录限流、HttpOnly Cookie） | P0 | §16 |
+| 61 | 多用户体系与权限隔离（管理员/普通用户、分库授权、argon2、登录限流、HttpOnly Cookie） | P0 | §16 |
 | 62 | TMDB/TVDB 连通性测试 | P1 | §13 |
 | 63 | 每个 provider 独立代理与限速 | P0 | §10.4 |
 
@@ -1475,7 +1521,6 @@ demuxer-max-bytes=256MiB
 | 网盘登录 / Alist 替代 | 由 SmartStrm + Alist 负责 |
 | 依赖 Jellyfin / Emby / Plex | 本项目是替代品 |
 | 多语言 UI 切换 | 目前仅中文（文案已集中，未来可低成本扩展） |
-| 多用户 / 权限体系 | 单管理员足够 |
 | 内嵌播放器 | 播放交给 mpv |
 | 弹幕 / 评论 / 社交 | 非目标 |
 
@@ -1483,10 +1528,10 @@ demuxer-max-bytes=256MiB
 
 | 模块 | 内容 | 核心能力 |
 |---|---|---|
-| 服务骨架 | 基础服务 + 鉴权 | FastAPI、Argon2、会话签名、健康检查 |
+| 服务骨架 | 基础服务 + 鉴权 | FastAPI、Argon2、多用户与分库授权、会话签名、健康检查 |
 | 扫描解析 | 扫描 + 结构解析 | 增量比对、命名规则链、版本归集、软删除 |
 | 刮削体系 | 双源 + 插件中心 | TMDB/TVDB 映射、打分裁决、@register_provider、图片缓存 |
-| 前端交互 | Web 浏览与设置 | 轮播、继续观看管理、选集、模块化设置页、TV 导航 |
+| 前端交互 | Web 浏览与设置 | 轮播、继续观看管理、选集、模块化设置页、用户管理后台、TV 导航 |
 | 播放分发 | 调度 + 凭证 | play_token 签发、5s 心跳上报、请求头按库下发 |
 | 伴侣 App | 原生壳 + Media3 | OkHttp 请求、40% 抽屉、双击快进退、长按倍速、mpv 兜底 |
 
