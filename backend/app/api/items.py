@@ -74,7 +74,11 @@ def _media_map(session: Session, item_ids: list[int]) -> dict[int, list[MediaFil
     if not item_ids:
         return {}
     rows = session.exec(
-        select(MediaFile).where(MediaFile.item_id.in_(item_ids))
+        select(MediaFile).where(
+            MediaFile.item_id.in_(item_ids),
+            MediaFile.invalid == False,  # noqa: E712
+            MediaFile.missing == False,  # noqa: E712
+        )
     ).all()
     out: dict[int, list[MediaFile]] = {}
     for media in rows:
@@ -282,11 +286,11 @@ def get_item(
         media_rows = session.exec(
             select(MediaFile).where(MediaFile.item_id == item.id)
         ).all()
-        media_files = [_media_payload(m) for m in media_rows if not m.invalid]
+        media_files = [_media_payload(m) for m in media_rows if not m.invalid and not m.missing]
 
         detail = item_summary(
             item, progress=progress.get(item.id), badges=media_labels(
-                next((m for m in media_rows if not m.invalid), None)
+                next((m for m in media_rows if not m.invalid and not m.missing), None)
             )
         )
         detail.update(

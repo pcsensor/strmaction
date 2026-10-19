@@ -150,8 +150,11 @@ def task_payload(row: TaskLog) -> dict[str, Any]:
 
 
 def ready_item_ids(session: Session, library_id: int | None = None) -> set[int]:
-    """可展示条目：至少有一个有效 media_file 的条目及其祖先，排除软删除。"""
-    media_query = select(MediaFile.item_id).where(MediaFile.invalid == False)  # noqa: E712
+    """可展示条目：至少有一个有效且未缺失 media_file 的条目及其祖先，排除软删除。"""
+    media_query = select(MediaFile.item_id).where(
+        MediaFile.invalid == False,  # noqa: E712
+        MediaFile.missing == False,  # noqa: E712
+    )
     if library_id is not None:
         media_query = media_query.where(MediaFile.library_id == library_id)
     media_ids = {row for row in session.exec(media_query).all() if row}

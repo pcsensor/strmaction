@@ -642,4 +642,71 @@ def test_search_genre_filter():
         assert res["total"] == 0
 
 
+def test_missing_media_hidden_from_items_home_and_search():
+    from sqlmodel import Session, select
+    from app.models import Item, Library, MediaFile
+
+    app = create_app()
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "S3cure-passphrase"})
+        if login.status_code != 200:
+            client.post("/api/auth/setup", json={"password": "S3cure-passphrase"})
+
+        engine = app.state.app_state.engine
+        with Session(engine) as session:
+            lib = Library(name="缺失测试库", root_path=str(MEDIA / "缺失测试"), type="movie")
+            session.add(lib)
+            session.commit()
+            session.refresh(lib)
+
+            item = Item(
+                library_id=lib.id,
+                kind="movie",
+                title="已删除文件影片",
+                rating=8.0,
+            )
+            session.add(item)
+            session.commit()
+            session.refresh(item)
+
+            mf = MediaFile(
+                item_id=item.id,
+                library_id=lib.id,
+                rel_path="deleted.strm",
+                abs_path=str(MEDIA / "deleted.strm"),
+                url="http://test/deleted",
+                missing=True,
+                missing_count=1,
+            )
+            session.add(mf)
+            session.commit()
+            item_id = item.id
+            lib_id = lib.id
+
+        # 1. 媒体库列表：不显示该影片
+        res = client.get(f"/api/items?library_id={lib_id}").json()
+        item_ids = [i["id"] for i in res["items"]]
+        assert item_id not in item_ids
+
+        # 2. 搜索：不显示该影片
+        res = client.get("/api/search", params={"q": "已删除文件"}).json()
+        assert res["total"] == 0
+
+        # 3. 详情接口：media_files 为空
+        res = client.get(f"/api/items/{item_id}").json()
+        assert res["media_files"] == []
+
+        # 4. 恢复 missing=False 后立即重新显示
+        with Session(engine) as session:
+            mf_db = session.exec(select(MediaFile).where(MediaFile.item_id == item_id)).one()
+            mf_db.missing = False
+            session.add(mf_db)
+            session.commit()
+
+        res = client.get(f"/api/items?library_id={lib_id}").json()
+        item_ids = [i["id"] for i in res["items"]]
+        assert item_id in item_ids
+
+
+
 
