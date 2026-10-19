@@ -127,7 +127,8 @@ class PlayProgress(SQLModel, table=True):
     __tablename__ = "play_progress"
 
     id: int | None = Field(default=None, primary_key=True)
-    item_id: int = Field(foreign_key="item.id", unique=True, index=True)
+    user_id: int | None = Field(default=None, foreign_key="user.id", index=True)
+    item_id: int = Field(foreign_key="item.id", index=True)
     position_ms: int = 0
     duration_ms: int | None = None
     finished: bool = False
@@ -147,11 +148,12 @@ class PlaySession(SQLModel, table=True):
 
 
 class PlayToken(SQLModel, table=True):
-    """v0.8 播放凭证：item 级、限时、只能写该条目进度（§12.7）。"""
+    """v0.8 播放凭证：item 级、限时、只能写该条目进度（§12.7）。v0.9 新增 user_id。"""
 
     __tablename__ = "play_token"
 
     token: str = Field(primary_key=True)
+    user_id: int | None = Field(default=None, foreign_key="user.id", index=True)
     item_id: int = Field(foreign_key="item.id", index=True)
     created_at: str = Field(default_factory=utcnow)
     expires_at: str
@@ -214,12 +216,42 @@ class Setting(SQLModel, table=True):
     updated_at: str = Field(default_factory=utcnow)
 
 
+class User(SQLModel, table=True):
+    """v0.9 多用户体系：管理员 + 普通用户。"""
+
+    __tablename__ = "user"
+
+    id: int | None = Field(default=None, primary_key=True)
+    username: str = Field(unique=True, index=True)
+    password_hash: str
+    role: str = "user"  # admin | user
+    display_name: str | None = None
+    enabled: bool = True
+    created_at: str = Field(default_factory=utcnow)
+    updated_at: str = Field(default_factory=utcnow)
+    last_login_at: str | None = None
+    created_by: int | None = Field(default=None, foreign_key="user.id")
+
+
+class UserLibraryAccess(SQLModel, table=True):
+    """用户-媒体库授权关系。管理员无需此表记录（自动拥有全部库）。"""
+
+    __tablename__ = "user_library_access"
+
+    id: int | None = Field(default=None, primary_key=True)
+    user_id: int = Field(foreign_key="user.id", index=True)
+    library_id: int = Field(foreign_key="library.id", index=True)
+    created_at: str = Field(default_factory=utcnow)
+
+
 class Session(SQLModel, table=True):
-    """登录会话（支持服务端登出/吊销）。"""
+    """登录会话（支持服务端登出/吊销）。v0.9 新增 user_id / role。"""
 
     __tablename__ = "session"
 
     jti: str = Field(primary_key=True)
+    user_id: int | None = Field(default=None, foreign_key="user.id", index=True)
     username: str
+    role: str = "user"  # admin | user
     created_at: str = Field(default_factory=utcnow)
     expires_at: str

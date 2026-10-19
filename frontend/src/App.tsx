@@ -18,6 +18,7 @@ import { TasksPage } from './pages/TasksPage'
 import { FixPage } from './pages/FixPage'
 import { LoginPage } from './pages/LoginPage'
 import { SetupPage } from './pages/SetupPage'
+import { UsersPage } from './pages/UsersPage'
 import { EmptyState } from './components/EmptyState'
 import { t } from './i18n/zh-CN'
 
@@ -199,6 +200,7 @@ export default function App() {
           <Route path="/" element={<HomePage />} />
           <Route path="/item/:id" element={<DetailPage />} />
           <Route path="/search" element={<SearchPage />} />
+          <Route path="/users" element={<UsersPage />} />
           <Route path="/tasks" element={<TasksPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/fix" element={<FixPage />} />

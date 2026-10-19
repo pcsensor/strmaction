@@ -16,13 +16,16 @@ from ..deps import (
     get_images,
     get_settings,
     get_tasks,
+    get_current_user,
+    require_admin,
+    get_accessible_library_ids,
 )
 from ..errors import APIError
 from ..images import ImageService
 from ..jobs import TaskManager
 from ..models import Item, Library, MediaFile, PlayProgress, utcnow
 from ..config_store import SettingsService
-from ..schemas import ItemPatch, MatchBody, MergeBody, ProgressBody, WatchedBody
+from ..schemas import ItemPatch, MatchBody, MergeBody, ProgressBody, WatchedBody, CurrentUser
 from ..scraper.service import ScrapeService
 from ..serializers import (
     episode_code,
@@ -54,11 +57,15 @@ def _get_item(session: Session, item_id: int) -> Item:
     return item
 
 
-def _progress_map(session: Session, item_ids: list[int]) -> dict[int, PlayProgress]:
+def _progress_map(session: Session, item_ids: list[int], user_id: int) -> dict[int, PlayProgress]:
+    """v0.9: 获取用户的播放进度映射。"""
     if not item_ids:
         return {}
     rows = session.exec(
-        select(PlayProgress).where(PlayProgress.item_id.in_(item_ids))
+        select(PlayProgress).where(
+            PlayProgress.item_id.in_(item_ids),
+            PlayProgress.user_id == user_id
+        )
     ).all()
     return {row.item_id: row for row in rows}
 
@@ -104,7 +111,7 @@ def _episode_sequence(session: Session, series: Item) -> list[Item]:
     return sequence
 
 
-def _choose_play_target(session: Session, item: Item) -> Item:
+def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
     if item.kind in {"movie", "video", "episode"}:
         return item
     if item.kind == "season":
@@ -115,7 +122,7 @@ def _choose_play_target(session: Session, item: Item) -> Item:
         ).all()
         if not episodes:
             raise APIError(400, "NO_EPISODE", "该季没有可播放的剧集")
-        progress = _progress_map(session, [e.id for e in episodes])
+        progress = _progress_map(session, [e.id for e in episodes], user_id)
         for episode in episodes:
             row = progress.get(episode.id)
             if row is None or not row.finished:
@@ -125,7 +132,7 @@ def _choose_play_target(session: Session, item: Item) -> Item:
         sequence = _episode_sequence(session, item)
         if not sequence:
             raise APIError(400, "NO_EPISODE", "该剧没有可播放的剧集")
-        progress = _progress_map(session, [e.id for e in sequence])
+        progress = _progress_map(session, [e.id for e in sequence], user_id)
         for episode in sequence:
             row = progress.get(episode.id)
             if row is None or not row.finished:
@@ -154,8 +161,10 @@ def list_items(
     page: int = Query(1, ge=1),
     page_size: int = Query(24, ge=1, le=100),
     match_state: str | None = Query(None),
+    user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
 ):
+    """v0.9: 列表查询，按用户可访问库过滤。"""
     kinds = (
         [k.strip() for k in kind.split(",") if k.strip() in LIST_KINDS]
         if kind
@@ -163,13 +172,32 @@ def list_items(
     )
     if not kinds:
         kinds = ["movie", "series", "video"]
+
     with Session(engine) as session:
+        # 获取用户可访问的库
+        accessible_ids = get_accessible_library_ids(user, engine)
+
         query = select(Item).where(
             Item.deleted_at == None,  # noqa: E711
             Item.kind.in_(kinds),
         )
-        if library_id:
-            query = query.where(Item.library_id == library_id)
+
+        # 按用户权限过滤库
+        if accessible_ids is None:
+            # 管理员：查看所有库
+            if library_id:
+                query = query.where(Item.library_id == library_id)
+        else:
+            # 普通用户：只能查看授权的库
+            if not accessible_ids:
+                return {"items": [], "total": 0, "page": page, "page_size": page_size}
+            if library_id:
+                if library_id not in accessible_ids:
+                    raise APIError(403, "FORBIDDEN", "无权访问该媒体库")
+                query = query.where(Item.library_id == library_id)
+            else:
+                query = query.where(Item.library_id.in_(accessible_ids))
+
         if q:
             term = f"%{q.strip()}%"
             query = query.where(
@@ -202,7 +230,7 @@ def list_items(
         total = len(rows)
         start = (page - 1) * page_size
         page_rows = rows[start : start + page_size]
-        progress = _progress_map(session, [r.id for r in page_rows if r.id])
+        progress = _progress_map(session, [r.id for r in page_rows if r.id], user.id)
         media = _media_map(session, [r.id for r in page_rows if r.id])
         items = []
         for row in page_rows:
@@ -226,9 +254,20 @@ def list_items(
 
 
 @router.get("/{item_id}")
-def get_item(item_id: int, engine=Depends(get_engine)):
+def get_item(
+    item_id: int,
+    user: CurrentUser = Depends(get_current_user),
+    engine=Depends(get_engine),
+):
+    """v0.9: 获取条目详情，检查用户权限。"""
     with Session(engine) as session:
         item = _get_item(session, item_id)
+
+        # 检查用户是否有权访问该条目所属的库
+        accessible_ids = get_accessible_library_ids(user, engine)
+        if accessible_ids is not None and item.library_id not in accessible_ids:
+            raise APIError(403, "FORBIDDEN", "无权访问该条目")
+
         library = session.get(Library, item.library_id)
         parent = session.get(Item, item.parent_id) if item.parent_id else None
         series = series_of(session, item)
@@ -238,6 +277,7 @@ def get_item(item_id: int, engine=Depends(get_engine)):
             [item.id]
             + ([series.id] if series and series.kind == "series" else [])
             + ([parent.id] if parent else []),
+            user.id
         )
         media_rows = session.exec(
             select(MediaFile).where(MediaFile.item_id == item.id)
@@ -307,7 +347,7 @@ def get_item(item_id: int, engine=Depends(get_engine)):
                 ).all()
                 episodes = [e for e in episodes if e.id in ready]
                 all_episodes.extend(episodes)
-                ep_progress = _progress_map(session, [e.id for e in episodes])
+                ep_progress = _progress_map(session, [e.id for e in episodes], user.id)
                 ep_payloads = [
                     episode_summary(e, progress=ep_progress.get(e.id))
                     for e in episodes
@@ -334,15 +374,15 @@ def get_item(item_id: int, engine=Depends(get_engine)):
                     [],
                 )
             if all_episodes:
-                all_progress = _progress_map(session, [e.id for e in all_episodes])
+                all_progress = _progress_map(session, [e.id for e in all_episodes], user.id)
                 if item.kind == "episode":
                     # 剧集详情页的播放按钮必须播放「当前这一集」，
                     # 不能再用整部剧的「第一集未看」作为目标。
                     target = item
                 elif item.kind == "season":
-                    target = _choose_play_target(session, item)
+                    target = _choose_play_target(session, item, user.id)
                 else:
-                    target = _choose_play_target(session, target_series)
+                    target = _choose_play_target(session, target_series, user.id)
                 try:
                     index = all_episodes.index(target)
                 except ValueError:
@@ -433,6 +473,7 @@ async def match_candidates(
     item_id: int,
     q: str | None = Query(None),
     provider: str | None = Query(None),
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
     images: ImageService = Depends(get_images),
@@ -449,6 +490,7 @@ async def match_candidates(
 async def manual_match(
     item_id: int,
     body: MatchBody,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
     images: ImageService = Depends(get_images),
@@ -471,6 +513,7 @@ async def manual_match(
 @router.post("/{item_id}/unmatch")
 async def unmatch(
     item_id: int,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
     images: ImageService = Depends(get_images),
@@ -486,6 +529,7 @@ async def unmatch(
 @router.post("/{item_id}/refresh")
 async def refresh_item(
     item_id: int,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     tasks: TaskManager = Depends(get_tasks),
 ):
@@ -503,6 +547,7 @@ async def refresh_item(
 def patch_item(
     item_id: int,
     body: ItemPatch,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
 ):
     allowed = {
@@ -601,16 +646,29 @@ def report_progress(
     request: Request,
     engine=Depends(get_engine),
 ):
+    """v0.9: 上报播放进度，支持 Cookie 或 play_token 鉴权，按 user_id 隔离。"""
     # 网页用 Cookie；伴侣 App 内置播放器用 Bearer play_token（§12.7）
-    authorize_item_access(request, item_id)
+    current_user = authorize_item_access(request, item_id)
+    if not current_user:
+        raise APIError(401, "UNAUTHORIZED", "请先登录")
+
     with Session(engine) as session:
         item = _get_item(session, item_id)
         if item.kind not in {"movie", "episode", "video"}:
             raise APIError(
                 400, "PROGRESS_ITEM_INVALID", "进度只能写入电影 / 剧集 / 视频"
             )
+
+        # 检查用户是否有权访问该条目所属的库
+        accessible_ids = get_accessible_library_ids(current_user, engine)
+        if accessible_ids is not None and item.library_id not in accessible_ids:
+            raise APIError(403, "FORBIDDEN", "无权访问该条目")
+
         row = session.exec(
-            select(PlayProgress).where(PlayProgress.item_id == item_id)
+            select(PlayProgress).where(
+                PlayProgress.user_id == current_user.id,
+                PlayProgress.item_id == item_id
+            )
         ).first()
         if (
             body.client_key
@@ -635,6 +693,7 @@ def report_progress(
             position = 0
         if row is None:
             row = PlayProgress(
+                user_id=current_user.id,
                 item_id=item_id,
                 position_ms=position,
                 duration_ms=duration,
@@ -676,10 +735,18 @@ def report_progress(
 def mark_watched(
     item_id: int,
     body: WatchedBody,
+    user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
 ):
+    """v0.9: 标记已看/未看，按 user_id 隔离。"""
     with Session(engine) as session:
         item = _get_item(session, item_id)
+
+        # 检查用户是否有权访问该条目所属的库
+        accessible_ids = get_accessible_library_ids(user, engine)
+        if accessible_ids is not None and item.library_id not in accessible_ids:
+            raise APIError(403, "FORBIDDEN", "无权访问该条目")
+
         if item.kind == "series":
             sequence = _episode_sequence(session, item)
         elif item.kind == "season":
@@ -694,10 +761,17 @@ def mark_watched(
             raise APIError(400, "NO_EPISODE", "该条目下没有可标记的内容")
         for entry in sequence:
             row = session.exec(
-                select(PlayProgress).where(PlayProgress.item_id == entry.id)
+                select(PlayProgress).where(
+                    PlayProgress.user_id == user.id,
+                    PlayProgress.item_id == entry.id
+                )
             ).first()
             if row is None:
-                row = PlayProgress(item_id=entry.id, updated_at=utcnow())
+                row = PlayProgress(
+                    user_id=user.id,
+                    item_id=entry.id,
+                    updated_at=utcnow()
+                )
             row.position_ms = 0
             row.finished = bool(body.finished)
             row.updated_at = utcnow()
@@ -717,6 +791,7 @@ def mark_watched(
 def merge_item(
     item_id: int,
     body: MergeBody,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
 ):
     with Session(engine) as session:
@@ -746,24 +821,37 @@ def merge_item(
 @router.post("/{item_id}/dismiss-continue")
 def dismiss_continue(
     item_id: int,
+    user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
 ):
-    """从「继续观看」移除该条目（保留其播放进度与已看记录）。"""
+    """v0.9: 从「继续观看」移除该条目（保留其播放进度与已看记录），按 user_id 隔离。"""
     with Session(engine) as session:
         item = _get_item(session, item_id)
+
+        # 检查用户是否有权访问该条目所属的库
+        accessible_ids = get_accessible_library_ids(user, engine)
+        if accessible_ids is not None and item.library_id not in accessible_ids:
+            raise APIError(403, "FORBIDDEN", "无权访问该条目")
+
         if item.kind == "series":
             sequence = _episode_sequence(session, item)
             seq_ids = [ep.id for ep in sequence]
             if seq_ids:
                 rows = session.exec(
-                    select(PlayProgress).where(PlayProgress.item_id.in_(seq_ids))
+                    select(PlayProgress).where(
+                        PlayProgress.user_id == user.id,
+                        PlayProgress.item_id.in_(seq_ids)
+                    )
                 ).all()
                 for row in rows:
                     row.dismissed = True
                     session.add(row)
         else:
             row = session.exec(
-                select(PlayProgress).where(PlayProgress.item_id == item_id)
+                select(PlayProgress).where(
+                    PlayProgress.user_id == user.id,
+                    PlayProgress.item_id == item_id
+                )
             ).first()
             if row is not None:
                 row.dismissed = True

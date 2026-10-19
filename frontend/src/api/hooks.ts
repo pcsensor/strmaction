@@ -19,6 +19,10 @@ import type {
   SearchResponse,
   SettingsResponse,
   TaskInfo,
+  UserOut,
+  UserDetail,
+  UserCreateInput,
+  UserPatchInput,
 } from './types'
 
 export const keys = {
@@ -32,6 +36,8 @@ export const keys = {
   settings: ['settings'] as const,
   candidates: (id: number, q: string, provider: string) =>
     ['candidates', id, q, provider] as const,
+  users: ['users'] as const,
+  user: (id: number) => ['user', id] as const,
 }
 
 export function useAuthState() {
@@ -406,3 +412,68 @@ export function useImportData() {
 export function useSearchLibraries() {
   return useLibraries()
 }
+
+// v0.9 用户管理
+export function useUsers() {
+  return useQuery({
+    queryKey: keys.users,
+    queryFn: () => api.get<UserOut[]>('/api/users'),
+  })
+}
+
+export function useUser(id: number | null) {
+  return useQuery({
+    queryKey: keys.user(id ?? 0),
+    queryFn: () => api.get<UserDetail>(`/api/users/${id}`),
+    enabled: id !== null && Number.isFinite(id) && id > 0,
+  })
+}
+
+export function useCreateUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (input: UserCreateInput) =>
+      api.post<UserOut>('/api/users', input),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.users })
+    },
+  })
+}
+
+export function useUpdateUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, data }: { id: number; data: UserPatchInput }) =>
+      api.patch<UserOut>(`/api/users/${id}`, data),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: keys.users })
+      queryClient.invalidateQueries({ queryKey: keys.user(variables.id) })
+    },
+  })
+}
+
+export function useDeleteUser() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (id: number) => api.delete(`/api/users/${id}`),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: keys.users })
+    },
+  })
+}
+
+export function useUpdateUserLibraries() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, library_ids }: { id: number; library_ids: number[] }) =>
+      api.put<{ user_id: number; library_count: number }>(
+        `/api/users/${id}/libraries`,
+        { library_ids },
+      ),
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: keys.users })
+      queryClient.invalidateQueries({ queryKey: keys.user(variables.id) })
+    },
+  })
+}
+

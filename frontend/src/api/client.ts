@@ -74,6 +74,9 @@ export const api = {
   post<T>(path: string, body?: unknown, signal?: AbortSignal) {
     return request<T>(path, { method: 'POST', body, signal })
   },
+  put<T>(path: string, body?: unknown) {
+    return request<T>(path, { method: 'PUT', body })
+  },
   patch<T>(path: string, body?: unknown) {
     return request<T>(path, { method: 'PATCH', body })
   },

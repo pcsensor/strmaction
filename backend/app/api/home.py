@@ -1,4 +1,4 @@
-"""首页聚合 API（§13 GET /home）。"""
+"""首页聚合 API（§13 GET /home）。v0.9: 支持多用户和管理员去重逻辑。"""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from sqlmodel import Session, select
 
-from ..deps import get_engine
+from ..deps import get_engine, get_current_user, get_accessible_library_ids
 from ..models import Item, Library, PlayProgress
+from ..schemas import CurrentUser
 from ..serializers import (
     episode_code,
     item_summary,
@@ -21,6 +22,31 @@ from ..serializers import (
 )
 
 router = APIRouter(tags=["home"])
+
+
+def _dedupe_items_for_admin(items: list[Item]) -> list[Item]:
+    """
+    管理员视角去重：同一影片在多个库中时，只保留一个。
+    去重策略：按 provider_id（如 tmdb:12345）或 title+year 分组。
+    """
+    seen_keys: set[str] = set()
+    deduped: list[Item] = []
+
+    for item in items:
+        key = None
+        if item.provider_id:
+            key = f"{item.provider}:{item.provider_id}"
+        elif item.title and item.title.strip():
+            title = item.title.strip().lower()
+            year = item.year or 0
+            key = f"title:{title}:{year}"
+
+        if key is None or key not in seen_keys:
+            if key:
+                seen_keys.add(key)
+            deduped.append(item)
+
+    return deduped
 
 
 def _hero(item: Item) -> dict[str, Any]:
@@ -37,20 +63,46 @@ def _hero(item: Item) -> dict[str, Any]:
 
 
 @router.get("/home")
-def home(engine=Depends(get_engine)):
+def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engine)):
+    """v0.9: 首页聚合，管理员看所有库（去重+标注多库），普通用户只看授权库。"""
     with Session(engine) as session:
+        # 获取用户可访问的库
+        accessible_ids = get_accessible_library_ids(user, engine)
+
+        # 构造查询条件
         ready = ready_item_ids(session)
-        all_items = session.exec(
-            select(Item).where(
-                Item.deleted_at == None,  # noqa: E711
-                Item.kind.in_(["movie", "series", "video"]),
-            )
-        ).all()
+        query = select(Item).where(
+            Item.deleted_at == None,  # noqa: E711
+            Item.kind.in_(["movie", "series", "video"]),
+        )
+
+        # 按用户权限过滤
+        if accessible_ids is not None:  # 普通用户
+            if not accessible_ids:
+                # 用户没有授权任何库
+                return {
+                    "hero": [],
+                    "continue": [],
+                    "rows": [],
+                    "stats": {"movies": 0, "series": 0, "episodes": 0, "videos": 0},
+                    "needs_attention": 0,
+                    "libraries": [],
+                }
+            query = query.where(Item.library_id.in_(accessible_ids))
+
+        all_items = session.exec(query).all()
         playable = [i for i in all_items if i.id in ready]
+
+        # 管理员去重逻辑（用于推荐流，不影响单库展示）
+        deduped_playable = (
+            _dedupe_items_for_admin(playable)
+            if user.role == "admin" and accessible_ids is None
+            else playable
+        )
 
         hero_candidates = [
             i
-            for i in playable
+            for i in deduped_playable
             if i.kind in {"movie", "series"} and i.backdrop_path
         ]
         hero_candidates.sort(
@@ -58,10 +110,12 @@ def home(engine=Depends(get_engine)):
         )
         hero = [_hero(i) for i in hero_candidates[:6]]
 
+        # 继续观看：按 user_id 过滤
         continue_rows: list[dict[str, Any]] = []
         progress_rows = session.exec(
             select(PlayProgress)
             .where(
+                PlayProgress.user_id == user.id,
                 PlayProgress.finished == False,  # noqa: E712
                 PlayProgress.position_ms > 0,
                 PlayProgress.dismissed == False,  # noqa: E712
@@ -121,12 +175,12 @@ def home(engine=Depends(get_engine)):
                 break
 
         recent = sorted(
-            [i for i in playable if i.kind in {"movie", "series"}],
+            [i for i in deduped_playable if i.kind in {"movie", "series"}],
             key=lambda i: i.created_at or "",
             reverse=True,
         )[:20]
         top_rated = sorted(
-            [i for i in playable if i.rating],
+            [i for i in deduped_playable if i.rating],
             key=lambda i: (-(i.rating or 0), i.created_at or ""),
         )[:20]
 
@@ -150,7 +204,7 @@ def home(engine=Depends(get_engine)):
 
         # 按类型
         genre_counter: Counter[str] = Counter()
-        for item in playable:
+        for item in deduped_playable:
             if item.kind not in {"movie", "series"}:
                 continue
             for genre in parse_json(item.genres, []) or []:
@@ -158,7 +212,7 @@ def home(engine=Depends(get_engine)):
         for genre, _count in genre_counter.most_common(4):
             items = [
                 i
-                for i in playable
+                for i in deduped_playable
                 if i.kind in {"movie", "series"}
                 and genre in (parse_json(i.genres, []) or [])
             ]
@@ -172,7 +226,11 @@ def home(engine=Depends(get_engine)):
             )
 
         # 按媒体库
-        libraries = session.exec(select(Library).order_by(Library.id)).all()
+        libraries_query = select(Library).order_by(Library.id)
+        if accessible_ids is not None:
+            libraries_query = libraries_query.where(Library.id.in_(accessible_ids))
+        libraries = session.exec(libraries_query).all()
+
         for library in libraries:
             lib_items = [
                 i
@@ -191,26 +249,29 @@ def home(engine=Depends(get_engine)):
                 }
             )
 
-        needs_attention = sum(
-            1
-            for i in all_items
-            if i.kind in {"movie", "series"}
-            and (
-                i.match_state == "failed"
-                or (i.match_state == "pending" and i.provider)
+        needs_attention = (
+            sum(
+                1
+                for i in all_items
+                if i.kind in {"movie", "series"}
+                and (
+                    i.match_state == "failed"
+                    or (i.match_state == "pending" and i.provider)
+                )
             )
+            if user.role == "admin"
+            else 0
         )
+        episodes_query = select(Item).where(
+            Item.kind == "episode",
+            Item.deleted_at == None,  # noqa: E711
+        )
+        if accessible_ids is not None:
+            episodes_query = episodes_query.where(Item.library_id.in_(accessible_ids))
         stats = {
             "movies": sum(1 for i in playable if i.kind == "movie"),
             "series": sum(1 for i in playable if i.kind == "series"),
-            "episodes": len(
-                session.exec(
-                    select(Item).where(
-                        Item.kind == "episode",
-                        Item.deleted_at == None,  # noqa: E711
-                    )
-                ).all()
-            ),
+            "episodes": len(session.exec(episodes_query).all()),
             "videos": sum(1 for i in playable if i.kind == "video"),
         }
 

@@ -465,3 +465,87 @@ def test_dismiss_continue_watching():
         continue_ids3 = [c["continue_item_id"] for c in home3["continue"]]
         assert ep0["id"] in continue_ids3
 
+
+def test_multiuser_and_permissions():
+    """v0.9：多用户增删改查、媒体库授权隔离、播放进度隔离及管理权限拦截。"""
+    app = create_app()
+    with TestClient(app) as admin_client:
+        admin_client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        libs = admin_client.get("/api/libraries").json()["libraries"]
+        movie_lib = next(l for l in libs if l["type"] == "movie")
+        tv_lib = next(l for l in libs if l["type"] == "tv")
+
+        # 1. 管理员创建普通用户（仅授权电影库）
+        create_res = admin_client.post(
+            "/api/users",
+            json={
+                "username": "viewer1",
+                "password": "Password-123",
+                "display_name": "观众1",
+                "role": "user",
+                "library_ids": [movie_lib["id"]],
+            },
+        )
+        assert create_res.status_code == 201, create_res.text
+        user_id = create_res.json()["id"]
+
+        # 2. 普通用户登录
+        with TestClient(app) as user_client:
+            login_res = user_client.post(
+                "/api/auth/login",
+                json={"username": "viewer1", "password": "Password-123"},
+            )
+            assert login_res.status_code == 200, login_res.text
+
+            # 3. 普通用户只能看到电影库，看不到剧集库
+            user_libs = user_client.get("/api/libraries").json()["libraries"]
+            user_lib_ids = [l["id"] for l in user_libs]
+            assert movie_lib["id"] in user_lib_ids
+            assert tv_lib["id"] not in user_lib_ids
+
+            # 4. 普通用户无法访问管理端接口（settings / tasks / users）
+            assert user_client.get("/api/settings").status_code == 403
+            assert user_client.get("/api/tasks").status_code == 403
+            assert user_client.get("/api/users").status_code == 403
+
+            # 5. 普通用户不能访问剧集库的条目
+            tv_items = admin_client.get("/api/items", params={"library_id": tv_lib["id"]}).json()["items"]
+            tv_item = tv_items[0]
+            assert user_client.get(f"/api/items/{tv_item['id']}").status_code == 403
+            assert user_client.post(f"/api/items/{tv_item['id']}/match", json={"provider": "tmdb", "provider_id": "1"}).status_code == 403
+            assert user_client.post(f"/api/play/{tv_item['id']}").status_code == 403
+
+            # 6. 普通用户播放进度隔离测试
+            movie_items = user_client.get("/api/items", params={"library_id": movie_lib["id"]}).json()["items"]
+            movie_item = movie_items[0]
+
+            # 普通用户上报进度 50000ms
+            p_res = user_client.post(
+                f"/api/items/{movie_item['id']}/progress",
+                json={"position_ms": 50000, "duration_ms": 120000},
+            )
+            assert p_res.status_code == 200
+
+            # 普通用户详情中显示 50000ms
+            u_detail = user_client.get(f"/api/items/{movie_item['id']}").json()
+            assert u_detail["progress"]["position_ms"] == 50000
+
+            # 管理员详情中不受影响（仍然无进度）
+            a_detail = admin_client.get(f"/api/items/{movie_item['id']}").json()
+            assert a_detail["progress"] is None
+
+        # 7. 管理员更新用户媒体库授权（追加剧集库）
+        update_lib = admin_client.put(
+            f"/api/users/{user_id}/libraries",
+            json={"library_ids": [movie_lib["id"], tv_lib["id"]]},
+        )
+        assert update_lib.status_code == 200
+
+        # 8. 管理员删除用户
+        del_res = admin_client.delete(f"/api/users/{user_id}")
+        assert del_res.status_code == 204
+
+

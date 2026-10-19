@@ -9,7 +9,14 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import delete, func
 from sqlmodel import Session, select
 
-from ..deps import get_engine, get_scheduler, get_tasks
+from ..deps import (
+    get_engine,
+    get_scheduler,
+    get_tasks,
+    get_current_user,
+    require_admin,
+    get_accessible_library_ids,
+)
 from ..errors import APIError
 from ..models import (
     ImageTask,
@@ -19,12 +26,13 @@ from ..models import (
     PlayProgress,
     PlaySession,
     PlayToken,
+    UserLibraryAccess,
     utcnow,
 )
 from ..jobs import SchedulerService, TaskManager
 from ..players import clean_headers
 from ..scanner.walker import ensure_library_root
-from ..schemas import LibraryCreate, LibraryPatch
+from ..schemas import LibraryCreate, LibraryPatch, CurrentUser
 from ..serializers import library_payload
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
@@ -75,9 +83,25 @@ def _play_headers(value: dict[str, str] | None) -> str | None:
 
 
 @router.get("")
-def list_libraries(engine=Depends(get_engine)):
+def list_libraries(
+    user: CurrentUser = Depends(get_current_user),
+    engine=Depends(get_engine),
+):
+    """v0.9: 获取用户可访问的媒体库列表。"""
     with Session(engine) as session:
-        libraries = session.exec(select(Library).order_by(Library.id)).all()
+        # 管理员看所有库
+        if user.role == "admin":
+            libraries = session.exec(select(Library).order_by(Library.id)).all()
+        else:
+            # 普通用户只看授权的库
+            accessible_ids = get_accessible_library_ids(user, engine)
+            if not accessible_ids:
+                return {"libraries": []}
+            libraries = session.exec(
+                select(Library)
+                .where(Library.id.in_(accessible_ids))
+                .order_by(Library.id)
+            ).all()
         return {
             "libraries": [
                 library_payload(library, _counts(session, library.id or 0))
@@ -89,9 +113,11 @@ def list_libraries(engine=Depends(get_engine)):
 @router.post("", status_code=201)
 def create_library(
     body: LibraryCreate,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
+    """v0.9: Create library (admin only)."""
     if body.type not in VALID_TYPES:
         raise APIError(400, "INVALID_TYPE", "未知的媒体库类型")
     name = (body.name or "").strip()
@@ -127,9 +153,11 @@ def create_library(
 def update_library(
     library_id: int,
     body: LibraryPatch,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
+    """v0.9: Update library (admin only)."""
     with Session(engine) as session:
         library = session.get(Library, library_id)
         if library is None:
@@ -168,6 +196,7 @@ def update_library(
 @router.delete("/{library_id}", status_code=204)
 def delete_library(
     library_id: int,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
@@ -203,6 +232,7 @@ def delete_library(
 @router.post("/{library_id}/scan")
 async def scan_library(
     library_id: int,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     tasks: TaskManager = Depends(get_tasks),
 ):
@@ -217,6 +247,7 @@ async def scan_library(
 async def scrape_library(
     library_id: int,
     mode: str = Query("pending", pattern="^(pending|refresh)$"),
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     tasks: TaskManager = Depends(get_tasks),
 ):
@@ -230,6 +261,7 @@ async def scrape_library(
 @router.post("/{library_id}/refresh")
 async def refresh_library(
     library_id: int,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     tasks: TaskManager = Depends(get_tasks),
 ):

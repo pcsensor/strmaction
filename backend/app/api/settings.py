@@ -1,4 +1,4 @@
-"""设置与 Provider 连通性测试 API。"""
+"""设置与 Provider 连通性测试 API（v0.9: 仅管理员）。"""
 
 from __future__ import annotations
 
@@ -10,11 +10,11 @@ from sqlmodel import Session
 
 from .. import __version__
 from ..config_store import SettingsService
-from ..deps import get_engine, get_scheduler, get_settings
+from ..deps import get_engine, get_scheduler, get_settings, require_admin
 from ..errors import APIError
 from ..jobs import SchedulerService
 from ..players import clean_headers
-from ..schemas import ProviderTestBody
+from ..schemas import ProviderTestBody, CurrentUser
 from ..scraper.service import ProviderRegistry
 
 router = APIRouter(tags=["settings"])
@@ -81,13 +81,17 @@ def _payload(settings: SettingsService) -> dict[str, Any]:
 
 
 @router.get("/settings")
-def get_settings_api(settings: SettingsService = Depends(get_settings)):
+def get_settings_api(
+    _admin: CurrentUser = Depends(require_admin),
+    settings: SettingsService = Depends(get_settings),
+):
     return _payload(settings)
 
 
 @router.patch("/settings")
 def patch_settings(
     patch: dict[str, Any] = Body(...),
+    _admin: CurrentUser = Depends(require_admin),
     settings: SettingsService = Depends(get_settings),
     scheduler: SchedulerService = Depends(get_scheduler),
 ):
@@ -103,6 +107,7 @@ def patch_settings(
 @router.post("/settings/provider-test")
 async def provider_test(
     body: ProviderTestBody,
+    _admin: CurrentUser = Depends(require_admin),
     settings: SettingsService = Depends(get_settings),
     engine=Depends(get_engine),
 ):
