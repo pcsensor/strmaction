@@ -15,9 +15,22 @@ android {
         versionName = "1.7"
     }
 
+    signingConfigs {
+        create("release") {
+            val ksFile = rootProject.file("release.keystore")
+            if (ksFile.exists()) {
+                storeFile = ksFile
+                storePassword = "strmaction"
+                keyAlias = "strmaction"
+                keyPassword = "strmaction"
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("release")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",

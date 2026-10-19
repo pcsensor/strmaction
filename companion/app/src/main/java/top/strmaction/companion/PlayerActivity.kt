@@ -1,12 +1,15 @@
 package top.strmaction.companion
 
 import android.app.PictureInPictureParams
+import android.content.Context
 import android.content.Intent
 import android.content.res.ColorStateList
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.GradientDrawable
+import android.media.AudioManager
 import android.net.Uri
+import android.provider.Settings
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
@@ -40,6 +43,8 @@ import top.strmaction.companion.player.PlayerTrackHelper
 import top.strmaction.companion.player.dp
 import top.strmaction.companion.player.formatTime
 import top.strmaction.companion.player.rounded
+import kotlin.math.abs
+import kotlin.math.min
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
@@ -105,7 +110,26 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var seekFeedbackBadge: TextView
     private lateinit var loadingView: LinearLayout
     private lateinit var loadingText: TextView
+    private lateinit var bufferingView: LinearLayout
     private lateinit var drawer: PlayerDrawer
+
+    private enum class GestureMode {
+        NONE,
+        BRIGHTNESS,
+        VOLUME,
+        PROGRESS,
+    }
+    private var activeGesture = GestureMode.NONE
+    private var gestureStartX = 0f
+    private var gestureStartY = 0f
+    private var gestureStartProgressMs = 0L
+    private var gestureTargetProgressMs = 0L
+    private var gestureStartBrightness = 0.5f
+    private var gestureStartVolume = 0
+
+    private val audioManager by lazy {
+        getSystemService(Context.AUDIO_SERVICE) as AudioManager
+    }
 
     private var player: ExoPlayer? = null
     private var playerHeadersKey: String? = null
@@ -166,6 +190,7 @@ class PlayerActivity : AppCompatActivity() {
             when (state) {
                 Player.STATE_READY -> {
                     loadingView.visibility = View.GONE
+                    bufferingView.visibility = View.GONE
                     updateProgressUi()
                     if (player?.isPlaying == true) {
                         startHeartbeat()
@@ -174,9 +199,11 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 Player.STATE_ENDED -> onEnded()
                 Player.STATE_BUFFERING -> {
-                    // 只有首次准备/明显卡顿时才盖一层 loading，避免每次缓冲都闪
                     if ((player?.currentPosition ?: 0L) <= 0L) {
                         showLoading(getString(R.string.player_loading))
+                    } else {
+                        bufferingView.visibility = View.VISIBLE
+                        centerPlayButton.visibility = View.GONE
                     }
                 }
             }
@@ -186,13 +213,17 @@ class PlayerActivity : AppCompatActivity() {
             wasPlaying = isPlaying
             if (isPlaying) {
                 if (playingSince == 0L) playingSince = SystemClock.elapsedRealtime()
+                bufferingView.visibility = View.GONE
                 startHeartbeat()
                 scheduleHide()
             } else {
                 playingSince = 0L
                 stopHeartbeat()
                 flushProgressOnce()
-                setControlsVisible(true)
+                val isBuffering = player?.playbackState == Player.STATE_BUFFERING
+                if (!isBuffering) {
+                    setControlsVisible(true)
+                }
             }
             updateProgressUi()
         }
@@ -337,6 +368,37 @@ class PlayerActivity : AppCompatActivity() {
             }
         }
         controls.addView(centerPlayButton)
+
+        // 屏幕中心缓冲加载指示器
+        bufferingView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            visibility = View.GONE
+            background = rounded(0x88000000.toInt(), 16f)
+            setPadding(dp(22), dp(16), dp(22), dp(16))
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            ).apply {
+                gravity = Gravity.CENTER
+            }
+            addView(
+                ProgressBar(this@PlayerActivity).apply {
+                    indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
+                    layoutParams = LinearLayout.LayoutParams(dp(44), dp(44))
+                }
+            )
+            addView(
+                TextView(this@PlayerActivity).apply {
+                    text = "正在缓冲..."
+                    setTextColor(Color.parseColor("#E2E8F0"))
+                    textSize = 13f
+                    gravity = Gravity.CENTER
+                    setPadding(0, dp(8), 0, 0)
+                }
+            )
+        }
+        root.addView(bufferingView)
 
         // 浮层：长按倍速提示徽标
         fastForwardBadge = TextView(this).apply {
@@ -557,6 +619,17 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun setupPlayerGestures(view: View) {
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean {
+                gestureStartX = e.x
+                gestureStartY = e.y
+                activeGesture = GestureMode.NONE
+                gestureStartProgressMs = player?.currentPosition ?: 0L
+                gestureTargetProgressMs = gestureStartProgressMs
+                gestureStartBrightness = getCurrentBrightness()
+                gestureStartVolume = getAudioVolume()
+                return true
+            }
+
             override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
                 onSurfaceTap()
                 return true
@@ -583,22 +656,149 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onLongPress(e: MotionEvent) {
                 if (locked) return
+                if (activeGesture != GestureMode.NONE) return
                 if (player?.isPlaying == true) {
                     view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
                     startLongPressSpeed()
                 }
             }
+
+            override fun onScroll(
+                e1: MotionEvent?,
+                e2: MotionEvent,
+                distanceX: Float,
+                distanceY: Float,
+            ): Boolean {
+                if (locked) return false
+                if (speedBeforeLongPress != null) return false
+                val width = view.width.toFloat()
+                val height = view.height.toFloat()
+                if (width <= 0f || height <= 0f) return false
+
+                val startX = e1?.x ?: gestureStartX
+                val startY = e1?.y ?: gestureStartY
+                val deltaX = e2.x - startX
+                val deltaY = e2.y - startY
+
+                if (activeGesture == GestureMode.NONE) {
+                    val absDx = abs(deltaX)
+                    val absDy = abs(deltaY)
+                    val touchSlop = dp(14).toFloat()
+                    if (absDx < touchSlop && absDy < touchSlop) {
+                        return false
+                    }
+                    activeGesture = if (absDx > absDy) {
+                        GestureMode.PROGRESS
+                    } else {
+                        if (startX < width * 0.5f) GestureMode.BRIGHTNESS else GestureMode.VOLUME
+                    }
+                }
+
+                when (activeGesture) {
+                    GestureMode.BRIGHTNESS -> {
+                        val deltaPercent = -deltaY / (height * 0.85f)
+                        val newBrightness = (gestureStartBrightness + deltaPercent).coerceIn(0.01f, 1.0f)
+                        applyBrightness(newBrightness)
+                        showGestureFeedback("☀️ 亮度 ${(newBrightness * 100).toInt()}%")
+                    }
+                    GestureMode.VOLUME -> {
+                        val maxVol = getMaxAudioVolume()
+                        val deltaSteps = (-deltaY / (height * 0.85f)) * maxVol
+                        val newVol = (gestureStartVolume + deltaSteps).toInt().coerceIn(0, maxVol)
+                        setAudioVolume(newVol)
+                        val percent = if (maxVol > 0) (newVol * 100 / maxVol) else 0
+                        val icon = if (newVol == 0) "🔇" else "🔊"
+                        showGestureFeedback("$icon 音量 $percent%")
+                    }
+                    GestureMode.PROGRESS -> {
+                        val duration = currentDuration()
+                        val scrubRangeMs = if (duration > 0) min(duration, 180_000L) else 180_000L
+                        val deltaMs = (deltaX / width * scrubRangeMs).toLong()
+                        gestureTargetProgressMs = (gestureStartProgressMs + deltaMs).coerceIn(
+                            0L,
+                            if (duration > 0) duration else Long.MAX_VALUE,
+                        )
+                        val diffSec = (gestureTargetProgressMs - gestureStartProgressMs) / 1000
+                        val sign = if (diffSec >= 0) "+${diffSec}s" else "${diffSec}s"
+                        val icon = if (diffSec >= 0) "⏩" else "⏪"
+                        showGestureFeedback("$icon ${formatTime(gestureTargetProgressMs)} / ${formatTime(duration)} ($sign)")
+                        if (duration > 0) {
+                            val progress = (gestureTargetProgressMs.coerceAtLeast(0L) * SEEK_MAX / duration)
+                                .toInt()
+                                .coerceIn(0, SEEK_MAX)
+                            seekBar.progress = progress
+                        }
+                    }
+                    GestureMode.NONE -> {}
+                }
+                return true
+            }
         })
 
         view.setOnTouchListener { _, event ->
-            gestureDetector.onTouchEvent(event)
+            val handled = gestureDetector.onTouchEvent(event)
             if (event.action == MotionEvent.ACTION_UP || event.action == MotionEvent.ACTION_CANCEL) {
                 if (speedBeforeLongPress != null) {
                     stopLongPressSpeed()
                 }
+                if (activeGesture == GestureMode.PROGRESS) {
+                    player?.seekTo(gestureTargetProgressMs)
+                    updateProgressUi()
+                }
+                if (activeGesture != GestureMode.NONE) {
+                    hideGestureFeedbackDelayed(600L)
+                    activeGesture = GestureMode.NONE
+                }
             }
-            true
+            handled
         }
+    }
+
+    private fun getCurrentBrightness(): Float {
+        var b = window.attributes.screenBrightness
+        if (b < 0f) {
+            try {
+                val sysVal = Settings.System.getInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS)
+                b = sysVal / 255f
+            } catch (e: Exception) {
+                b = 0.5f
+            }
+        }
+        return b.coerceIn(0.01f, 1.0f)
+    }
+
+    private fun applyBrightness(brightness: Float) {
+        val clamped = brightness.coerceIn(0.01f, 1.0f)
+        val lp = window.attributes
+        lp.screenBrightness = clamped
+        window.attributes = lp
+    }
+
+    private fun getMaxAudioVolume(): Int {
+        return runCatching { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }.getOrDefault(15)
+    }
+
+    private fun getAudioVolume(): Int {
+        return runCatching { audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) }.getOrDefault(0)
+    }
+
+    private fun setAudioVolume(volume: Int) {
+        val max = getMaxAudioVolume()
+        val clamped = volume.coerceIn(0, max)
+        runCatching {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, clamped, 0)
+        }
+    }
+
+    private fun showGestureFeedback(text: String) {
+        seekFeedbackBadge.text = text
+        seekFeedbackBadge.visibility = View.VISIBLE
+        main.removeCallbacks(hideSeekFeedback)
+    }
+
+    private fun hideGestureFeedbackDelayed(delayMs: Long = 600L) {
+        main.removeCallbacks(hideSeekFeedback)
+        main.postDelayed(hideSeekFeedback, delayMs)
     }
 
     private fun startLongPressSpeed() {
@@ -1246,11 +1446,23 @@ class PlayerActivity : AppCompatActivity() {
             timeView.text = "${formatTime(exo.currentPosition)} / ${formatTime(duration)}"
         }
         val isPlaying = exo.isPlaying
+        val isBuffering = exo.playbackState == Player.STATE_BUFFERING && exo.playWhenReady
+        if (isBuffering && loadingView.visibility != View.VISIBLE) {
+            bufferingView.visibility = View.VISIBLE
+            centerPlayButton.visibility = View.GONE
+        } else {
+            bufferingView.visibility = View.GONE
+            if (controlsVisible && !locked) {
+                centerPlayButton.visibility = View.VISIBLE
+            } else {
+                centerPlayButton.visibility = View.GONE
+            }
+            centerPlayButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
+            centerPlayButton.contentDescription = playPauseButton.contentDescription
+        }
         playPauseButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
         playPauseButton.contentDescription =
             if (isPlaying) getString(R.string.player_pause) else getString(R.string.player_play)
-        centerPlayButton.setImageResource(if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play)
-        centerPlayButton.contentDescription = playPauseButton.contentDescription
         updateEpisodeButtons()
     }
 
@@ -1630,6 +1842,17 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun togglePlay() {
         val exo = player ?: return
+        if (exo.playbackState == Player.STATE_BUFFERING) {
+            if (exo.playWhenReady) {
+                exo.pause()
+                toast("已暂停")
+            } else {
+                exo.play()
+                toast("正在缓冲加载中...")
+            }
+            updateProgressUi()
+            return
+        }
         if (exo.isPlaying) exo.pause() else exo.play()
         setControlsVisible(true)
     }
