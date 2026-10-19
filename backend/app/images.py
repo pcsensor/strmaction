@@ -142,7 +142,9 @@ class ImageService:
             image.load()
         except Exception:
             return False
-        if image.mode not in {"RGB", "RGBA"}:
+        if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
+            image = image.convert("RGBA")
+        elif image.mode != "RGB":
             image = image.convert("RGB")
         sizes = VARIANT_SIZES.get(kind) or (342,)
         for size in sizes:
@@ -153,8 +155,7 @@ class ImageService:
                 variant = variant.resize((size, height), Image.Resampling.LANCZOS)
             target = self.image_dir / f"{sha}_{size}.webp"
             try:
-                save_image = variant.convert("RGB") if variant.mode == "RGBA" else variant
-                save_image.save(target, "WEBP", quality=82, method=4)
+                variant.save(target, "WEBP", quality=82, method=4)
             except Exception:
                 return False
         return True
