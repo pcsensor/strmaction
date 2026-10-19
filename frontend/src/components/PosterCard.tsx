@@ -37,6 +37,7 @@ export function PosterCard({
           src={item.poster}
           alt={item.title}
           color={item.color}
+          kind={item.kind}
           imgClassName="transition-transform duration-700 ease-silk group-hover:scale-[1.045]"
         />
         <div className="pointer-events-none absolute inset-0 bg-gradient-to-t from-black/75 via-black/0 to-black/10 opacity-75" />
@@ -94,6 +95,7 @@ export function PosterCard({
             {item.title}
           </h3>
           <p className="mt-0.5 flex items-center gap-1.5 text-[11.5px] text-ink-400">
+            {item.kind === 'folder' ? <span>文件夹</span> : null}
             {item.year ? <span>{item.year}</span> : null}
             {item.kind === 'series' && item.season_no ? (
               <>

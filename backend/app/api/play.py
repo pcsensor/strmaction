@@ -244,9 +244,9 @@ async def play(
         next_episode_id, next_title, next_code = _next_unwatched(
             session, target, series_obj, user.id
         )
-        # 播放器「选集」：同一部剧的全部剧集（跨季按季/集排序）。
         playlist: list[dict] = []
         current_index = -1
+        parent_folder = session.get(Item, target.parent_id) if target.parent_id else None
         if series_obj is not None:
             sequence = _episode_sequence(session, series_obj)
             sequence_ids = [episode.id for episode in sequence]
@@ -290,6 +290,58 @@ async def play(
                     )
                     if episode.id == target.id:
                         current_index = index
+        elif target.kind == "video" and parent_folder is not None:
+            sibling_videos = session.exec(
+                select(Item).where(
+                    Item.parent_id == parent_folder.id,
+                    Item.kind == "video",
+                    Item.deleted_at == None,  # noqa: E711
+                )
+            ).all()
+            sibling_ids = [v.id for v in sibling_videos if v.id]
+            if sibling_ids:
+                playable_ids = {
+                    row
+                    for row in session.exec(
+                        select(MediaFile.item_id).where(
+                            MediaFile.item_id.in_(sibling_ids),
+                            MediaFile.invalid == False,  # noqa: E712
+                            MediaFile.missing == False,  # noqa: E712
+                        )
+                    ).all()
+                    if row
+                }
+                sibling_videos = [
+                    v for v in sibling_videos
+                    if v.id in playable_ids or v.id == target.id
+                ]
+                sibling_videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+                progress_rows = session.exec(
+                    select(PlayProgress).where(
+                        PlayProgress.user_id == user.id,
+                        PlayProgress.item_id.in_([v.id for v in sibling_videos if v.id])
+                    )
+                ).all()
+                watched_ids = {row.item_id for row in progress_rows if row.finished}
+                for index, video in enumerate(sibling_videos):
+                    playlist.append(
+                        {
+                            "id": video.id,
+                            "title": video.title,
+                            "season_no": None,
+                            "episode_no": video.episode_no,
+                            "code": f"P{video.episode_no:02d}" if video.episode_no else None,
+                            "watched": video.id in watched_ids,
+                            "current": video.id == target.id,
+                        }
+                    )
+                    if video.id == target.id:
+                        current_index = index
+                if current_index >= 0 and current_index + 1 < len(sibling_videos):
+                    next_v = sibling_videos[current_index + 1]
+                    next_episode_id = next_v.id
+                    next_title = next_v.title
+                    next_code = f"P{next_v.episode_no:02d}" if next_v.episode_no else None
         target_id = target.id
         target_kind = target.kind
         duration_ms = progress.duration_ms if progress else None
@@ -360,7 +412,7 @@ async def play(
         "next_item_id": next_episode_id,
         "next_title": next_title,
         "next_episode_code": next_code,
-        "series_title": series_obj.title if series_obj else None,
+        "series_title": series_obj.title if series_obj else (parent_folder.title if parent_folder else None),
         "playlist": playlist,
         "current_index": current_index,
     }

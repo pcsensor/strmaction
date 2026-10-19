@@ -15,7 +15,7 @@ from .types import Parsed
 
 # 解析规则版本：升级后扫描器会对所有文件强制重解析一次，
 # 避免「增量跳过」让老库永远停留在旧结构（例如整季被识别成一部电影）。
-PARSER_VERSION = 2
+PARSER_VERSION = 3
 
 _VIDEO_EXT_RE = re.compile(
     r"\.(?:strm|mp4|mkv|avi|mov|m2ts|ts|webm|flv|wmv|iso|rmvb)$", re.I
@@ -512,22 +512,39 @@ def parse_tv(
     )
 
 
+def _clean_stem_and_episode(filename: str) -> tuple[str, int | None]:
+    stem = strip_extension(_nfkc(filename)).strip()
+    # 过滤类似 .(mp4) 或 (mp4) 的冗余扩展名标记
+    stem = re.sub(r"[\._]?\([a-zA-Z0-9]+\)$", "", stem).strip()
+    match = re.match(r"^\s*(?:\[(\d{1,4})\]|(\d{1,4}))\s*(?:--|-|–|—|[\s._\-])*\s*", stem)
+    number = int(match.group(1) or match.group(2)) if match else None
+    if match:
+        cleaned = stem[match.end():].strip()
+        return (cleaned or stem), number
+    return stem, None
+
+
 def parse_home(rel_path: str) -> Parsed:
     parts = _split(rel_path)
     filename = parts[-1] if parts else ""
-    group = parts[0] if len(parts) >= 2 else None
+    folder_parts = parts[:-1]
+    group = folder_parts[0] if folder_parts else None
+    clean_title, ep_no = _clean_stem_and_episode(filename)
     info = parse_name(filename)
-    title = info.title or strip_extension(filename)
+    title = clean_title or info.title or strip_extension(filename)
     return Parsed(
         kind="video",
         title=title,
         year=info.year,
+        episode=ep_no,
         confidence=0.9,
         raw_name=filename,
         version=info.version,
         part=info.part,
         labels=info.labels,
         group_title=group,
+        chapter_title=folder_parts[-1] if folder_parts else None,
+        folder_parts=folder_parts,
         parser="rules",
     )
 
@@ -544,24 +561,25 @@ def _clean_chapter_title(name: str) -> tuple[str, int | None]:
 def parse_course(rel_path: str) -> Parsed:
     parts = _split(rel_path)
     filename = parts[-1] if parts else ""
-    course = parts[0] if len(parts) >= 2 else None
-    chapter = parts[1] if len(parts) >= 3 else None
+    folder_parts = parts[:-1]
+    course = folder_parts[0] if folder_parts else None
+    chapter = (
+        folder_parts[1]
+        if len(folder_parts) >= 2
+        else (folder_parts[0] if folder_parts else None)
+    )
 
     course_title = _clean_chapter_title(course)[0] if course else None
     chapter_title, chapter_no = (
         _clean_chapter_title(chapter) if chapter else (None, None)
     )
 
-    stem = strip_extension(_nfkc(filename)).strip()
-    match = _LEADING_NUM_RE.match(stem)
-    episode_no = int(match.group(1)) if match else None
-    if match:
-        stem = stem[match.end() :].strip()
-    info = parse_name(stem)
+    clean_title, episode_no = _clean_stem_and_episode(filename)
+    info = parse_name(clean_title)
 
     return Parsed(
         kind="video",
-        title=info.title or stem,
+        title=clean_title or info.title or strip_extension(filename),
         year=None,
         season=chapter_no,
         episode=episode_no,
@@ -572,6 +590,7 @@ def parse_course(rel_path: str) -> Parsed:
         labels=info.labels,
         group_title=course_title,
         chapter_title=chapter_title or "默认章节",
+        folder_parts=folder_parts,
         parser="rules",
     )
 

@@ -11,6 +11,7 @@ import {
   Clapperboard,
   Edit3,
   ExternalLink,
+  Folder,
   ImagePlus,
   Info,
   MonitorPlay,
@@ -218,7 +219,7 @@ export function DetailPage() {
       </div>
 
       <div className="mx-auto max-w-[1680px] px-5 pt-24 sm:px-10 lg:px-16">
-        <div className="mb-6 flex items-center gap-2 text-[12px] text-ink-400">
+        <div className="mb-6 flex flex-wrap items-center gap-2 text-[12px] text-ink-400">
           <button
             type="button"
             onClick={() => (window.history.length > 1 ? navigate(-1) : navigate('/'))}
@@ -227,17 +228,32 @@ export function DetailPage() {
             <ArrowLeft className="h-3.5 w-3.5" />
             {t('common.back')}
           </button>
-          {series && series.id !== item.id ? (
+          {data.library ? (
+            <Link to="/" className="hover:text-white">
+              {data.library.name}
+            </Link>
+          ) : null}
+          {data.ancestors && data.ancestors.length > 0 ? (
+            data.ancestors.map((anc) => (
+              <span key={anc.id} className="flex items-center gap-2">
+                <ChevronRight className="h-3 w-3 text-ink-600" />
+                <Link to={`/item/${anc.id}`} className="hover:text-white transition">
+                  {anc.title}
+                </Link>
+              </span>
+            ))
+          ) : series && series.id !== item.id ? (
             <>
+              <ChevronRight className="h-3 w-3 text-ink-600" />
               <Link to={`/item/${series.id}`} className="hover:text-white">
                 {series.title}
               </Link>
-              <ChevronRight className="h-3 w-3 text-ink-600" />
-              <span className="text-ink-300">
-                {itemCode || item.title}
-              </span>
             </>
           ) : null}
+          <ChevronRight className="h-3 w-3 text-ink-600" />
+          <span className="font-medium text-ink-200">
+            {itemCode || item.title}
+          </span>
         </div>
 
         {hasAttention ? (
@@ -262,7 +278,7 @@ export function DetailPage() {
             className="w-[152px] shrink-0 sm:w-[200px] md:w-[236px]"
           >
             <div className="poster-card aspect-[2/3] w-full">
-              <ImageWithFallback src={poster} alt={title} color={accent} eager />
+              <ImageWithFallback src={poster} alt={title} color={accent} kind={item.kind} eager />
             </div>
             {data.media_files.length && item.kind !== 'movie' ? (
               <div className="mt-4 hidden md:block">
@@ -342,6 +358,13 @@ export function DetailPage() {
 
               <div className="mt-4 flex flex-wrap items-center gap-x-3 gap-y-1.5 text-[13px] text-ink-300">
                 {display?.year ? <span>{display.year}</span> : null}
+                {item.kind === 'folder' ? (
+                  <>
+                    <span className="rounded bg-amber-400/20 px-2 py-0.5 text-[11px] font-semibold text-amber-300">文件夹</span>
+                    {data.folders?.length ? <span>{data.folders.length} 个子目录</span> : null}
+                    {data.videos?.length ? <span>{data.videos.length} 部视频</span> : null}
+                  </>
+                ) : null}
                 {item.rating ? (
                   <span className="flex items-center gap-1 font-semibold text-amber-300">
                     <Star className="h-3.5 w-3.5 fill-current" />
@@ -401,14 +424,16 @@ export function DetailPage() {
               </p>
 
               <div className="mt-7 flex flex-wrap items-center gap-3">
-                <button
-                  type="button"
-                  onClick={play}
-                  className="btn-primary gap-2 px-7 py-3.5 text-[15px] shadow-[0_18px_50px_-18px_rgba(255,255,255,0.45)]"
-                >
-                  <Play className="h-4.5 w-4.5 fill-current" />
-                  {canResume || seriesStarted ? t('detail.resume') : t('detail.play')}
-                </button>
+                {playTarget ? (
+                  <button
+                    type="button"
+                    onClick={play}
+                    className="btn-primary gap-2 px-7 py-3.5 text-[15px] shadow-[0_18px_50px_-18px_rgba(255,255,255,0.45)]"
+                  >
+                    <Play className="h-4.5 w-4.5 fill-current" />
+                    {canResume || seriesStarted ? t('detail.resume') : (item.kind === 'folder' ? '播放全部' : t('detail.play'))}
+                  </button>
+                ) : null}
                 {item.trailer_key ? (
                   <a
                     href={`https://www.youtube.com/watch?v=${item.trailer_key}`}
@@ -557,6 +582,106 @@ export function DetailPage() {
         </div>
 
         <div className="mt-14 space-y-14">
+          {item.kind === 'folder' ? (
+            <>
+              {data.folders && data.folders.length > 0 ? (
+                <section>
+                  <div className="mb-5 flex items-center justify-between">
+                    <h2 className="section-title flex items-center gap-2">
+                      <Folder className="h-5 w-5 text-amber-400" />
+                      子文件夹 ({data.folders.length})
+                    </h2>
+                  </div>
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    {data.folders.map((f) => (
+                      <Link
+                        key={f.id}
+                        to={`/item/${f.id}`}
+                        className="group flex items-center gap-4 rounded-2xl border border-white/8 bg-white/[0.025] p-4 transition duration-300 hover:border-amber-400/40 hover:bg-amber-400/[0.06] focus-ring"
+                      >
+                        <div className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-amber-400/10 text-amber-300 transition group-hover:scale-105 group-hover:bg-amber-400/20">
+                          <Folder className="h-6 w-6" />
+                        </div>
+                        <div className="min-w-0 flex-1">
+                          <h3 className="line-clamp-1 text-[14.5px] font-medium text-ink-100 transition group-hover:text-white">
+                            {f.title}
+                          </h3>
+                          <p className="mt-0.5 text-[12px] text-ink-400">点击进入浏览</p>
+                        </div>
+                        <ChevronRight className="h-4 w-4 shrink-0 text-ink-500 transition group-hover:translate-x-0.5 group-hover:text-amber-300" />
+                      </Link>
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {data.videos && data.videos.length > 0 ? (
+                <section>
+                  <div className="mb-5 flex items-center justify-between">
+                    <h2 className="section-title flex items-center gap-2">
+                      <Play className="h-5 w-5 text-accent" />
+                      视频列表 ({data.videos.length})
+                    </h2>
+                  </div>
+                  <div className="grid gap-2.5 lg:grid-cols-2">
+                    {data.videos.map((video) => (
+                      <EpisodeCard
+                        key={video.id}
+                        episode={video as any}
+                        active={false}
+                        posterFallback={display?.poster_large}
+                        color={accent}
+                      />
+                    ))}
+                  </div>
+                </section>
+              ) : null}
+
+              {!data.folders?.length && !data.videos?.length ? (
+                <p className="rounded-2xl border border-white/8 bg-white/[0.02] px-5 py-10 text-center text-sm text-ink-400">
+                  该文件夹内暂无视频或子目录
+                </p>
+              ) : null}
+            </>
+          ) : null}
+
+          {/* 单个视频详情页：所在同级目录播放列表 */}
+          {item.kind === 'video' && data.videos && data.videos.length > 1 ? (
+            <section>
+              <div className="mb-5 flex items-center justify-between">
+                <h2 className="section-title">本目录播放列表 ({data.videos.length})</h2>
+              </div>
+              <div className="grid gap-2.5 lg:grid-cols-2">
+                {data.videos.map((video) => (
+                  <EpisodeCard
+                    key={video.id}
+                    episode={video as any}
+                    active={video.id === item.id}
+                    posterFallback={display?.poster_large}
+                    color={accent}
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {/* 单个视频上一视频/下一视频 */}
+          {item.kind === 'video' && (data.next_episode_id || data.prev_episode_id) ? (
+            <div className="flex flex-wrap gap-3">
+              {data.prev_episode_id ? (
+                <Link to={`/item/${data.prev_episode_id}`} className="btn-ghost">
+                  上一视频
+                </Link>
+              ) : null}
+              {data.next_episode_id ? (
+                <Link to={`/item/${data.next_episode_id}`} className="btn-ghost">
+                  下一视频
+                  <ChevronRight className="h-4 w-4" />
+                </Link>
+              ) : null}
+            </div>
+          ) : null}
+
           {isSeries || isSeason ? (
             <section>
               <div className="mb-5 flex flex-wrap items-end justify-between gap-4">

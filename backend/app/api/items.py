@@ -7,7 +7,7 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
-from sqlalchemy import or_
+from sqlalchemy import case, or_
 from sqlmodel import Session, select
 
 from ..deps import (
@@ -42,7 +42,7 @@ from ..text import normalize_title
 
 router = APIRouter(prefix="/items", tags=["items"])
 
-LIST_KINDS = {"movie", "series", "season", "episode", "video"}
+LIST_KINDS = {"movie", "series", "season", "episode", "video", "folder"}
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +142,40 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
             if row is None or not row.finished:
                 return episode
         return sequence[-1]
+    if item.kind == "folder":
+        ready = ready_item_ids(session, item.library_id)
+        videos = session.exec(
+            select(Item).where(
+                Item.parent_id == item.id,
+                Item.kind == "video",
+                Item.deleted_at == None,  # noqa: E711
+            )
+        ).all()
+        videos = [v for v in videos if v.id in ready]
+        videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+        if videos:
+            progress = _progress_map(session, [v.id for v in videos if v.id], user_id)
+            for v in videos:
+                row = progress.get(v.id)
+                if row is None or not row.finished:
+                    return v
+            return videos[0]
+        # 递归在子目录中寻找第一个可播放视频
+        child_folders = session.exec(
+            select(Item).where(
+                Item.parent_id == item.id,
+                Item.kind == "folder",
+                Item.deleted_at == None,  # noqa: E711
+            )
+        ).all()
+        child_folders = [f for f in child_folders if f.id in ready]
+        child_folders.sort(key=lambda x: (x.episode_no or 0, x.title))
+        for f in child_folders:
+            try:
+                return _choose_play_target(session, f, user_id)
+            except APIError:
+                continue
+        raise APIError(400, "NO_VIDEO", "该文件夹内没有可播放的视频")
     raise APIError(400, "NOT_PLAYABLE", "该条目不可播放")
 
 
@@ -157,7 +191,8 @@ def _ready_episodes(session: Session, ready: set[int], episodes: list[Item]) -> 
 @router.get("")
 def list_items(
     library_id: int | None = Query(None),
-    kind: str | None = Query(None, description="逗号分隔，默认 movie,series,video"),
+    parent_id: str | None = Query(None, description="'root' 或具体父项ID"),
+    kind: str | None = Query(None, description="逗号分隔，默认 movie,series,video,folder"),
     q: str | None = Query(None),
     genre: str | None = Query(None),
     year: int | None = Query(None),
@@ -172,10 +207,10 @@ def list_items(
     kinds = (
         [k.strip() for k in kind.split(",") if k.strip() in LIST_KINDS]
         if kind
-        else ["movie", "series", "video"]
+        else (["folder", "video", "movie", "series"] if parent_id is not None else ["movie", "series", "video", "folder"])
     )
     if not kinds:
-        kinds = ["movie", "series", "video"]
+        kinds = ["movie", "series", "video", "folder"]
 
     with Session(engine) as session:
         # 获取用户可访问的库
@@ -185,6 +220,14 @@ def list_items(
             Item.deleted_at == None,  # noqa: E711
             Item.kind.in_(kinds),
         )
+
+        if parent_id == "root":
+            query = query.where(Item.parent_id == None)  # noqa: E711
+        elif parent_id is not None and parent_id != "":
+            try:
+                query = query.where(Item.parent_id == int(parent_id))
+            except ValueError:
+                pass
 
         # 按用户权限过滤库
         if accessible_ids is None:
@@ -218,7 +261,14 @@ def list_items(
             query = query.where(Item.year == year)
         if match_state:
             query = query.where(Item.match_state == match_state)
-        if sort == "rating":
+        if parent_id is not None and sort == "recent":
+            query = query.order_by(
+                case((Item.kind == "folder", 0), else_=1),
+                Item.episode_no.asc(),
+                Item.sort_title.asc(),
+                Item.created_at.asc(),
+            )
+        elif sort == "rating":
             query = query.order_by(Item.rating.desc(), Item.created_at.desc())
         elif sort == "title":
             query = query.order_by(Item.sort_title.asc())
@@ -328,6 +378,8 @@ def get_item(
 
         seasons_payload: list[dict[str, Any]] = []
         episodes_payload: list[dict[str, Any]] = []
+        folders_payload: list[dict[str, Any]] = []
+        videos_payload: list[dict[str, Any]] = []
         next_episode_id = None
         prev_episode_id = None
 
@@ -413,31 +465,91 @@ def get_item(
                     else 0,
                 }
                 detail["play_target_id"] = target.id
-        elif item.kind == "episode" and parent:
-            episodes = session.exec(
-                select(Item)
-                .where(Item.parent_id == parent.id, Item.kind == "episode")
-                .order_by(Item.episode_no)
-            ).all()
-            episodes = [e for e in episodes if e.id in ready]
-            try:
-                index = [e.id for e in episodes].index(item.id)
-            except ValueError:
-                index = -1
-            if index >= 0:
-                next_episode_id = (
-                    episodes[index + 1].id if index + 1 < len(episodes) else None
+        elif item.kind == "folder":
+            child_folders = session.exec(
+                select(Item).where(
+                    Item.parent_id == item.id,
+                    Item.kind == "folder",
+                    Item.deleted_at == None,  # noqa: E711
                 )
-                prev_episode_id = episodes[index - 1].id if index > 0 else None
+            ).all()
+            child_folders = [f for f in child_folders if f.id in ready]
+            child_folders.sort(key=lambda x: (x.episode_no or 0, x.title))
+            folders_payload = [item_summary(f) for f in child_folders]
+
+            child_videos = session.exec(
+                select(Item).where(
+                    Item.parent_id == item.id,
+                    Item.kind == "video",
+                    Item.deleted_at == None,  # noqa: E711
+                )
+            ).all()
+            child_videos = [v for v in child_videos if v.id in ready]
+            child_videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+            v_progress = _progress_map(session, [v.id for v in child_videos if v.id], user.id)
+            for v in child_videos:
+                m_file = session.exec(
+                    select(MediaFile).where(MediaFile.item_id == v.id, MediaFile.invalid == False, MediaFile.missing == False)  # noqa: E712
+                ).first()
+                badges = media_labels(m_file) if m_file else []
+                videos_payload.append(item_summary(v, progress=v_progress.get(v.id), badges=badges))
+
+            try:
+                play_target = _choose_play_target(session, item, user.id)
+                detail["play_target_id"] = play_target.id
+            except APIError:
+                detail["play_target_id"] = None
+        elif item.kind == "video" and parent:
+            sibling_videos = session.exec(
+                select(Item).where(
+                    Item.parent_id == parent.id,
+                    Item.kind == "video",
+                    Item.deleted_at == None,  # noqa: E711
+                )
+            ).all()
+            sibling_videos = [v for v in sibling_videos if v.id in ready]
+            sibling_videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+            s_progress = _progress_map(session, [v.id for v in sibling_videos if v.id], user.id)
+            for v in sibling_videos:
+                m_file = session.exec(
+                    select(MediaFile).where(MediaFile.item_id == v.id, MediaFile.invalid == False, MediaFile.missing == False)  # noqa: E712
+                ).first()
+                badges = media_labels(m_file) if m_file else []
+                videos_payload.append(item_summary(v, progress=s_progress.get(v.id), badges=badges))
+            try:
+                idx = [v.id for v in sibling_videos].index(item.id)
+            except ValueError:
+                idx = -1
+            if idx >= 0:
+                next_episode_id = sibling_videos[idx + 1].id if idx + 1 < len(sibling_videos) else None
+                prev_episode_id = sibling_videos[idx - 1].id if idx > 0 else None
             detail["play_target_id"] = item.id
         else:
             detail["play_target_id"] = item.id
+
+        ancestors: list[dict[str, Any]] = []
+        curr = parent
+        guard = 0
+        while curr and guard < 32:
+            ancestors.append({
+                "id": curr.id,
+                "title": curr.title,
+                "kind": curr.kind,
+            })
+            if not curr.parent_id:
+                break
+            curr = session.get(Item, curr.parent_id)
+            guard += 1
+        ancestors.reverse()
 
         return {
             "item": detail,
             "library": library_info,
             "series": series_summary,
             "parent": parent_summary,
+            "ancestors": ancestors,
+            "folders": folders_payload,
+            "videos": videos_payload,
             "seasons": seasons_payload,
             "episodes": episodes_payload,
             "media_files": media_files,

@@ -720,5 +720,66 @@ def test_missing_media_hidden_from_items_home_and_search():
         assert lib_data["counts"]["movie"] == 1
 
 
+def test_tree_folder_course_api():
+    app = create_app()
+    with TestClient(app) as client:
+        # 登录
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "S3cure-passphrase"})
+        assert login.status_code == 200
+
+        course_dir = MEDIA / "Baidu_Course"
+        make("Baidu_Course/09.2027Kira/01.高等数学/01.导学课/[1]--开班仪式.strm")
+        make("Baidu_Course/09.2027Kira/01.高等数学/01.导学课/[2]--班会.strm")
+
+        lib_res = client.post(
+            "/api/libraries",
+            json={"name": "我的课程", "type": "course", "root_path": str(course_dir)},
+        )
+        assert lib_res.status_code == 201
+        lib_id = lib_res.json()["id"]
+
+        scan = client.post(f"/api/libraries/{lib_id}/scan")
+        assert scan.status_code == 200
+        wait_task(client, scan.json()["task_id"])
+
+        # 根目录：只看到 09.2027Kira 文件夹
+        root_items = client.get(f"/api/items?library_id={lib_id}&parent_id=root").json()
+        assert len(root_items["items"]) == 1
+        kira = root_items["items"][0]
+        assert kira["kind"] == "folder"
+        assert kira["title"] == "09.2027Kira"
+
+        # 详情获取 09.2027Kira
+        kira_detail = client.get(f"/api/items/{kira['id']}").json()
+        assert len(kira_detail["folders"]) == 1
+        math_folder = kira_detail["folders"][0]
+        assert math_folder["title"] == "01.高等数学"
+
+        # 详情获取 01.高等数学
+        math_detail = client.get(f"/api/items/{math_folder['id']}").json()
+        assert len(math_detail["folders"]) == 1
+        intro_folder = math_detail["folders"][0]
+        assert intro_folder["title"] == "01.导学课"
+
+        # 详情获取 01.导学课
+        intro_detail = client.get(f"/api/items/{intro_folder['id']}").json()
+        assert len(intro_detail["folders"]) == 0
+        assert len(intro_detail["videos"]) == 2
+        assert intro_detail["videos"][0]["title"] == "开班仪式"
+        assert intro_detail["videos"][1]["title"] == "班会"
+        assert len(intro_detail["ancestors"]) == 2
+        assert intro_detail["ancestors"][0]["title"] == "09.2027Kira"
+        assert intro_detail["ancestors"][1]["title"] == "01.高等数学"
+
+        # 播放文件夹 intro_folder，自动定位到第 1 集并生成包含同目录下视频的播放列表
+        play_res = client.post(f"/api/play/{intro_folder['id']}", json={"mode": "auto"}).json()
+        assert play_res["item_id"] == intro_detail["videos"][0]["id"]
+        assert len(play_res["playlist"]) == 2
+        assert play_res["playlist"][0]["title"] == "开班仪式"
+        assert play_res["playlist"][1]["title"] == "班会"
+        assert play_res["next_item_id"] == intro_detail["videos"][1]["id"]
+
+
+
 
 
