@@ -31,17 +31,22 @@ export function UsersPage() {
   }
 
   return (
-    <div className="mx-auto max-w-6xl px-4 py-8">
-      <div className="mb-8 flex items-center justify-between">
+    <div className="mx-auto max-w-6xl px-5 pb-24 pt-28 sm:px-10">
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
         <div>
-          <h1 className="text-3xl font-bold text-white">用户管理</h1>
-          <p className="mt-2 text-sm text-zinc-400">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-accent/80">
+            ACCESS CONTROL
+          </p>
+          <h1 className="mt-2 font-display text-3xl font-black tracking-tight text-white">
+            用户管理
+          </h1>
+          <p className="mt-2 text-[13px] text-ink-400">
             管理系统用户和媒体库访问权限
           </p>
         </div>
         <button
           onClick={() => setIsCreating(true)}
-          className="flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2 text-sm font-medium text-white transition hover:bg-blue-700"
+          className="btn-primary gap-2 py-2 text-sm"
         >
           <Plus className="h-4 w-4" />
           新增用户

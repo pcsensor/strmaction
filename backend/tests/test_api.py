@@ -549,3 +549,97 @@ def test_multiuser_and_permissions():
         assert del_res.status_code == 204
 
 
+def test_search_genre_filter():
+    from sqlmodel import Session, select
+    from app.models import Item, Library, MediaFile
+
+    app = create_app()
+    with TestClient(app) as client:
+        login = client.post("/api/auth/login", json={"username": "admin", "password": "S3cure-passphrase"})
+        if login.status_code != 200:
+            client.post("/api/auth/setup", json={"password": "S3cure-passphrase"})
+
+        engine = app.state.app_state.engine
+        with Session(engine) as session:
+            lib = Library(name="测试库", root_path=str(MEDIA / "电影"), type="movie")
+            session.add(lib)
+            session.commit()
+            session.refresh(lib)
+
+            item1 = Item(
+                library_id=lib.id,
+                kind="movie",
+                title="剧情电影A",
+                genres=json.dumps(["剧情", "动作"]),
+                rating=8.5,
+            )
+            item2 = Item(
+                library_id=lib.id,
+                kind="movie",
+                title="科幻电影B",
+                genres=json.dumps(["科幻", "冒险"]),
+                rating=9.0,
+            )
+            item3 = Item(
+                library_id=lib.id,
+                kind="movie",
+                title="悬疑剧情片C",
+                genres=json.dumps(["剧情", "悬疑"]),
+                rating=7.8,
+            )
+            session.add_all([item1, item2, item3])
+            session.commit()
+            session.refresh(item1)
+            session.refresh(item2)
+            session.refresh(item3)
+
+            mf1 = MediaFile(
+                item_id=item1.id,
+                library_id=lib.id,
+                rel_path="a.strm",
+                abs_path=str(MEDIA / "a.strm"),
+                url="http://test/1",
+            )
+            mf2 = MediaFile(
+                item_id=item2.id,
+                library_id=lib.id,
+                rel_path="b.strm",
+                abs_path=str(MEDIA / "b.strm"),
+                url="http://test/2",
+            )
+            mf3 = MediaFile(
+                item_id=item3.id,
+                library_id=lib.id,
+                rel_path="c.strm",
+                abs_path=str(MEDIA / "c.strm"),
+                url="http://test/3",
+            )
+            session.add_all([mf1, mf2, mf3])
+            session.commit()
+
+        # 1. 无搜索词，纯按 genre 筛选 "剧情"
+        res = client.get("/api/search", params={"genre": "剧情"}).json()
+        assert res["total"] == 2
+        titles = {i["title"] for i in res["items"]}
+        assert titles == {"剧情电影A", "悬疑剧情片C"}
+
+        # 2. 无搜索词，纯按 genre 筛选 "科幻"
+        res = client.get("/api/search", params={"genre": "科幻"}).json()
+        assert res["total"] == 1
+        assert res["items"][0]["title"] == "科幻电影B"
+
+        # 3. 无搜索词，无 genre 筛选（返回全部条目，大于等于 3）
+        res = client.get("/api/search").json()
+        assert res["total"] >= 3
+
+        # 4. 组合筛选：关键词 "悬疑" + genre "剧情"
+        res = client.get("/api/search", params={"q": "悬疑", "genre": "剧情"}).json()
+        assert res["total"] == 1
+        assert res["items"][0]["title"] == "悬疑剧情片C"
+
+        # 5. 组合筛选：关键词 "悬疑" + 不匹配的 genre "科幻"
+        res = client.get("/api/search", params={"q": "悬疑", "genre": "科幻"}).json()
+        assert res["total"] == 0
+
+
+
