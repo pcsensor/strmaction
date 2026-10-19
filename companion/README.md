@@ -1,7 +1,7 @@
 # StrmAction Companion（Android 伴侣 App）
 
 **手机优先、兼容电视**的 Android 壳：一个 WebView 加载 StrmAction 网页，
-播放交给原生 **Media3 / ExoPlayer**（v0.8 默认路径），外部 mpv 作为兜底。
+播放交给原生 **Media3 / ExoPlayer** 作为默认播放内核，外部 mpv 作为兜底。
 
 体积约 5 MB，不含网络代理、不含刮削、不中转视频流。
 
@@ -17,19 +17,19 @@
 > 触摸设备永远按手机处理：即使 ROM 声明了 `android.software.leanback`，
 > 只要有触摸屏就不会切入电视模式。
 
-## 已构建产物
+## 安装与部署
 
-`strmaction-companion-v1.7.apk`（本目录）已签名，可直接安装（版本 1.7 / versionCode 8）：
+构建生成的 APK 可直接安装到手机或电视（需处于同一局域网）：
 
 ```bash
-adb install -r strmaction-companion-v1.7.apk
+adb install -r app/build/outputs/apk/release/app-release.apk
 
 # 电视 / 盒子
 adb connect <TV_IP>:5555
-adb install -r strmaction-companion-v1.7.apk
+adb install -r app/build/outputs/apk/release/app-release.apk
 ```
 
-签名证书为本地生成的演示 keystore（`release.keystore`，口令 `strmaction`，
+签名证书可使用本地生成的演示 keystore（`release.keystore`，口令 `strmaction`，
 alias `strmaction`）。正式分发请替换为你自己的 keystore；更换签名后需先卸载旧版。
 
 ## 构建
@@ -55,7 +55,7 @@ keytool -genkeypair -v -keystore release.keystore -alias strmaction \
 
 zipalign -f -p 4 app-release-unsigned.apk app-release-aligned.apk
 apksigner sign --ks release.keystore --ks-key-alias strmaction \
-  --out strmaction-companion-v1.apk app-release-aligned.apk
+  --out app-release.apk app-release-aligned.apk
 ```
 
 ## 首次启动
@@ -149,7 +149,12 @@ demuxer-max-bytes=256MiB
 app/src/main/java/top/strmaction/companion/
 ├─ MainActivity.kt      # WebView 壳：滚动、TV/手机适配、文件选择、生命周期
 ├─ JsBridge.kt          # window.StrmActionNative（主线程切换 + 来源校验）
-├─ PlayerActivity.kt    # Media3 播放器、心跳、连播、字幕/音轨/倍速、PiP
+├─ PlayerActivity.kt    # Media3 播放器主界面、手势、全屏与生命周期
+├─ player/              # 播放器解耦模块
+│  ├─ PlayerDrawer.kt   # 40% 抽屉交互与集数渲染（选集/倍速/更多）
+│  ├─ PlayerTrackHelper.kt # 音轨与字幕轨道管理
+│  ├─ PlayerSpeedHelper.kt # 倍速切换与长按极速播放管理
+│  └─ PlayerUiHelper.kt # UI 样式与时间格式化
 ├─ ProgressReporter.kt  # play_token 进度上报 + 失败队列
 ├─ PlayApi.kt           # POST /api/play/{id} 解析
 ├─ PlayInfo.kt          # 播放参数 + Device 检测

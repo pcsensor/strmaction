@@ -47,12 +47,13 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | TV | 伴侣 App 手机/电视通用、`?tv=1` 10-foot 布局、方向键空间导航 + 滚屏兜底、48px 安全区、焦点光晕 |
 | 运维 | 单容器 Docker、配置优先级 DB > yaml > 默认、导出/导入、任务日志、Provider 连通性测试 |
 
-### v0.8 变更摘要
+## 核心特性与架构设计
 
 - **播放**：伴侣 App 内置 Media3 成为默认路径；5 秒进度心跳、`play_token` 回传、播完无缝连播，
   外部 mpv 降级为兜底；播放请求头按媒体库下发。
 - **播放控件主流化与长按倍速**：全面重构伴侣 App 播放器 UI，换用现代主流矢量图标；新增屏幕中心
   悬浮大播放键、双击左/右快退快进手势与反馈、长按触感震动极速播放，并支持自定义长按倍速（1.5x~3.0x）。
+- **40% 抽屉交互与主流界面**：选集、倍速与更多菜单采用右侧 40% 侧滑抽屉取代传统弹窗；返回键在全屏与非全屏模式下均直接退出播放。
 - **「继续观看」管理**：支持将剧集/电影从首页继续观看行移除，且在媒体库与详情页中仍完整保留
   已看集与进度条；再次播放自动重新激活回到首页。
 - **APK 手机优先**：WebView 触摸滚动不再被父容器/桥接层干扰；修复 JS 桥在 JavaBridge 线程
@@ -66,7 +67,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
   - Web 前端 `SettingsPage` 拆解为 `Library` / `Scraper` / `Player` / `System` 独立领域组件。
   - Android 伴侣端播放器解耦 40% 右侧抽屉 (`PlayerDrawer`)、音轨字幕 (`PlayerTrackHelper`) 与倍速管理 (`PlayerSpeedHelper`)。
   - 修复后端图片处理误转 RGB 导致 Logo 出现黑框的问题，原生保留 WebP 8-bit Alpha 透明通道。
-- **后端**：`config.example.yaml` 与 v0.8 的 `player.*`（builtin / 心跳 / `play_token` /
+- **后端**：`config.example.yaml` 与 `player.*`（builtin / 心跳 / `play_token` /
   请求头 / mpv 包名）对齐。
 
 截图：
@@ -264,7 +265,7 @@ cd frontend && npm run build
 - 跨源只补空字段（简介/标语/海报/背景/Logo/分级），**季集结构永远只取胜出源**；
 - 本地 `.nfo`（Kodi / tinyMediaManager 标准）存在时完全接管，不再请求在线源。
 
-## 播放（v0.8）
+## 播放体系
 
 播放方式由服务端 `player.mode` 决定（设置页可改），客户端按能力自动降级：
 
@@ -339,28 +340,26 @@ mpv --no-terminal --force-window \
 
 ## 伴侣 App（手机优先，兼容电视）
 
-源码在 [`companion/`](companion/README.md)。**已构建的签名 APK**：
+源码在 [`companion/`](companion/README.md)。
 
-```
-companion/strmaction-companion-v1.6.apk
-```
-
-安装到手机或电视（同一局域网）：
-
-```bash
-adb install -r companion/strmaction-companion-v1.6.apk
-# 电视：adb connect <TV_IP>:5555 && adb install -r ...
-```
-
-> 本工作区内的 APK 使用本地生成的演示 keystore 签名（`companion/release.keystore`，口令 `strmaction`）。正式分发请用自己的 keystore 重新签名；更换签名后需先卸载旧版。
-
-自行构建（JDK 17 + Android SDK 34）：
+构建产物（JDK 17 + Android SDK 34）：
 
 ```bash
 cd companion
 gradle wrapper --gradle-version 8.7   # 首次
 ./gradlew assembleRelease
 ```
+
+生成 APK 位于 `companion/app/build/outputs/apk/release/`。
+
+安装到手机或电视（同一局域网）：
+
+```bash
+adb install -r companion/app/build/outputs/apk/release/app-release.apk
+# 电视：adb connect <TV_IP>:5555 && adb install -r ...
+```
+
+> 正式分发请使用自己的 keystore 对 APK 签名（`companion/release.keystore` 提供本地签名模板，口令 `strmaction`）。更换签名后需先卸载旧版。
 
 界面上：
 
@@ -462,21 +461,21 @@ backend/
 │  ├─ api/               auth libraries items search home play tasks settings system
 │  ├─ scanner/           walker（遍历 + .strm 读取）/ sync（增量入库）
 │  ├─ parser/            rules（模板 + 中文规则）/ guess（guessit 兜底）
-│  ├─ scraper/           base / tmdb / tvdb / nfo / matcher / merge / service / cache
+│  ├─ scraper/           base / registry / tmdb / tvdb / nfo / matcher / merge / service / cache
 │  ├─ players/           web_intent / mpv_ipc / clipboard
-│  ├─ images.py          下载队列 + WebP 变体 + 主题色
+│  ├─ images.py          下载队列 + WebP 变体（保持透明Alpha） + 主题色
 │  ├─ jobs.py            TaskManager + APScheduler
 │  └─ security.py        argon2 + 签名会话 + 登录限流 + play_token
 └─ tests/
 
 frontend/src/
 ├─ pages/                Home Detail Search Settings Tasks Fix Login Setup
-├─ components/           HeroCarousel PosterCard Row EpisodeCard Modal ...
+├─ components/           HeroCarousel PosterCard Row EpisodeCard settings/ Modal ...
 ├─ api/                  client.ts types.ts hooks.ts
 ├─ i18n/zh-CN.ts         全部界面文案
 └─ hooks/                useStartPlayback useTVMode（空间导航）
 
-companion/               Android WebView 壳 + Media3 播放器 + JS Bridge + mpv 兜底
+companion/               Android WebView 壳 + Media3 播放器（解耦 PlayerDrawer / 音轨 / 倍速）+ JS Bridge + mpv 兜底
 scripts/                 make_samples.py / seed_demo.py
 docs/screenshots/        截图
 docs/deploy-cloud.md     云服务器（公网 + HTTPS）部署指南
@@ -484,16 +483,16 @@ deploy/                  Caddy 反向代理示例
 Dockerfile / docker-compose.yml / docker-compose.cloud.yml / config.example.yaml
 ```
 
-## 验收对照（v0.8）
+## 核心功能验收对照
 
-| 里程碑 | 状态 |
+| 模块 | 状态 |
 |---|---|
-| M0 骨架 + 鉴权 + `/api/health` | ✅ 自动化测试覆盖 |
-| M1 扫描 + 解析（§18 全样本） | ✅ 解析/扫描单测覆盖 |
-| M2 刮削（双源 + 匹配 + 修正 + 刷新 + 图片 + 主题色 + NFO） | ✅ 映射/打分/跨源/锁定测试覆盖；真实 Key 需自行联调 |
-| M3 前端浏览（轮播/继续观看/详情/选集/搜索/骨架屏） | ✅ 截图验证 |
-| M4 播放分发（builtin / external / desktop / copy + play_token） | ✅ API 与 token 测试覆盖；桌面 mpv 需真机验证 |
-| M5 打磨（TV 布局/动效/任务页/待修正） | ✅ |
-| M6 伴侣 App + 内置 Media3（5s 心跳 / 续播 / 连播 / mpv 兜底） | ✅ 源码 + 已签名 APK，模拟器实机验证通过 |
+| 服务骨架 + 鉴权 + `/api/health` | ✅ 自动化测试覆盖 |
+| 目录扫描 + 文件解析（增量/多版本/规范支持） | ✅ 解析/扫描单测覆盖 |
+| 元数据刮削（双源 + @register_provider + 匹配 + 修正 + 刷新 + 图片透明WebP + NFO） | ✅ 映射/打分/跨源/锁定测试覆盖；真实 Key 需自行联调 |
+| 前端浏览（轮播横滑/继续观看移除管理/详情/选集/搜索/骨架屏） | ✅ 截图验证 |
+| 播放分发（builtin / external / desktop / copy + 5s心跳 + play_token） | ✅ API 与 token 测试覆盖；桌面 mpv 需真机验证 |
+| TV 适配与体验打磨（TV 布局/动效/任务页/待修正） | ✅ 自动化与实机验证 |
+| 伴侣 App + 内置 Media3（矢量UI / 40%抽屉 / 双击手势 / 长按倍速 / 全屏退出 / mpv 兜底） | ✅ 源码构建通过，实机验证通过 |
 
 

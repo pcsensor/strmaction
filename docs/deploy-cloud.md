@@ -104,7 +104,7 @@ rsync -av --delete \
   ./ user@你的服务器:/opt/strmaction/
 ```
 
-> 需要 APK 时单独上传即可：`scp companion/strmaction-companion-v1.apk user@服务器:/opt/strmaction/`。
+> 需要 APK 时单独上传即可：`scp companion/app/build/outputs/apk/release/app-release.apk user@服务器:/opt/strmaction/`。
 > 它只影响下载安装，不影响服务端运行。
 
 ---
