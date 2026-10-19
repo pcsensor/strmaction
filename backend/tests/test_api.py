@@ -780,6 +780,11 @@ def test_tree_folder_course_api():
         assert play_res["playlist"][1]["title"] == "[2]--班会"
         assert play_res["next_item_id"] == intro_detail["videos"][1]["id"]
 
+        # 删除带有层级目录与视频的课程媒体库，验证外键约束不会报错
+        del_res = client.delete(f"/api/libraries/{lib_id}")
+        assert del_res.status_code == 204
+        assert client.get(f"/api/libraries/{lib_id}").status_code == 404
+
 
 
 

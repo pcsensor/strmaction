@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import delete, func
+from sqlalchemy import delete, func, update
 from sqlmodel import Session, select
 
 from ..deps import (
@@ -26,6 +26,7 @@ from ..models import (
     PlayProgress,
     PlaySession,
     PlayToken,
+    Setting,
     UserLibraryAccess,
     utcnow,
 )
@@ -215,6 +216,10 @@ def delete_library(
         library = session.get(Library, library_id)
         if library is None:
             raise APIError(404, "LIBRARY_NOT_FOUND", "媒体库不存在")
+        # 清除用户授权
+        session.exec(
+            delete(UserLibraryAccess).where(UserLibraryAccess.library_id == library_id)
+        )
         item_ids = [
             row
             for row in session.exec(
@@ -227,13 +232,14 @@ def delete_library(
                     delete(model).where(model.item_id.in_(item_ids))
                 )
         session.exec(delete(MediaFile).where(MediaFile.library_id == library_id))
-        # 先删叶子，再删父级
-        for kind in ("episode", "video", "season", "movie", "series"):
-            session.exec(
-                delete(Item).where(
-                    Item.library_id == library_id, Item.kind == kind
-                )
-            )
+        # 解除 item 之间的自引用 parent_id 约束，彻底避免多层目录自引用导致的外键冲突
+        session.exec(
+            update(Item).where(Item.library_id == library_id).values(parent_id=None)
+        )
+        session.exec(delete(Item).where(Item.library_id == library_id))
+        session.exec(
+            delete(Setting).where(Setting.key == f"scanner:parser_version:{library_id}")
+        )
         session.delete(library)
         session.commit()
     scheduler.reload()
