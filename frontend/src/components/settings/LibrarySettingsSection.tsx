@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import {
+  BookOpen,
   Film,
   FolderPlus,
+  Home as HomeIcon,
   Library,
   Loader2,
   Pencil,
@@ -32,8 +34,8 @@ import { Section, Field, headersToText, textToHeaders } from './common'
 const typeIcon: Record<LibraryType, typeof Film> = {
   movie: Film,
   tv: Tv,
-  home: Play,
-  course: Sparkles,
+  home: HomeIcon,
+  course: BookOpen,
 }
 
 const typeOrder: LibraryType[] = ['movie', 'tv', 'home', 'course']
@@ -147,14 +149,14 @@ function LibraryCard({
             ) : null}
             {library.type === 'home' ? (
               <>
-                <span>{counts.series ?? 0} 个分组</span>
+                <span>{counts.folder ?? counts.series ?? 0} 个目录</span>
                 <span>{counts.video ?? 0} 个视频</span>
               </>
             ) : null}
             {library.type === 'course' ? (
               <>
-                <span>{counts.series ?? 0} 门课程</span>
-                <span>{counts.episode ?? 0} 个章节</span>
+                <span>{counts.folder ?? counts.series ?? 0} 个目录</span>
+                <span>{counts.video ?? 0} 个视频</span>
               </>
             ) : null}
             <span>{counts.files ?? 0} 个文件</span>
