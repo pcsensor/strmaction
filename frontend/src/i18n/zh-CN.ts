@@ -6,7 +6,7 @@ export const zhCN = {
   app: {
     name: 'StrmAction',
     tagline: '把播放从媒体服务器里彻底剥离',
-    footer: 'This product uses the TMDB API but is not endorsed or certified by TMDB.',
+    footer: 'This product uses the TMDB API.',
     version: 'v1.1',
   },
   nav: {
@@ -357,7 +357,7 @@ export const zhCN = {
     about: {
       version: '版本',
       dataDir: '数据目录',
-      tmdbNotice: '本产品使用 TMDB API，但未经 TMDB 认可或认证。',
+      tmdbNotice: '本产品使用 TMDB API。',
       docs: 'API 文档',
       tvHint: '电视端建议安装 StrmAction 伴侣 App，用 ?tv=1 进入 TV 布局仅作调试。',
     },
