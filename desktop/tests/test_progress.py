@@ -70,6 +70,25 @@ def test_flush_keeps_latest_and_retries_after_server_error():
     client.close()
 
 
+def test_update_does_not_wake_unthrottled():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"ok": True})
+
+    client = _client(handler)
+    reporter = ProgressReporter(
+        "https://media.example.com",
+        42,
+        "pt_abcdefghijklmnopqrstuvwxyz123456",
+        5000,
+        client=client,
+    )
+    reporter.update(10_000, 100_000)
+    assert reporter._wake.is_set() is False  # noqa: SLF001 - regression guard
+    reporter.request_flush()
+    assert reporter._wake.is_set() is True  # noqa: SLF001
+    client.close()
+
+
 def test_auth_error_stops_reporting():
     errors: list[bool] = []
 
