@@ -233,6 +233,17 @@ class User(SQLModel, table=True):
     created_by: int | None = Field(default=None, foreign_key="user.id")
 
 
+class UserPreference(SQLModel, table=True):
+    """v1.2 用户级偏好：播放方式等。NULL 表示跟随全局默认。"""
+
+    __tablename__ = "user_preference"
+
+    user_id: int = Field(foreign_key="user.id", primary_key=True)
+    player_mode: str | None = None
+    fallback_on_error: bool | None = None
+    updated_at: str = Field(default_factory=utcnow)
+
+
 class UserLibraryAccess(SQLModel, table=True):
     """用户-媒体库授权关系。管理员无需此表记录（自动拥有全部库）。"""
 

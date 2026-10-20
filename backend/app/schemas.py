@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoginBody(BaseModel):
@@ -78,6 +78,17 @@ class WatchedBody(BaseModel):
 class PlayBody(BaseModel):
     mode: str | None = None
     media_file_id: int | None = None
+
+
+class PlayerPreferencePatch(BaseModel):
+    """v1.2 用户播放偏好。字段为 None 表示清除覆盖、跟随全局。"""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: Literal[
+        "builtin", "external_mpv", "browser_intent", "desktop_mpv", "copy", "auto"
+    ] | None = None
+    fallback_on_error: bool | None = None
 
 
 class ProviderTestBody(BaseModel):

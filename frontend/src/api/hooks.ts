@@ -6,6 +6,7 @@ import {
 } from '@tanstack/react-query'
 import { api, buildQuery } from './client'
 import type {
+  AboutInfo,
   AppSettings,
   AuthState,
   Candidate,
@@ -14,7 +15,9 @@ import type {
   ItemListResponse,
   ItemSummary,
   LibraryInfo,
+  MyPlayerResponse,
   PlayResponse,
+  PlayerPreference,
   ProviderTestResult,
   SearchResponse,
   SettingsResponse,
@@ -34,6 +37,8 @@ export const keys = {
   libraries: ['libraries'] as const,
   tasks: ['tasks'] as const,
   settings: ['settings'] as const,
+  myPlayer: ['me', 'player'] as const,
+  about: ['about'] as const,
   candidates: (id: number, q: string, provider: string) =>
     ['candidates', id, q, provider] as const,
   users: ['users'] as const,
@@ -129,10 +134,11 @@ export function useSearch(q: string, genre?: string) {
   })
 }
 
-export function useLibraries() {
+export function useLibraries(enabled = true) {
   return useQuery({
     queryKey: keys.libraries,
     queryFn: () => api.get<{ libraries: LibraryInfo[] }>('/api/libraries'),
+    enabled,
   })
 }
 
@@ -200,10 +206,11 @@ export function useTask(id: number | null) {
   })
 }
 
-export function useSettings() {
+export function useSettings(enabled = true) {
   return useQuery({
     queryKey: keys.settings,
     queryFn: () => api.get<SettingsResponse>('/api/settings'),
+    enabled,
   })
 }
 
@@ -223,6 +230,34 @@ export function useProviderTest() {
   return useMutation({
     mutationFn: (provider: 'tmdb' | 'tvdb') =>
       api.post<ProviderTestResult>('/api/settings/provider-test', { provider }),
+  })
+}
+
+/** v1.2 当前用户的播放偏好（mode / fallback_on_error）。 */
+export function useMyPlayer() {
+  return useQuery({
+    queryKey: keys.myPlayer,
+    queryFn: () => api.get<MyPlayerResponse>('/api/me/player'),
+  })
+}
+
+export function usePatchMyPlayer() {
+  const queryClient = useQueryClient()
+  return useMutation({
+    mutationFn: (patch: Partial<PlayerPreference>) =>
+      api.patch<MyPlayerResponse>('/api/me/player', patch),
+    onSuccess: (data) => {
+      queryClient.setQueryData(keys.myPlayer, data)
+    },
+  })
+}
+
+/** 所有登录用户可见的应用信息；data_dir 仅管理员有值。 */
+export function useAbout() {
+  return useQuery({
+    queryKey: keys.about,
+    queryFn: () => api.get<AboutInfo>('/api/about'),
+    staleTime: 60_000,
   })
 }
 

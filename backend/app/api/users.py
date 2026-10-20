@@ -14,6 +14,7 @@ from ..deps import (
 from ..errors import APIError
 from ..models import User, UserLibraryAccess, Library, PlayProgress, PlayToken
 from ..models import Session as SessionRow
+from ..models import UserPreference
 from ..schemas import (
     CurrentUser,
     UserCreate,
@@ -292,11 +293,16 @@ async def delete_user(
         for token in db.exec(select(PlayToken).where(PlayToken.user_id == user.id)).all():
             db.delete(token)
 
-        # 4. 用户的会话
+        # 4. 用户偏好
+        preference = db.get(UserPreference, user.id)
+        if preference is not None:
+            db.delete(preference)
+
+        # 5. 用户的会话
         for session in db.exec(select(SessionRow).where(SessionRow.user_id == user.id)).all():
             db.delete(session)
 
-        # 5. 删除用户
+        # 6. 删除用户
         db.delete(user)
         db.commit()
 

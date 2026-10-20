@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Play, Tv } from 'lucide-react'
+import { Play } from 'lucide-react'
 import type { AppSettings } from '../../api/types'
 import { usePatchSettings } from '../../api/hooks'
 import { useToast } from '../../store/ui'
@@ -22,8 +22,6 @@ export function PlayerSettingsSection({
   const [mpvPath, setMpvPath] = useState('')
   const [mpvArgs, setMpvArgs] = useState('')
   const [enableProgress, setEnableProgress] = useState(true)
-
-  const companion = typeof window !== 'undefined' ? window.StrmActionNative : undefined
 
   useEffect(() => {
     if (!settings) return
@@ -64,10 +62,15 @@ export function PlayerSettingsSection({
   }
 
   return (
-    <Section id="player" title={t('settings.sections.player')} icon={Play}>
+    <Section
+      id="player-global"
+      title={t('settings.player.global')}
+      description={t('settings.player.globalHint')}
+      icon={Play}
+    >
       <div className="card p-5">
         <div className="grid gap-4 sm:grid-cols-2">
-          <Field label={t('settings.player.mode')} hint={t('settings.player.modeHint')}>
+          <Field label={t('settings.player.default')} hint={t('settings.player.modeHint')}>
             <select className="input" value={playerMode} onChange={(event) => setPlayerMode(event.target.value)}>
               <option value="builtin">{t('settings.player.builtin')}</option>
               <option value="external_mpv">{t('settings.player.externalMpv')}</option>
@@ -134,29 +137,6 @@ export function PlayerSettingsSection({
           />
           {t('settings.player.enableProgress')}
         </label>
-
-        <div className="mt-5 rounded-2xl border border-white/8 bg-white/[0.02] p-4">
-          <p className="flex items-center gap-2 text-[12.5px] font-medium text-ink-100">
-            <Tv className="h-4 w-4 text-accent" />
-            {t('settings.player.companion')}
-          </p>
-          <p className="mt-1.5 text-[11.5px] leading-relaxed text-ink-400">
-            {companion?.version?.()
-              ? t('settings.player.companionVersion', { version: companion.version() })
-              : t('settings.player.companionNotInstalled')}
-          </p>
-          {companion?.openSettings ? (
-            <button
-              type="button"
-              onClick={() => companion.openSettings?.()}
-              className="btn-ghost mt-3 px-4 py-2 text-[12px]"
-            >
-              {t('settings.player.companionOpen')}
-            </button>
-          ) : (
-            <p className="mt-1.5 text-[11px] text-ink-500">{t('settings.player.companionHint')}</p>
-          )}
-        </div>
 
         <div className="mt-5">
           <button
