@@ -82,7 +82,9 @@ class ProgressReporter:
             if duration_ms is not None:
                 self._duration_ms = max(0, int(duration_ms))
             self._dirty = True
-        self._wake.set()
+        # Deliberately do not wake the loop here. mpv emits time-pos many times
+        # per second; waking on every tick would turn the configured interval
+        # into an unthrottled upload loop. Pause/seek/exit call request_flush().
 
     def finish(self) -> None:
         with self._state_lock:

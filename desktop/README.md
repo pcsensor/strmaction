@@ -538,6 +538,52 @@ npm run build
 | `uv` 命令不存在 | 安装 uv，或改用系统 Python + pip（不推荐） |
 | 启动后没有桌面提示 | 确认服务端前端已更新；桌面桥在页面加载后注入 |
 
+### 13.1 播放时上传速度比下载高，怎么查？
+
+先给结论：
+
+- StrmAction 桌面端在播放时的**唯一主动上传**是进度上报；
+- 单次 payload 只有约 **100–300 字节**，默认每 **5 秒**一次；
+- 实测模拟 20Hz 播放位置更新 7 秒，只有 **4 次请求、约 1.25KB**，折合 **0.0014 Mbps**；
+- mpv 只接收媒体，不上传视频；
+- 所以 **11 Mbps 的上传不可能是正常的进度上报**，需要按进程排查。
+
+本次也修了一个相关 bug：`ProgressReporter` 之前会被每个 `time-pos` 事件唤醒，导致上报频率可能高于 `progress_interval_ms`；现在已改为严格按间隔上报，暂停/seek/退出/播完才立即 flush。旧构建需要重新构建桌面端。
+
+排查顺序：
+
+1. **按进程看流量**
+   - Windows：`resmon` →「网络」→ 按「发送/接收」排序，看是 `mpv`、`python`、`msedgewebview2` 还是其他程序；
+   - macOS：活动监视器 →「网络」；或 `nettop -P`。
+2. **暂停播放 / 退出桌面端**
+   - 上传立刻下降 → 与播放链路有关；
+   - 上传不变 → 是后台程序（网盘客户端、BT、云同步、备份、Windows Update 等）。
+3. **看服务端访问日志**
+   - 正常情况下 `/api/items/*/progress` 大约每 5 秒一条；
+   - 如果每秒几十/几百条，说明旧版未节流或客户端异常。
+4. **确认服务端是否在同一台机器**
+   - 如果 StrmAction 服务端也在这台电脑上，而 `.strm` URL 指向本机的 Alist/WebDAV/反向代理，那么「上传」可能是本机在向播放器发送视频；
+   - 如果服务端在 NAS/另一台机器，看是否有其他设备正在通过它拉流。
+5. **看网络适配器**
+   - VPN、Hyper-V、WSL、Docker、虚拟网卡会让任务管理器的总流量失真；
+   - 用资源监视器按进程看，而不是只看网卡总量。
+6. **确认测量口径**
+   - 是看本机、路由器还是服务器？
+   - 是 Mbps 还是 MB/s？
+   - 路由器上的「上传」可能是别的设备产生的。
+
+快速列出连接和进程（Windows）：
+
+```powershell
+Get-NetTCPConnection -State Established |
+  Select-Object RemoteAddress, RemotePort, OwningProcess,
+    @{n='Process';e={(Get-Process -Id $_.OwningProcess -ErrorAction SilentlyContinue).ProcessName}} |
+  Sort-Object Process
+```
+
+如果退出 StrmAction 桌面端后上传仍然很高，基本可以确定不是桌面端播放/进度上报导致的。
+
+
 日志位置见第 7 节。
 
 ---

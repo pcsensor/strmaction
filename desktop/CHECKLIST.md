@@ -156,7 +156,7 @@
 ## 验证记录（2026-10-20 / Windows）
 
 - 环境：Windows 11，uv 0.12.0，Python 3.12.13（`desktop/.venv`），pywebview 6.2.1。
-- `desktop` 单元测试：**24 passed**。
+- `desktop` 单元测试：**25 passed**。
 - 服务端全量测试：**58 passed**（含 `direct` 模式）。
 - 前端 `npm run build` 通过。
 - Playwright 验证：
@@ -164,5 +164,6 @@
   - 网页 + 桌面桥：15 项断言通过（`direct` 请求、payload 交付、设置页桌面提示）。
 - 应用启动：使用临时 `APPDATA` 启动了 WebView 设置窗口，进程稳定。
 - PyInstaller 构建：`dist/StrmAction/StrmAction.exe` 构建成功；打包后的 `--version`、`--settings` 启动冒烟通过。
+- 进度上报节流：模拟 20Hz 位置更新 7 秒只有 4 次请求、约 1.25KB，折合约 0.0014 Mbps；已修复原先按每个 `time-pos` 事件唤醒的问题。
 - 未验证：本机未安装 mpv，未做真实视频播放/headers/进度回写；macOS 构建/公证未验证。
 - 未提交：`vendor/mpv/` 二进制（按许可证策略由构建机准备）。
