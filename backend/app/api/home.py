@@ -292,5 +292,8 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
             "rows": rows,
             "stats": stats,
             "needs_attention": needs_attention,
-            "libraries": [library_payload(lib) for lib in libraries],
+            "libraries": [
+                library_payload(lib, include_private=user.role == "admin")
+                for lib in libraries
+            ],
         }

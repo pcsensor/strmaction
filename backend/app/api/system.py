@@ -13,7 +13,7 @@ from .. import __version__
 from ..config_store import SettingsService
 from ..deps import get_engine, get_settings, require_admin
 from ..errors import APIError
-from ..models import Item, Library, PlayProgress, utcnow
+from ..models import Item, Library, PlayProgress, User, utcnow
 from ..schemas import CurrentUser, ImportBody
 
 router = APIRouter(tags=["system"])
@@ -119,6 +119,7 @@ def export_data(
             ],
             "progress": [
                 {
+                    "user_id": row.user_id,
                     "item_id": row.item_id,
                     "position_ms": row.position_ms,
                     "duration_ms": row.duration_ms,
@@ -154,7 +155,7 @@ def _copy_item(raw: dict[str, Any], session: Session, library_id: int, parent_id
 @router.post("/import")
 def import_data(
     body: ImportBody,
-    _admin: CurrentUser = Depends(require_admin),
+    admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
 ):
@@ -243,11 +244,28 @@ def import_data(
             item_id = item_map.get(int(old_item or 0))
             if not item_id:
                 continue
+            # 新备份带 user_id；旧备份没有用户概念，归到执行导入的管理员。
+            target_user_id = admin.id
+            raw_user = raw.get("user_id")
+            if raw_user is not None:
+                try:
+                    candidate = int(raw_user)
+                except (TypeError, ValueError):
+                    candidate = admin.id
+                if session.get(User, candidate) is not None:
+                    target_user_id = candidate
             row = session.exec(
-                select(PlayProgress).where(PlayProgress.item_id == item_id)
+                select(PlayProgress).where(
+                    PlayProgress.item_id == item_id,
+                    PlayProgress.user_id == target_user_id,
+                )
             ).first()
             if row is None:
-                row = PlayProgress(item_id=item_id, updated_at=utcnow())
+                row = PlayProgress(
+                    item_id=item_id,
+                    user_id=target_user_id,
+                    updated_at=utcnow(),
+                )
             row.position_ms = int(raw.get("position_ms") or 0)
             row.duration_ms = raw.get("duration_ms")
             row.finished = bool(raw.get("finished"))

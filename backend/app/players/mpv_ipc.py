@@ -277,7 +277,7 @@ class MpvIpcAdapter:
             ).start()
         print(f"[play] 启动 mpv，媒体={mask_url(media.url)}")
         return {
-            "mode": "backend",
+            "mode": "desktop_mpv",
             "target": "mpv",
             "action": None,
             "fallback_url": media.url,

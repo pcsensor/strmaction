@@ -204,6 +204,16 @@ export type PlayMode =
 
 export interface PlayResponse {
   mode: PlayMode
+  requested_mode: PlayMode | 'auto'
+  downgraded: boolean
+  downgrade_reason:
+    | 'requires_companion'
+    | 'requires_android'
+    | 'admin_only'
+    | 'mpv_unavailable'
+    | 'requires_desktop'
+    | 'launch_failed'
+    | null
   target: string
   action: string | null
   fallback_url: string | null
@@ -353,6 +363,15 @@ export interface MyPlayerResponse {
   effective: PlayerPreferenceSummary
   /** 当前角色可选的播放方式；普通用户不含 desktop_mpv。 */
   allowed_modes: Array<PlayMode | 'auto'>
+  /** 当前客户端实际能执行的播放方式。 */
+  available_modes: Array<PlayMode | 'auto'>
+  client: {
+    is_companion: boolean
+    is_android: boolean
+    is_browser: boolean
+  }
+  /** 当前客户端按偏好解析后的实际播放方式。 */
+  resolved_mode: PlayMode | 'auto'
 }
 
 export interface AboutInfo {

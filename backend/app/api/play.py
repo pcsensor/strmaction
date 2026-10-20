@@ -151,6 +151,44 @@ def _mpv_available(settings, engine, context: PlayContext) -> bool:
         return False
 
 
+def resolve_mode_detail(
+    requested: str | None,
+    context: PlayContext,
+    settings,
+    engine,
+    player: dict | None = None,
+    allow_server_mpv: bool = True,
+) -> tuple[str, str | None]:
+    """返回 (实际 mode, 降级原因)；原因仅用于向用户解释，不影响播放。"""
+    player = player or settings.player()
+    mode = normalize_mode(requested, player)
+    if mode == "auto":
+        if context.is_companion:
+            return "builtin", None
+        if context.is_android:
+            return "browser_intent", None
+        if allow_server_mpv and _mpv_available(settings, engine, context):
+            return "desktop_mpv", None
+        return "copy", None
+    if mode == "builtin" and not context.is_companion:
+        # 浏览器里没有原生播放器：Android 走 intent://，其余复制链接
+        return ("browser_intent" if context.is_android else "copy"), "requires_companion"
+    if mode == "external_mpv" and not context.is_companion:
+        return ("browser_intent" if context.is_android else "copy"), "requires_companion"
+    if mode == "browser_intent" and not context.is_android:
+        # intent:// 是 Android Chrome 的能力，桌面/iOS 直接复制链接
+        return "copy", "requires_android"
+    if mode == "desktop_mpv":
+        if context.is_companion:
+            return "builtin", "requires_desktop"
+        if not allow_server_mpv:
+            # 服务器 mpv 仅管理员可用；普通用户按设备降级。
+            return ("browser_intent" if context.is_android else "copy"), "admin_only"
+        if not _mpv_available(settings, engine, context):
+            return "copy", "mpv_unavailable"
+    return mode, None
+
+
 def resolve_mode(
     requested: str | None,
     context: PlayContext,
@@ -159,30 +197,14 @@ def resolve_mode(
     player: dict | None = None,
     allow_server_mpv: bool = True,
 ) -> str:
-    player = player or settings.player()
-    mode = normalize_mode(requested, player)
-    if mode == "auto":
-        if context.is_companion:
-            return "builtin"
-        if context.is_android:
-            return "browser_intent"
-        if allow_server_mpv and _mpv_available(settings, engine, context):
-            return "desktop_mpv"
-        return "copy"
-    if mode == "builtin" and not context.is_companion:
-        # 浏览器里没有原生播放器：Android 走 intent://，其余复制链接
-        return "browser_intent" if context.is_android else "copy"
-    if mode == "external_mpv" and not context.is_companion:
-        return "browser_intent" if context.is_android else "copy"
-    if mode == "desktop_mpv":
-        if not allow_server_mpv:
-            # 服务器 mpv 仅管理员可用；普通用户按设备降级。
-            if context.is_companion:
-                return "builtin"
-            return "browser_intent" if context.is_android else "copy"
-        if not _mpv_available(settings, engine, context):
-            return "copy"
-    return mode
+    return resolve_mode_detail(
+        requested,
+        context,
+        settings,
+        engine,
+        player=player,
+        allow_server_mpv=allow_server_mpv,
+    )[0]
 
 
 def _pick_media(session: Session, item_id: int, media_file_id: int | None) -> MediaFile:
@@ -388,7 +410,8 @@ async def play(
     )
     # 个人播放偏好优先于全局默认；请求体里的显式 mode 优先级最高。
     player = effective_player(settings, get_preference(engine, user.id))
-    mode = resolve_mode(
+    requested_mode = normalize_mode(body.mode, player)
+    mode, downgrade_reason = resolve_mode_detail(
         body.mode,
         context,
         settings,
@@ -413,6 +436,9 @@ async def play(
 
     result: dict = {
         "mode": mode,
+        "requested_mode": requested_mode,
+        "downgraded": downgrade_reason is not None,
+        "downgrade_reason": downgrade_reason,
         "target": mode,
         "action": None,
         "fallback_url": play_url,
@@ -489,6 +515,9 @@ async def play(
         )
         result.update(built)
         result["mode"] = built.get("mode") or "desktop_mpv"
+        if mode == "desktop_mpv" and result["mode"] == "copy":
+            result["downgraded"] = True
+            result["downgrade_reason"] = "launch_failed"
         result["play_url"] = play_url
         result["headers"] = headers
         result["play_token"] = token

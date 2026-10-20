@@ -32,6 +32,29 @@ export function PlayerPreferenceSection() {
 
   const data = prefsQuery.data
   const allowedModes = data?.allowed_modes
+  const availableModes = data?.available_modes ?? data?.allowed_modes
+  const chosenMode = data ? mode || data.defaults.mode : null
+  const resolvedMode = data?.resolved_mode ?? data?.effective.mode
+  const degraded = Boolean(
+    data &&
+      chosenMode &&
+      chosenMode !== 'auto' &&
+      resolvedMode &&
+      resolvedMode !== chosenMode,
+  )
+  const clientName = data?.client?.is_companion
+    ? t('settings.player.clientCompanion')
+    : data?.client?.is_android
+      ? t('settings.player.clientAndroid')
+      : t('settings.player.clientDesktop')
+  const degradeHint =
+    chosenMode === 'builtin' || chosenMode === 'external_mpv'
+      ? t('settings.player.needCompanion')
+      : chosenMode === 'browser_intent'
+        ? t('settings.player.needAndroid')
+        : chosenMode === 'desktop_mpv'
+          ? t('settings.player.needServerMpv')
+          : null
   const companion = typeof window !== 'undefined' ? window.StrmActionNative : undefined
 
   useEffect(() => {
@@ -99,6 +122,9 @@ export function PlayerPreferenceSection() {
                   ).map((option) => (
                     <option key={option.value} value={option.value}>
                       {option.label}
+                      {availableModes && !availableModes.includes(option.value)
+                        ? ` · ${t('settings.player.unsupportedHere')}`
+                        : ''}
                     </option>
                   ))}
                 </select>
@@ -119,6 +145,22 @@ export function PlayerPreferenceSection() {
             <p className="mt-3 text-[11px] leading-relaxed text-ink-500">
               {t('settings.player.modeHint')}
             </p>
+            <p className="mt-1.5 text-[11px] leading-relaxed text-ink-500">
+              {t('settings.player.clientLabel', { client: clientName })}
+              {' · '}
+              {t('settings.player.resolvedMode', { mode: modeLabel(resolvedMode) })}
+            </p>
+
+            {degraded ? (
+              <div className="mt-3 rounded-2xl border border-amber-400/25 bg-amber-400/10 p-3 text-[11.5px] leading-relaxed text-amber-200">
+                <p>
+                  {t('settings.player.degradeWarning', {
+                    mode: modeLabel(resolvedMode),
+                  })}
+                </p>
+                {degradeHint ? <p className="mt-1 text-amber-200/80">{degradeHint}</p> : null}
+              </div>
+            ) : null}
 
             <div className="mt-5 rounded-2xl border border-white/8 bg-white/[0.02] p-4">
               <p className="flex items-center gap-2 text-[12.5px] font-medium text-ink-100">
@@ -156,7 +198,7 @@ export function PlayerPreferenceSection() {
               </button>
               <span className="text-[11px] text-ink-500">
                 {t('settings.player.effective', {
-                  mode: modeLabel(data.effective.mode),
+                  mode: modeLabel(resolvedMode),
                   fallback: data.effective.fallback_on_error
                     ? t('settings.player.fallbackOnShort')
                     : t('settings.player.fallbackOffShort'),

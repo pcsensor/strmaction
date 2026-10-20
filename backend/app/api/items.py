@@ -369,7 +369,9 @@ def get_item(
             else None
         )
         library_info = (
-            library_payload(library) if library is not None else None
+            library_payload(library, include_private=user.role == "admin")
+            if library is not None
+            else None
         )
         needs_attention = item.kind in {"movie", "series"} and item.match_state in {
             "failed",
@@ -574,8 +576,12 @@ def get_item(
 
 
 @router.post("/{item_id}/unlock")
-def unlock_item(item_id: int, engine=Depends(get_engine)):
-    """恢复自动刮削：清空锁定字段，随后由前端触发一次刷新。"""
+def unlock_item(
+    item_id: int,
+    _admin: CurrentUser = Depends(require_admin),
+    engine=Depends(get_engine),
+):
+    """恢复自动刮削：清空锁定字段，随后由前端触发一次刷新（仅管理员）。"""
     with Session(engine) as session:
         item = _get_item(session, item_id)
         target = item
@@ -723,6 +729,7 @@ async def upload_poster(
     item_id: int,
     file: UploadFile = File(...),
     kind: str = Form("poster"),
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     images: ImageService = Depends(get_images),
 ):

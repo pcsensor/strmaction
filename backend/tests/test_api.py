@@ -509,6 +509,13 @@ def test_multiuser_and_permissions():
             assert movie_lib["id"] in user_lib_ids
             assert tv_lib["id"] not in user_lib_ids
 
+            # 3.1 普通用户拿到的是精简库信息，不暴露服务器路径/请求头
+            user_movie_lib = next(l for l in user_libs if l["id"] == movie_lib["id"])
+            assert user_movie_lib["root_path"] == ""
+            assert user_movie_lib["play_headers"] == {}
+            admin_movie_lib = next(l for l in libs if l["id"] == movie_lib["id"])
+            assert admin_movie_lib["root_path"]
+
             # 4. 普通用户无法访问管理端接口（settings / tasks / users / export / import）
             assert user_client.get("/api/settings").status_code == 403
             assert user_client.get("/api/tasks").status_code == 403
@@ -532,14 +539,21 @@ def test_multiuser_and_permissions():
             assert pref.json()["overrides"] == {"mode": None, "fallback_on_error": None}
             assert "desktop_mpv" not in pref.json()["allowed_modes"]
             assert "builtin" in pref.json()["allowed_modes"]
-            assert "desktop_mpv" in admin_client.get("/api/me/player").json()["allowed_modes"]
+            assert pref.json()["client"]["is_browser"] is True
+            assert pref.json()["available_modes"] == ["auto", "copy"]
+            assert pref.json()["resolved_mode"] == "copy"  # 桌面浏览器默认 builtin → copy
+            admin_pref = admin_client.get("/api/me/player").json()
+            assert "desktop_mpv" in admin_pref["allowed_modes"]
+            assert "desktop_mpv" in admin_pref["available_modes"]
+
             patched = user_client.patch(
                 "/api/me/player",
-                json={"mode": "browser_intent", "fallback_on_error": False},
+                json={"mode": "external_mpv", "fallback_on_error": False},
             )
             assert patched.status_code == 200, patched.text
-            assert patched.json()["effective"]["mode"] == "browser_intent"
+            assert patched.json()["effective"]["mode"] == "external_mpv"
             assert patched.json()["effective"]["fallback_on_error"] is False
+            assert patched.json()["resolved_mode"] == "copy"  # 桌面浏览器不支持外部播放器
             # 白名单之外的字段 / 非法 mode / 服务器 mpv 必须拒绝
             assert user_client.patch(
                 "/api/me/player", json={"mode": "nope"}
@@ -562,20 +576,51 @@ def test_multiuser_and_permissions():
             movie_items = user_client.get("/api/items", params={"library_id": movie_lib["id"]}).json()["items"]
             movie_item = movie_items[0]
 
-            # 6.1 播放方式使用个人偏好；管理员仍走全局默认（builtin 在浏览器降级为 copy）
-            user_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
-            assert user_play.status_code == 200, user_play.text
-            assert user_play.json()["mode"] == "browser_intent"
-            assert user_play.json()["fallback_on_error"] is False
-            admin_play = admin_client.post(f"/api/play/{movie_item['id']}", json={})
-            assert admin_play.status_code == 200, admin_play.text
-            assert admin_play.json()["mode"] == "copy"
+            # 6.0 管理端写接口必须拦截普通用户（unlock / poster）
+            assert user_client.post(f"/api/items/{movie_item['id']}/unlock").status_code == 403
+            assert user_client.post(
+                f"/api/items/{movie_item['id']}/poster",
+                files={"file": ("x.png", b"not-an-image", "image/png")},
+                data={"kind": "poster"},
+            ).status_code == 403
+            assert admin_client.post(f"/api/items/{movie_item['id']}/unlock").status_code == 200
+
+            # 6.1 外部播放器在桌面浏览器明确降级为 copy，并带降级原因
+            external_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
+            assert external_play.status_code == 200, external_play.text
+            assert external_play.json()["mode"] == "copy"
+            assert external_play.json()["requested_mode"] == "external_mpv"
+            assert external_play.json()["downgraded"] is True
+            assert external_play.json()["downgrade_reason"] == "requires_companion"
+            assert external_play.json()["fallback_on_error"] is False
+
+            # 6.1.1 browser_intent 在桌面浏览器同样降级
+            user_client.patch("/api/me/player", json={"mode": "browser_intent"})
+            intent_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
+            assert intent_play.status_code == 200, intent_play.text
+            assert intent_play.json()["mode"] == "copy"
+            assert intent_play.json()["downgrade_reason"] == "requires_android"
+
+            # 6.1.2 个人偏好 copy 生效；管理员默认 builtin 在 Android 浏览器走 intent
+            user_client.patch("/api/me/player", json={"mode": "copy"})
+            android_ua = {"user-agent": "Mozilla/5.0 (Linux; Android 14)"}
+            user_android = user_client.post(
+                f"/api/play/{movie_item['id']}", json={}, headers=android_ua
+            )
+            assert user_android.status_code == 200, user_android.text
+            assert user_android.json()["mode"] == "copy"
+            admin_android = admin_client.post(
+                f"/api/play/{movie_item['id']}", json={}, headers=android_ua
+            )
+            assert admin_android.status_code == 200, admin_android.text
+            assert admin_android.json()["mode"] == "browser_intent"
 
             # 6.2 显式 null 清除个人覆盖，回落到全局默认
             cleared = user_client.patch("/api/me/player", json={"mode": None})
             assert cleared.status_code == 200, cleared.text
             assert cleared.json()["overrides"]["mode"] is None
             assert cleared.json()["effective"]["mode"] == "builtin"
+            assert cleared.json()["resolved_mode"] == "copy"
 
             # 6.3 全局默认是服务器 mpv 时，普通用户也必须降级，绝不在服务端起进程
             admin_client.patch(
@@ -583,6 +628,7 @@ def test_multiuser_and_permissions():
             )
             degraded = user_client.get("/api/me/player").json()
             assert degraded["effective"]["mode"] == "auto"
+            assert degraded["resolved_mode"] == "copy"
             degraded_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
             assert degraded_play.status_code == 200, degraded_play.text
             assert degraded_play.json()["mode"] == "copy"
@@ -600,12 +646,33 @@ def test_multiuser_and_permissions():
             # 普通用户详情中显示 50000ms
             u_detail = user_client.get(f"/api/items/{movie_item['id']}").json()
             assert u_detail["progress"]["position_ms"] == 50000
+            assert u_detail["library"]["root_path"] == ""
+            assert u_detail["library"]["play_headers"] == {}
 
             # 管理员详情中不受影响（仍然无进度）
             a_detail = admin_client.get(f"/api/items/{movie_item['id']}").json()
             assert a_detail["progress"] is None
+            assert a_detail["library"]["root_path"]
 
-            # 6.4 普通用户可以修改自己的密码
+            # 6.4 导出/导入按 user_id 恢复进度，不能覆盖其他用户
+            exported = admin_client.get("/api/export").json()
+            assert any(row.get("user_id") == user_id for row in exported["progress"])
+            for row in exported["progress"]:
+                if row.get("user_id") == user_id:
+                    row["position_ms"] = 60000
+            imported = admin_client.post(
+                "/api/import", json={"data": exported, "settings": False}
+            )
+            assert imported.status_code == 200, imported.text
+            restored = user_client.get(f"/api/items/{movie_item['id']}").json()
+            assert restored["progress"]["position_ms"] == 60000
+
+            # 6.5 改密会注销该用户全部旧会话
+            revoked_client = TestClient(app)
+            assert revoked_client.post(
+                "/api/auth/login",
+                json={"username": "viewer1", "password": "Password-123"},
+            ).status_code == 200
             changed = user_client.post(
                 "/api/auth/password",
                 json={
@@ -614,9 +681,21 @@ def test_multiuser_and_permissions():
                 },
             )
             assert changed.status_code == 200, changed.text
+            assert revoked_client.get("/api/home").status_code == 401
             assert user_client.post(
                 "/api/auth/login",
                 json={"username": "viewer1", "password": "New-Password-456"},
+            ).status_code == 200
+
+            # 6.6 管理员重置密码同样注销目标用户会话
+            reset = admin_client.patch(
+                f"/api/users/{user_id}", json={"password": "Another-Pass-789"}
+            )
+            assert reset.status_code == 200, reset.text
+            assert user_client.get("/api/home").status_code == 401
+            assert user_client.post(
+                "/api/auth/login",
+                json={"username": "viewer1", "password": "Another-Pass-789"},
             ).status_code == 200
 
         # 7. 管理员更新用户媒体库授权（追加剧集库）
@@ -629,6 +708,43 @@ def test_multiuser_and_permissions():
         # 8. 管理员删除用户
         del_res = admin_client.delete(f"/api/users/{user_id}")
         assert del_res.status_code == 204
+
+        # 9. 删除“创建过其他用户”的账号：created_by 引用应先置空
+        creator_res = admin_client.post(
+            "/api/users",
+            json={
+                "username": "creator",
+                "password": "Creator-Pass-123",
+                "role": "admin",
+            },
+        )
+        assert creator_res.status_code == 201, creator_res.text
+        creator_id = creator_res.json()["id"]
+
+        creator_client = TestClient(app)
+        assert creator_client.post(
+            "/api/auth/login",
+            json={"username": "creator", "password": "Creator-Pass-123"},
+        ).status_code == 200
+        child_res = creator_client.post(
+            "/api/users",
+            json={
+                "username": "admin-two",
+                "password": "Admin2-Pass-123",
+                "role": "admin",
+            },
+        )
+        assert child_res.status_code == 201, child_res.text
+        child_id = child_res.json()["id"]
+
+        child_client = TestClient(app)
+        assert child_client.post(
+            "/api/auth/login",
+            json={"username": "admin-two", "password": "Admin2-Pass-123"},
+        ).status_code == 200
+        # admin-two 的 created_by 指向 creator；删除 creator 不能触发 FK 失败
+        assert child_client.delete(f"/api/users/{creator_id}").status_code == 204
+        assert admin_client.delete(f"/api/users/{child_id}").status_code == 204
 
 
 def test_search_genre_filter():

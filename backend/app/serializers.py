@@ -115,11 +115,16 @@ def episode_summary(
     return data
 
 
-def library_payload(library: Library, counts: dict[str, int] | None = None) -> dict[str, Any]:
+def library_payload(
+    library: Library,
+    counts: dict[str, int] | None = None,
+    *,
+    include_private: bool = True,
+) -> dict[str, Any]:
     return {
         "id": library.id,
         "name": library.name,
-        "root_path": library.root_path,
+        "root_path": library.root_path if include_private else "",
         "type": library.type,
         "language": library.language,
         "scan_cron": library.scan_cron,
@@ -128,7 +133,9 @@ def library_payload(library: Library, counts: dict[str, int] | None = None) -> d
         "template": library.template,
         "provider_priority": parse_json(library.provider_priority, None),
         "tvdb_season_type": library.tvdb_season_type,
-        "play_headers": parse_json(library.play_headers, {}) or {},
+        "play_headers": (
+            (parse_json(library.play_headers, {}) or {}) if include_private else {}
+        ),
         "created_at": library.created_at,
         "last_scan_at": library.last_scan_at,
         "counts": counts or {},
