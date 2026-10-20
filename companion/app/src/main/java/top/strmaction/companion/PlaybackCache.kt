@@ -14,6 +14,10 @@ object PlaybackCache {
     const val DEFAULT_LIMIT_MB = 128
     const val MIN_EFFECTIVE_LIMIT_MB = 16
     const val MAX_LIMIT_MB = 2048
+    /** 时间窗口不随 MB 缩小，否则长剧集的缓冲段只有几个像素。 */
+    private const val BUFFER_WINDOW_MS = 60_000
+    /** 当前集内回看：保留最近 60 秒已播数据。 */
+    private const val BACK_BUFFER_MS = 60_000
 
     /** 播放器菜单里的快捷档位；0 = 最小预读。 */
     val PRESETS = listOf(0, 64, 128, 256, 512)
@@ -67,14 +71,11 @@ object PlaybackCache {
         return bytes.coerceAtMost(Int.MAX_VALUE.toLong()).toInt()
     }
 
-    /** 上限越小，时间窗口也收窄，避免“按时间”先于“按字节”触发。 */
-    fun maxBufferMs(limitMb: Int): Int = when {
-        limitMb <= 32 -> 8_000
-        limitMb <= 64 -> 12_000
-        limitMb <= 128 -> 20_000
-        limitMb <= 256 -> 30_000
-        else -> 45_000
-    }
+    /** 固定前向缓冲时间窗口；字节上限由 targetBufferBytes 单独控制。 */
+    fun maxBufferMs(): Int = BUFFER_WINDOW_MS
+
+    /** 已播放内容的回看缓存时长。 */
+    fun backBufferMs(): Int = BACK_BUFFER_MS
 
     fun label(value: Int): String =
         if (value <= 0) "最小" else "${normalize(value)}MB"

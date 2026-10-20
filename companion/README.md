@@ -121,13 +121,16 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 
 ## 播放缓存与缓冲进度
 
-- **缓存上限**：设置页「播放缓存上限（MB）」可填 0–2048，留空跟随服务端
+- **缓存上限**：设置页「播放缓存上限（MB）」可填 0 或 16–2048，留空跟随服务端
   `player.cache_limit_mb`（默认 128）；播放器「更多」菜单提供 最小 / 64 / 128 / 256 / 512
   快捷档。修改后下一集生效。
-- **执行方式**：`DefaultLoadControl.setTargetBufferBytes()` + 收窄时间窗口，并按进程堆内存
-  的 1/4 做上限钳制；0 在 Media3 中无法真正关闭缓冲，实际按 16MB 执行。
-- **缓冲进度**：进度条第二层（半透明金色）显示 `bufferedPosition`；拖动时提示
-  「已缓冲 / 缓冲中」，播放器菜单显示当前上限与已缓冲百分比。
+- **执行方式**：`DefaultLoadControl.setTargetBufferBytes()` 限制字节，时间窗口固定 60 秒，
+  避免长剧集的缓冲段被压成几个像素；并按进程堆内存的 1/4 做上限钳制。0 在 Media3 中
+  无法真正关闭缓冲，实际按 16MB 执行。
+- **缓冲进度**：自绘 B 站风格三层进度条（未缓冲/已缓冲/已播放），轨道 4dp、触摸区
+  28dp；拖动时提示「已缓冲 / 缓冲中」，播放器菜单显示当前上限与缓冲时长。
+- **当前集回看**：`DefaultLoadControl.setBackBuffer(60_000, true)` 保留最近 60 秒已播
+  数据，当前集内往回拖可命中内存；退出播放页后释放，不跨集、不跨进程。
 - **边界**：只控制内置 Media3；通过 Intent 拉起的「外部 mpv」无法传参，仍由
   `mpv.conf` 决定缓存。
 
@@ -167,6 +170,7 @@ app/src/main/java/top/strmaction/companion/
 ├─ PlayerActivity.kt    # Media3 播放器主界面、手势、全屏与生命周期
 ├─ player/              # 播放器解耦模块
 │  ├─ PlayerDrawer.kt   # 40% 抽屉交互与集数渲染（选集/倍速/更多）
+│  ├─ BufferedSeekBar.kt # B 站风格三层缓冲进度条
 │  ├─ PlayerTrackHelper.kt # 音轨与字幕轨道管理
 │  ├─ PlayerSpeedHelper.kt # 倍速切换与长按极速播放管理
 │  └─ PlayerUiHelper.kt # UI 样式与时间格式化

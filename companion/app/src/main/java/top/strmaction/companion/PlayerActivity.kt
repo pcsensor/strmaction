@@ -37,6 +37,7 @@ import androidx.annotation.DrawableRes
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import top.strmaction.companion.player.BufferedSeekBar
 import top.strmaction.companion.player.PlayerDrawer
 import top.strmaction.companion.player.PlayerSpeedHelper
 import top.strmaction.companion.player.PlayerTrackHelper
@@ -95,7 +96,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var bottomBar: LinearLayout
     private lateinit var titleView: TextView
     private lateinit var timeView: TextView
-    private lateinit var seekBar: SeekBar
+    private lateinit var seekBar: BufferedSeekBar
     private lateinit var backButton: ImageView
     private lateinit var pipButton: ImageView
     private lateinit var menuButton: ImageView
@@ -495,19 +496,13 @@ class PlayerActivity : AppCompatActivity() {
             ).apply { gravity = Gravity.BOTTOM }
         }
 
-        // 进度条
-        seekBar = SeekBar(this).apply {
+        // 进度条：B 站风格三层轨道，触摸区域 28dp，视觉轨道 4dp。
+        seekBar = BufferedSeekBar(this).apply {
             max = SEEK_MAX
             progress = 0
-            progressTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
-            secondaryProgressTintList = ColorStateList.valueOf(Color.parseColor("#66E8B06A"))
-            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#33FFFFFF"))
-            thumbTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
-            splitTrack = false
-            setPadding(dp(6), 0, dp(6), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT,
+                dp(28),
             )
         }
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -659,6 +654,26 @@ class PlayerActivity : AppCompatActivity() {
         if (this::drawer.isInitialized) {
             drawer.close()
         }
+    }
+
+    /** 抽屉 body 本身固定高度；菜单必须自己套 ScrollView 才能上下滑动。 */
+    private fun addScrollableDrawerContent(container: FrameLayout, content: View) {
+        val scroll = ScrollView(this).apply {
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+            isFillViewport = true
+            isVerticalScrollBarEnabled = false
+            overScrollMode = View.OVER_SCROLL_NEVER
+            clipToPadding = false
+        }
+        content.layoutParams = FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.WRAP_CONTENT,
+        )
+        scroll.addView(content)
+        container.addView(scroll)
     }
 
     private fun setupPlayerGestures(view: View) {
@@ -1021,9 +1036,9 @@ class PlayerActivity : AppCompatActivity() {
             val cacheDesc = if (externalMpv) {
                 getString(R.string.player_cache_external)
             } else {
-                val percent = bufferedPercent()
-                if (percent != null) {
-                    "${PlaybackCache.label(cacheMb)} · 已缓冲 $percent%"
+                val ahead = bufferedAheadMs()
+                if (ahead >= 1_000L) {
+                    "${PlaybackCache.label(cacheMb)} · 缓冲 ${formatTime(ahead)}"
                 } else {
                     PlaybackCache.label(cacheMb)
                 }
@@ -1049,7 +1064,7 @@ class PlayerActivity : AppCompatActivity() {
                 info?.let { openMpv(it) }
             })
 
-            container.addView(layout)
+            addScrollableDrawerContent(container, layout)
         }
     }
 
@@ -1092,7 +1107,7 @@ class PlayerActivity : AppCompatActivity() {
                 textSize = 11f
                 setPadding(dp(4), dp(10), dp(4), 0)
             })
-            container.addView(layout)
+            addScrollableDrawerContent(container, layout)
         }
     }
 
@@ -1105,14 +1120,9 @@ class PlayerActivity : AppCompatActivity() {
         toast(getString(R.string.player_cache_applied, PlaybackCache.label(normalized)))
     }
 
-    private fun bufferedPercent(): Int? {
-        val duration = currentDuration()
-        if (duration <= 0) return null
-        val buffered = bufferedPositionMs()
-        if (buffered <= 0) return null
-        return (buffered.coerceAtMost(duration) * 100 / duration)
-            .toInt()
-            .coerceIn(0, 100)
+    private fun bufferedAheadMs(): Long {
+        val position = player?.currentPosition ?: 0L
+        return (bufferedPositionMs() - position).coerceAtLeast(0L)
     }
 
     private fun textTracks(): List<Pair<Tracks.Group, Int>> =
@@ -1390,17 +1400,18 @@ class PlayerActivity : AppCompatActivity() {
             },
         )
         val defaultDataSourceFactory = DefaultDataSource.Factory(this, resolvingFactory)
-        val cacheLimitMb = PlaybackCache.effectiveLimitMb(this, playInfo.cacheLimitMb)
         val loadControl = DefaultLoadControl.Builder()
             .setTargetBufferBytes(
                 PlaybackCache.targetBufferBytes(this, playInfo.cacheLimitMb),
             )
             .setBufferDurationsMs(
                 5_000,
-                PlaybackCache.maxBufferMs(cacheLimitMb),
+                PlaybackCache.maxBufferMs(),
                 2_500,
                 5_000,
             )
+            // 保留最近 60 秒已播内容，当前集内往回拖可命中内存。
+            .setBackBuffer(PlaybackCache.backBufferMs(), true)
             // 让字节上限优先于时间阈值，否则小缓存会被时间窗口突破。
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
@@ -1592,15 +1603,19 @@ class PlayerActivity : AppCompatActivity() {
         val duration = currentDuration()
         val position = exo.currentPosition.coerceAtLeast(0L)
         val buffered = bufferedPositionMs()
+        val bufferedProgress = if (duration > 0) {
+            (buffered.coerceAtMost(duration) * SEEK_MAX / duration)
+                .toInt()
+                .coerceIn(0, SEEK_MAX)
+        } else {
+            0
+        }
         if (!userSeeking) {
             if (duration > 0) {
                 val progress = (position * SEEK_MAX / duration)
                     .toInt()
                     .coerceIn(0, SEEK_MAX)
                 seekBar.progress = progress
-                val bufferedProgress = (buffered.coerceAtMost(duration) * SEEK_MAX / duration)
-                    .toInt()
-                    .coerceIn(0, SEEK_MAX)
                 if (seekBar.secondaryProgress != bufferedProgress) {
                     seekBar.secondaryProgress = bufferedProgress
                 }
