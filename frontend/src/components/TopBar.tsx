@@ -40,7 +40,7 @@ export function TopBar() {
     { to: '/search', label: t('nav.search'), visible: true },
     { to: '/users', label: '用户管理', visible: isAdmin },
     { to: '/tasks', label: t('nav.tasks'), visible: isAdmin },
-    { to: '/settings', label: t('nav.settings'), visible: isAdmin },
+    { to: '/settings', label: t('nav.settings'), visible: true },
   ].filter((link) => link.visible)
 
   return (
@@ -130,7 +130,7 @@ export function BottomNav() {
     { to: '/libraries', label: t('nav.libraries'), icon: Library },
     { to: '/search', label: t('nav.search'), icon: Search },
     isAdmin && { to: '/users', label: '用户', icon: Users },
-    isAdmin && { to: '/settings', label: t('nav.settings'), icon: Settings },
+    { to: '/settings', label: t('nav.settings'), icon: Settings },
   ].filter(Boolean) as Array<{ to: string; label: string; icon: any; end?: boolean }>
 
   return (

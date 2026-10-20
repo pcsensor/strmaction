@@ -30,6 +30,7 @@ def write_progress(
     position_ms: int,
     duration_ms: int | None,
     *,
+    user_id: int | None = None,
     finished: bool = False,
 ) -> None:
     position_ms = max(0, int(position_ms or 0))
@@ -42,12 +43,16 @@ def write_progress(
     with Session(engine) as session:
         from sqlmodel import select
 
-        row = session.exec(
-            select(PlayProgress).where(PlayProgress.item_id == item_id)
-        ).first()
+        conditions = [PlayProgress.item_id == item_id]
+        if user_id is None:
+            conditions.append(PlayProgress.user_id.is_(None))
+        else:
+            conditions.append(PlayProgress.user_id == user_id)
+        row = session.exec(select(PlayProgress).where(*conditions)).first()
         if row is None:
             row = PlayProgress(
                 item_id=item_id,
+                user_id=user_id,
                 position_ms=position_ms,
                 duration_ms=duration_ms,
                 finished=finished,
@@ -63,10 +68,19 @@ def write_progress(
 
 
 class MpvMonitor(threading.Thread):
-    def __init__(self, engine, item_id: int, pipe_path: str, process: subprocess.Popen):
+    def __init__(
+        self,
+        engine,
+        item_id: int,
+        pipe_path: str,
+        process: subprocess.Popen,
+        *,
+        user_id: int | None = None,
+    ):
         super().__init__(daemon=True)
         self.engine = engine
         self.item_id = item_id
+        self.user_id = user_id
         self.pipe_path = pipe_path
         self.process = process
         self.position = 0.0
@@ -166,7 +180,14 @@ class MpvMonitor(threading.Thread):
             elif duration_ms is None and position_ms == 0:
                 finished = False
         try:
-            write_progress(self.engine, self.item_id, position_ms, duration_ms, finished=finished)
+            write_progress(
+                self.engine,
+                self.item_id,
+                position_ms,
+                duration_ms,
+                user_id=self.user_id,
+                finished=finished,
+            )
             self._last_write = now
         except Exception:
             pass
@@ -175,9 +196,10 @@ class MpvMonitor(threading.Thread):
 class MpvIpcAdapter:
     name = "mpv_ipc"
 
-    def __init__(self, settings: SettingsService, engine):
+    def __init__(self, settings: SettingsService, engine, user_id: int | None = None):
         self.settings = settings
         self.engine = engine
+        self.user_id = user_id
 
     def _mpv_path(self) -> str | None:
         configured = (self.settings.player().get("mpv_path") or "mpv").strip()
@@ -186,9 +208,8 @@ class MpvIpcAdapter:
         return shutil.which(configured)
 
     def available(self, context: PlayContext) -> bool:
+        # mode 策略由 resolve_mode 统一处理；这里只探测运行环境。
         if context.is_android:
-            return False
-        if self.settings.player().get("mode") in {"copy", "builtin", "external_mpv"}:
             return False
         return self._mpv_path() is not None
 
@@ -247,7 +268,13 @@ class MpvIpcAdapter:
                 "tip": f"启动 mpv 失败：{exc}",
             }
         if self.settings.player().get("enable_progress", True):
-            MpvMonitor(self.engine, item.id, pipe_path, process).start()
+            MpvMonitor(
+                self.engine,
+                item.id,
+                pipe_path,
+                process,
+                user_id=self.user_id,
+            ).start()
         print(f"[play] 启动 mpv，媒体={mask_url(media.url)}")
         return {
             "mode": "backend",

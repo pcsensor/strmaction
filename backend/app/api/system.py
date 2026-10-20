@@ -11,10 +11,10 @@ from sqlmodel import Session, select
 
 from .. import __version__
 from ..config_store import SettingsService
-from ..deps import get_engine, get_settings
+from ..deps import get_engine, get_settings, require_admin
 from ..errors import APIError
 from ..models import Item, Library, PlayProgress, utcnow
-from ..schemas import ImportBody
+from ..schemas import CurrentUser, ImportBody
 
 router = APIRouter(tags=["system"])
 
@@ -96,6 +96,7 @@ def health(engine=Depends(get_engine)):
 
 @router.get("/export")
 def export_data(
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
 ):
@@ -153,6 +154,7 @@ def _copy_item(raw: dict[str, Any], session: Session, library_id: int, parent_id
 @router.post("/import")
 def import_data(
     body: ImportBody,
+    _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
 ):

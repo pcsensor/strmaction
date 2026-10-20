@@ -336,6 +336,32 @@ export interface SettingsResponse {
   version: string
 }
 
+/** v1.2 用户级播放偏好；null 表示跟随全局默认。 */
+export interface PlayerPreference {
+  mode: PlayMode | 'auto' | null
+  fallback_on_error: boolean | null
+}
+
+export interface PlayerPreferenceSummary {
+  mode: PlayMode | 'auto'
+  fallback_on_error: boolean
+}
+
+export interface MyPlayerResponse {
+  overrides: PlayerPreference
+  defaults: PlayerPreferenceSummary
+  effective: PlayerPreferenceSummary
+  /** 当前角色可选的播放方式；普通用户不含 desktop_mpv。 */
+  allowed_modes: Array<PlayMode | 'auto'>
+}
+
+export interface AboutInfo {
+  app: string
+  version: string
+  api_docs: string
+  data_dir: string | null
+}
+
 export interface TaskStats {
   scanned?: number
   parsed?: number

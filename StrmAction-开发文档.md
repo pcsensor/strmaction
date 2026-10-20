@@ -378,6 +378,13 @@ CREATE TABLE user_library_access (
 CREATE INDEX idx_user_lib_uid ON user_library_access(user_id);
 CREATE INDEX idx_user_lib_lid ON user_library_access(library_id);
 
+CREATE TABLE user_preference (
+  user_id           INTEGER PRIMARY KEY REFERENCES user(id) ON DELETE CASCADE,
+  player_mode       TEXT,                 -- v1.2：NULL = 跟随全局 player.mode
+  fallback_on_error INTEGER,              -- NULL = 跟随全局
+  updated_at        TEXT NOT NULL
+);
+
 CREATE TABLE session (
   jti           TEXT PRIMARY KEY,
   user_id       INTEGER REFERENCES user(id) ON DELETE CASCADE,
@@ -777,10 +784,12 @@ POST /v4/login   { "apikey": "<key>", "pin": "<pin?>" }  →  { "data": { "token
 | mode | 使用方 | 进度 | 说明 |
 |---|---|---|---|
 | `builtin` | 伴侣 App | **实时 5s** | 默认 |
-| `external_mpv` | 伴侣 App / 浏览器 | 退出时一次 | 兜底，画质优先 |
+| `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；浏览器会降级 |
 | `browser_intent` | 浏览器（Chromium） | 无 | 无伴侣 App 时的降级 |
-| `desktop_mpv` | 桌面浏览器 | 实时 5s（IPC） | 仅服务端与播放器同机时启用 |
+| `desktop_mpv` | 服务端同机浏览器（仅管理员） | 实时 5s（IPC） | 由**服务端** spawn mpv；普通用户请求会降级为 `copy`/`intent` |
 | `copy` | 任意 | 无 | 最终兜底 |
+
+> `desktop_mpv` 会调用服务器上的 mpv，不是用户电脑上的播放器；普通用户不可选，个人偏好与全局默认都会在解析时被拦截。
 
 **`POST /api/play/{item_id}` 响应**
 
@@ -1034,12 +1043,17 @@ interface StrmActionNative {
 | DELETE/POST | `/items/{id}/continue` 或 `POST /items/{id}/dismiss-continue` | 从首页「继续观看」移除该条目（保留其当前用户播放进度与已看记录，见 §12.11） |
 | GET | `/search` | 全库搜索（标题/别名/演职员，受用户授权媒体库范围过滤） |
 | GET | `/home` | 首页聚合：`hero[]`, `continue[]`, `recent[]`, `rows[]`（受用户授权媒体库范围过滤，个人进度隔离） |
-| POST | `/play/{item_id}` | 返回 `mode / play_url / resume_ms / headers / play_token / next_item_id` |
+| POST | `/play/{item_id}` | 返回 `mode / play_url / resume_ms / headers / play_token / next_item_id`；mode 按「请求体 > 用户偏好 > 全局默认」解析 |
 | POST | `/items/{id}/progress` | `{position_ms, duration_ms, finished}`；鉴权支持 Cookie 或 `Bearer <play_token>`（自动关联对应用户，见 §12.7） |
 | GET | `/tasks` | 任务列表与日志 |
-| GET | `/settings` | 读取配置（脱敏：`api_key` 返回 `sk-****`） |
-| PATCH | `/settings` | 修改（TMDB/TVDB Key、源优先级、语言、季集类型、默认播放器、模板） |
+| GET | `/settings` | （仅管理员）读取全局配置（脱敏：`api_key` 返回 `sk-****`） |
+| PATCH | `/settings` | （仅管理员）修改全局配置（TMDB/TVDB Key、源优先级、语言、季集类型、全局播放器、模板） |
+| GET | `/me/player` | 当前用户播放偏好：`overrides`（`mode`、`fallback_on_error`，null=跟随全局）、`defaults`、`effective`、`allowed_modes`（普通用户不含 `desktop_mpv`） |
+| PATCH | `/me/player` | 修改自己的播放偏好（仅允许 `mode` / `fallback_on_error`；显式 null 清除覆盖；普通用户传 `desktop_mpv` 返回 403） |
+| GET | `/about` | 应用信息：`version` / `api_docs` / `data_dir`（`data_dir` 仅管理员返回） |
 | POST | `/settings/provider-test` | `{provider}` → 测试连通性与凭证，返回 `ok` / `401` / `network` |
+| GET | `/export` | （仅管理员）导出库配置、条目、进度与设置（不含 `.strm` URL） |
+| POST | `/import` | （仅管理员）导入备份；`settings=true` 时覆盖全局设置 |
 | GET | `/img/{name}` | 静态图片（带 `Cache-Control: max-age=31536000, immutable`） |
 
 **响应示例（`GET /home`）**
@@ -1075,7 +1089,7 @@ interface StrmActionNative {
 | 详情 `/item/:id` | 全屏背景（模糊 + 渐隐）、标题 logo、评分/年份/时长、简介、演职员、**选集**、播放按钮（伴侣 App 内走内置播放器）、版本切换、重新匹配入口 |
 | 搜索 `/search` | 即时搜索、热门标签、结果网格（受授权媒体库约束） |
 | 用户管理 `/users` | （管理员专享）用户列表、新增用户、重置密码、修改角色、分配媒体库权限 |
-| 设置 `/settings` | 库管理（含播放请求头）、TMDB/TVDB Key、源优先级、语言、季集类型、播放方式（内置/外部）、目录模板、扫描计划 |
+| 设置 `/settings` | 按角色渲染：管理员见库管理（含播放请求头）、TMDB/TVDB Key、源优先级、全局播放器默认、扫描、数据、安全、关于；普通用户见「我的播放方式」「安全」「关于」 |
 | 任务 `/tasks` | 扫描/刮削进度、失败清单、日志 |
 
 ### 14.2 交互要求（对齐 VidHub / SenPlayer 的质感）
@@ -1135,7 +1149,8 @@ interface StrmActionNative {
 ## 15. 配置
 
 **优先级**：数据库中的设置（设置页写入） > `config.yaml` > 内置默认值。
-布尔/字符串类设置建议全部可在设置页修改，`config.yaml` 只做初始值与密钥兜底。
+全局配置仅管理员可写；普通用户的播放偏好存于 `user_preference` 表（`mode` / `fallback_on_error`，NULL=跟随全局），
+播放时按「请求体显式 mode > 用户偏好 > 全局默认」解析。`config.yaml` 只做初始值与密钥兜底。
 
 `config.example.yaml`：
 
@@ -1214,9 +1229,10 @@ ui:
 4. **TMDB 合规**：页面底部必须展示
    > This product uses the TMDB API.
    并附 TMDB logo。图片仅在本地缓存用于展示。
-5. **多用户与权限隔离**：支持管理员与普通用户角色；密码使用 argon2 哈希；基于会话签名 Cookie 与服务端状态追踪；登录失败 5 次锁定 5 分钟；普通用户受媒体库访问权限隔离。
+5. **多用户与权限隔离**：支持管理员与普通用户角色；密码使用 argon2 哈希；基于会话签名 Cookie 与服务端状态追踪；登录失败 5 次锁定 5 分钟；普通用户受媒体库访问权限隔离。普通用户可修改自己的播放偏好与登录密码，但 `desktop_mpv`（服务端 mpv）以及全局设置、库管理、任务、用户管理、导出/导入仅管理员可用。
 6. **`play_token` 最小权限**：12h 有效、绑定单个 `item_id`、只能写该条目进度、不可读取任何列表或 URL；注销登录时不强制吊销（到期自然失效）。
 7. **原生层不持有会话**：伴侣 App 的播放器只用 `play_token` 与后端通信，不在 native 层复制或持久化会话 Cookie。
+8. **越权写保护**：全局设置的唯一写入口是管理员接口；`/import` 携带 `settings=true` 时同样要求管理员，避免绕过 `PATCH /settings` 的权限边界。
 
 ---
 

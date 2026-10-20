@@ -1,38 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
-import {
-  AlertTriangle,
-  CheckCircle2,
-  Database,
-  Download,
-  Lock,
-  ScanLine,
-  ShieldCheck,
-  Upload,
-} from 'lucide-react'
+import { Database, Download, ScanLine, Upload } from 'lucide-react'
 import type { AppSettings } from '../../api/types'
-import {
-  useChangePassword,
-  useExportData,
-  useImportData,
-  usePatchSettings,
-} from '../../api/hooks'
+import { useExportData, useImportData, usePatchSettings } from '../../api/hooks'
 import { Spinner } from '../Spinner'
 import { useToast } from '../../store/ui'
 import { cnDate } from '../../utils/format'
 import { t } from '../../i18n/zh-CN'
 import { Section, Field } from './common'
 
-export function SystemSettingsSection({
-  settings,
-  version,
-  dataDir,
-}: {
-  settings: AppSettings
-  version?: string
-  dataDir?: string
-}) {
+export function SystemSettingsSection({ settings }: { settings: AppSettings }) {
   const patchSettings = usePatchSettings()
-  const changePassword = useChangePassword()
   const exportData = useExportData()
   const importData = useImportData()
   const toast = useToast()
@@ -40,8 +17,6 @@ export function SystemSettingsSection({
   const [ignore, setIgnore] = useState('')
   const [followSymlinks, setFollowSymlinks] = useState(false)
   const [maxDepth, setMaxDepth] = useState('6')
-  const [passwordForm, setPasswordForm] = useState({ current: '', next: '', confirm: '' })
-  const [passwordError, setPasswordError] = useState<string | null>(null)
   const fileInput = useRef<HTMLInputElement | null>(null)
 
   useEffect(() => {
@@ -99,28 +74,6 @@ export function SystemSettingsSection({
       toast({ title: '导入失败', description: (error as Error).message, tone: 'error' })
     } finally {
       if (fileInput.current) fileInput.current.value = ''
-    }
-  }
-
-  const submitPassword = async () => {
-    setPasswordError(null)
-    if (passwordForm.next.length < 8) {
-      setPasswordError(t('settings.security.minLength'))
-      return
-    }
-    if (passwordForm.next !== passwordForm.confirm) {
-      setPasswordError(t('settings.security.mismatch'))
-      return
-    }
-    try {
-      await changePassword.mutateAsync({
-        current_password: passwordForm.current,
-        new_password: passwordForm.next,
-      })
-      setPasswordForm({ current: '', next: '', confirm: '' })
-      toast({ title: t('settings.security.changed'), tone: 'success' })
-    } catch (error) {
-      setPasswordError((error as Error).message)
     }
   }
 
@@ -216,80 +169,6 @@ export function SystemSettingsSection({
               onChange={(event) => doImport(event.target.files?.[0])}
             />
           </div>
-        </div>
-      </Section>
-
-      <Section id="security" title={t('settings.sections.security')} icon={ShieldCheck}>
-        <div className="card max-w-2xl p-5">
-          <div className="grid gap-4 sm:grid-cols-2">
-            <div className="sm:col-span-2">
-              <Field label={t('settings.security.currentPassword')}>
-                <input
-                  className="input"
-                  type="password"
-                  autoComplete="current-password"
-                  value={passwordForm.current}
-                  onChange={(event) => setPasswordForm((prev) => ({ ...prev, current: event.target.value }))}
-                />
-              </Field>
-            </div>
-            <Field label={t('settings.security.newPassword')}>
-              <input
-                className="input"
-                type="password"
-                autoComplete="new-password"
-                value={passwordForm.next}
-                onChange={(event) => setPasswordForm((prev) => ({ ...prev, next: event.target.value }))}
-              />
-            </Field>
-            <Field label={t('settings.security.confirmPassword')}>
-              <input
-                className="input"
-                type="password"
-                autoComplete="new-password"
-                value={passwordForm.confirm}
-                onChange={(event) => setPasswordForm((prev) => ({ ...prev, confirm: event.target.value }))}
-              />
-            </Field>
-          </div>
-          {passwordError ? (
-            <p className="mt-3 flex items-center gap-1.5 text-[11.5px] text-rose-300">
-              <AlertTriangle className="h-3.5 w-3.5" />
-              {passwordError}
-            </p>
-          ) : null}
-          <button
-            type="button"
-            onClick={submitPassword}
-            disabled={changePassword.isPending}
-            className="btn-primary mt-4 gap-1.5 px-5 py-2.5 text-[13px]"
-          >
-            <Lock className="h-3.5 w-3.5" />
-            {t('settings.security.change')}
-          </button>
-        </div>
-      </Section>
-
-      <Section id="about" title={t('settings.sections.about')} icon={CheckCircle2}>
-        <div className="card space-y-3 p-5 text-[12.5px] text-ink-300">
-          <div className="flex flex-wrap justify-between gap-2">
-            <span>{t('settings.about.version')}</span>
-            <span className="font-mono">{version}</span>
-          </div>
-          <div className="flex flex-wrap justify-between gap-2">
-            <span>{t('settings.about.dataDir')}</span>
-            <span className="break-all font-mono text-[11.5px]">{dataDir}</span>
-          </div>
-          <div className="flex flex-wrap justify-between gap-2">
-            <span>API 文档</span>
-            <a href="/docs" target="_blank" rel="noreferrer" className="text-accent hover:underline">
-              /docs
-            </a>
-          </div>
-          <p className="border-t border-white/8 pt-3 text-[11px] leading-relaxed text-ink-500">
-            {t('settings.about.tmdbNotice')}
-          </p>
-          <p className="text-[11px] leading-relaxed text-ink-500">{t('settings.about.tvHint')}</p>
         </div>
       </Section>
     </>

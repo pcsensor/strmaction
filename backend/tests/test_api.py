@@ -509,10 +509,47 @@ def test_multiuser_and_permissions():
             assert movie_lib["id"] in user_lib_ids
             assert tv_lib["id"] not in user_lib_ids
 
-            # 4. 普通用户无法访问管理端接口（settings / tasks / users）
+            # 4. 普通用户无法访问管理端接口（settings / tasks / users / export / import）
             assert user_client.get("/api/settings").status_code == 403
             assert user_client.get("/api/tasks").status_code == 403
             assert user_client.get("/api/users").status_code == 403
+            assert user_client.get("/api/export").status_code == 403
+            assert user_client.post(
+                "/api/import",
+                json={"data": {"libraries": []}, "settings": True},
+            ).status_code == 403
+
+            # 4.1 关于信息：所有用户可见，但不向普通用户泄露数据目录
+            about = user_client.get("/api/about")
+            assert about.status_code == 200
+            assert about.json()["version"]
+            assert about.json()["data_dir"] is None
+            assert admin_client.get("/api/about").json()["data_dir"]
+
+            # 4.2 个人播放偏好：普通用户可读写自己的 mode / fallback
+            pref = user_client.get("/api/me/player")
+            assert pref.status_code == 200
+            assert pref.json()["overrides"] == {"mode": None, "fallback_on_error": None}
+            assert "desktop_mpv" not in pref.json()["allowed_modes"]
+            assert "builtin" in pref.json()["allowed_modes"]
+            assert "desktop_mpv" in admin_client.get("/api/me/player").json()["allowed_modes"]
+            patched = user_client.patch(
+                "/api/me/player",
+                json={"mode": "browser_intent", "fallback_on_error": False},
+            )
+            assert patched.status_code == 200, patched.text
+            assert patched.json()["effective"]["mode"] == "browser_intent"
+            assert patched.json()["effective"]["fallback_on_error"] is False
+            # 白名单之外的字段 / 非法 mode / 服务器 mpv 必须拒绝
+            assert user_client.patch(
+                "/api/me/player", json={"mode": "nope"}
+            ).status_code == 422
+            assert user_client.patch(
+                "/api/me/player", json={"mpv_path": "/tmp/evil"}
+            ).status_code == 422
+            assert user_client.patch(
+                "/api/me/player", json={"mode": "desktop_mpv"}
+            ).status_code == 403
 
             # 5. 普通用户不能访问剧集库的条目
             tv_items = admin_client.get("/api/items", params={"library_id": tv_lib["id"]}).json()["items"]
@@ -524,6 +561,34 @@ def test_multiuser_and_permissions():
             # 6. 普通用户播放进度隔离测试
             movie_items = user_client.get("/api/items", params={"library_id": movie_lib["id"]}).json()["items"]
             movie_item = movie_items[0]
+
+            # 6.1 播放方式使用个人偏好；管理员仍走全局默认（builtin 在浏览器降级为 copy）
+            user_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
+            assert user_play.status_code == 200, user_play.text
+            assert user_play.json()["mode"] == "browser_intent"
+            assert user_play.json()["fallback_on_error"] is False
+            admin_play = admin_client.post(f"/api/play/{movie_item['id']}", json={})
+            assert admin_play.status_code == 200, admin_play.text
+            assert admin_play.json()["mode"] == "copy"
+
+            # 6.2 显式 null 清除个人覆盖，回落到全局默认
+            cleared = user_client.patch("/api/me/player", json={"mode": None})
+            assert cleared.status_code == 200, cleared.text
+            assert cleared.json()["overrides"]["mode"] is None
+            assert cleared.json()["effective"]["mode"] == "builtin"
+
+            # 6.3 全局默认是服务器 mpv 时，普通用户也必须降级，绝不在服务端起进程
+            admin_client.patch(
+                "/api/settings", json={"player": {"mode": "desktop_mpv"}}
+            )
+            degraded = user_client.get("/api/me/player").json()
+            assert degraded["effective"]["mode"] == "auto"
+            degraded_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
+            assert degraded_play.status_code == 200, degraded_play.text
+            assert degraded_play.json()["mode"] == "copy"
+            admin_client.patch(
+                "/api/settings", json={"player": {"mode": "builtin"}}
+            )
 
             # 普通用户上报进度 50000ms
             p_res = user_client.post(
@@ -539,6 +604,20 @@ def test_multiuser_and_permissions():
             # 管理员详情中不受影响（仍然无进度）
             a_detail = admin_client.get(f"/api/items/{movie_item['id']}").json()
             assert a_detail["progress"] is None
+
+            # 6.4 普通用户可以修改自己的密码
+            changed = user_client.post(
+                "/api/auth/password",
+                json={
+                    "current_password": "Password-123",
+                    "new_password": "New-Password-456",
+                },
+            )
+            assert changed.status_code == 200, changed.text
+            assert user_client.post(
+                "/api/auth/login",
+                json={"username": "viewer1", "password": "New-Password-456"},
+            ).status_code == 200
 
         # 7. 管理员更新用户媒体库授权（追加剧集库）
         update_lib = admin_client.put(

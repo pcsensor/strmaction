@@ -1,31 +1,45 @@
 import { AlertTriangle, Database } from 'lucide-react'
-import { useLibraries, useSettings } from '../api/hooks'
+import { useAuthState, useLibraries, useSettings } from '../api/hooks'
 import { EmptyState } from '../components/EmptyState'
 import { t } from '../i18n/zh-CN'
 import { LibrarySettingsSection } from '../components/settings/LibrarySettingsSection'
 import { ScraperSettingsSection } from '../components/settings/ScraperSettingsSection'
+import { PlayerPreferenceSection } from '../components/settings/PlayerPreferenceSection'
 import { PlayerSettingsSection } from '../components/settings/PlayerSettingsSection'
+import { SecuritySection } from '../components/settings/SecuritySection'
 import { SystemSettingsSection } from '../components/settings/SystemSettingsSection'
+import { AboutSection } from '../components/settings/AboutSection'
 
-const sections = [
+const adminSections = [
   ['libraries', t('settings.sections.libraries')],
   ['providers', t('settings.sections.providers')],
   ['matching', t('settings.sections.matching')],
   ['player', t('settings.sections.player')],
+  ['player-global', t('settings.player.globalNav')],
   ['scanner', t('settings.sections.scanner')],
   ['data', t('settings.sections.data')],
   ['security', t('settings.sections.security')],
   ['about', t('settings.sections.about')],
 ] as const
 
+const userSections = [
+  ['player', t('settings.sections.player')],
+  ['security', t('settings.sections.security')],
+  ['about', t('settings.sections.about')],
+] as const
+
 export function SettingsPage() {
-  const settingsQuery = useSettings()
-  const librariesQuery = useLibraries()
+  const auth = useAuthState()
+  const isAdmin = auth.data?.user?.role === 'admin'
+
+  const settingsQuery = useSettings(isAdmin)
+  const librariesQuery = useLibraries(isAdmin)
 
   const settings = settingsQuery.data?.settings
   const libraries = librariesQuery.data?.libraries ?? []
+  const sections = isAdmin ? adminSections : userSections
 
-  if (settingsQuery.isLoading) {
+  if (isAdmin && settingsQuery.isLoading) {
     return (
       <div className="mx-auto max-w-4xl px-5 pt-32">
         <div className="space-y-4">
@@ -37,7 +51,7 @@ export function SettingsPage() {
     )
   }
 
-  if (!settings) {
+  if (isAdmin && !settings) {
     return (
       <div className="mx-auto max-w-2xl px-5 pt-32">
         <EmptyState
@@ -59,17 +73,21 @@ export function SettingsPage() {
       <div className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-accent/80">
-            CONFIGURATION
+            {isAdmin ? 'CONFIGURATION' : 'PREFERENCES'}
           </p>
           <h1 className="mt-2 font-display text-3xl font-black tracking-tight text-white">
             {t('settings.title')}
           </h1>
-          <p className="mt-2 text-[13px] text-ink-400">{t('settings.subtitle')}</p>
+          <p className="mt-2 text-[13px] text-ink-400">
+            {t(isAdmin ? 'settings.subtitle' : 'settings.subtitleUser')}
+          </p>
         </div>
-        <div className="flex items-center gap-2 text-[11px] text-ink-500">
-          <Database className="h-3.5 w-3.5" />
-          {settingsQuery.data?.data_dir}
-        </div>
+        {isAdmin ? (
+          <div className="flex items-center gap-2 text-[11px] text-ink-500">
+            <Database className="h-3.5 w-3.5" />
+            {settingsQuery.data?.data_dir}
+          </div>
+        ) : null}
       </div>
 
       <div className="no-scrollbar sticky top-[68px] z-30 -mx-1 mt-6 flex gap-1 overflow-x-auto border-b border-white/8 bg-[#07080a]/85 px-1 py-2 backdrop-blur-xl">
@@ -86,17 +104,26 @@ export function SettingsPage() {
       </div>
 
       <div className="mt-10 space-y-16">
-        <LibrarySettingsSection
-          libraries={libraries}
-          onRefresh={() => librariesQuery.refetch()}
-        />
-        <ScraperSettingsSection settings={settings} />
-        <PlayerSettingsSection settings={settings} />
-        <SystemSettingsSection
-          settings={settings}
-          version={settingsQuery.data?.version}
-          dataDir={settingsQuery.data?.data_dir}
-        />
+        {isAdmin && settings ? (
+          <>
+            <LibrarySettingsSection
+              libraries={libraries}
+              onRefresh={() => librariesQuery.refetch()}
+            />
+            <ScraperSettingsSection settings={settings} />
+            <PlayerPreferenceSection />
+            <PlayerSettingsSection settings={settings} />
+            <SystemSettingsSection settings={settings} />
+            <SecuritySection />
+            <AboutSection />
+          </>
+        ) : (
+          <>
+            <PlayerPreferenceSection />
+            <SecuritySection />
+            <AboutSection />
+          </>
+        )}
       </div>
     </div>
   )

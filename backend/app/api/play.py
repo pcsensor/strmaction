@@ -17,6 +17,7 @@ from sqlmodel import Session, select
 from ..deps import authorize_item_access, get_engine, get_settings, get_current_user, get_accessible_library_ids
 from ..errors import APIError
 from ..models import Item, Library, MediaFile, PlayProgress
+from ..preferences import effective_player, get_preference
 from ..schemas import CurrentUser
 from ..players import (
     ClipboardAdapter,
@@ -150,21 +151,37 @@ def _mpv_available(settings, engine, context: PlayContext) -> bool:
         return False
 
 
-def resolve_mode(requested: str | None, context: PlayContext, settings, engine) -> str:
-    mode = normalize_mode(requested, settings)
+def resolve_mode(
+    requested: str | None,
+    context: PlayContext,
+    settings,
+    engine,
+    player: dict | None = None,
+    allow_server_mpv: bool = True,
+) -> str:
+    player = player or settings.player()
+    mode = normalize_mode(requested, player)
     if mode == "auto":
         if context.is_companion:
             return "builtin"
         if context.is_android:
             return "browser_intent"
-        return "desktop_mpv" if _mpv_available(settings, engine, context) else "copy"
+        if allow_server_mpv and _mpv_available(settings, engine, context):
+            return "desktop_mpv"
+        return "copy"
     if mode == "builtin" and not context.is_companion:
         # 浏览器里没有原生播放器：Android 走 intent://，其余复制链接
         return "browser_intent" if context.is_android else "copy"
     if mode == "external_mpv" and not context.is_companion:
         return "browser_intent" if context.is_android else "copy"
-    if mode == "desktop_mpv" and not _mpv_available(settings, engine, context):
-        return "copy"
+    if mode == "desktop_mpv":
+        if not allow_server_mpv:
+            # 服务器 mpv 仅管理员可用；普通用户按设备降级。
+            if context.is_companion:
+                return "builtin"
+            return "browser_intent" if context.is_android else "copy"
+        if not _mpv_available(settings, engine, context):
+            return "copy"
     return mode
 
 
@@ -369,7 +386,16 @@ async def play(
         client_ip=request.client.host if request.client else "",
         headers=headers,
     )
-    mode = resolve_mode(body.mode, context, settings, engine)
+    # 个人播放偏好优先于全局默认；请求体里的显式 mode 优先级最高。
+    player = effective_player(settings, get_preference(engine, user.id))
+    mode = resolve_mode(
+        body.mode,
+        context,
+        settings,
+        engine,
+        player=player,
+        allow_server_mpv=user.role == "admin",
+    )
 
     subtitle_payload = [
         {
@@ -403,8 +429,8 @@ async def play(
         "headers_hint": headers_hint(headers),
         "play_token": token,
         "play_token_expires_at": expires_at,
-        "progress_interval_ms": int(settings.player().get("progress_interval_ms") or 5000),
-        "fallback_on_error": bool(settings.player().get("fallback_on_error", True)),
+        "progress_interval_ms": int(player.get("progress_interval_ms") or 5000),
+        "fallback_on_error": bool(player.get("fallback_on_error", True)),
         "mpv_package": str(settings.player().get("mpv_package") or "is.xyz.mpv"),
         "subtitles": subtitle_payload,
         "media_file_id": media_id,
@@ -453,7 +479,7 @@ async def play(
         result["next_item_id"] = next_episode_id
         result["subtitles"] = subtitle_payload
     elif mode == "desktop_mpv":
-        adapter = MpvIpcAdapter(settings, engine)
+        adapter = MpvIpcAdapter(settings, engine, user_id=user.id)
         built = await adapter.build(
             item=target,
             media=media,

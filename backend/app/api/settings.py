@@ -1,20 +1,37 @@
-"""设置与 Provider 连通性测试 API（v0.9: 仅管理员）。"""
+"""设置 API（v1.2）。
+
+- 全局设置 / Provider 测试：仅管理员；
+- 个人播放偏好：所有登录用户；
+- 关于信息：所有登录用户（数据目录仅管理员可见）。
+"""
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from fastapi import APIRouter, Body, Depends
-from sqlmodel import Session
 
 from .. import __version__
 from ..config_store import SettingsService
-from ..deps import get_engine, get_scheduler, get_settings, require_admin
+from ..deps import (
+    get_current_user,
+    get_engine,
+    get_scheduler,
+    get_settings,
+    require_admin,
+)
 from ..errors import APIError
 from ..jobs import SchedulerService
 from ..players import clean_headers
-from ..schemas import ProviderTestBody, CurrentUser
+from ..preferences import (
+    allowed_player_modes,
+    defaults_summary,
+    effective_summary,
+    get_preference,
+    preference_payload,
+    save_preference,
+)
+from ..schemas import CurrentUser, PlayerPreferencePatch, ProviderTestBody
 from ..scraper.service import ProviderRegistry
 
 router = APIRouter(tags=["settings"])
@@ -80,12 +97,63 @@ def _payload(settings: SettingsService) -> dict[str, Any]:
     }
 
 
+def _player_preference_payload(
+    settings: SettingsService, engine, user: CurrentUser
+) -> dict[str, Any]:
+    allow_desktop_mpv = user.role == "admin"
+    pref = get_preference(engine, user.id)
+    return {
+        "overrides": preference_payload(pref, allow_desktop_mpv),
+        "defaults": defaults_summary(settings, allow_desktop_mpv),
+        "effective": effective_summary(settings, pref, allow_desktop_mpv),
+        "allowed_modes": allowed_player_modes(allow_desktop_mpv),
+    }
+
+
 @router.get("/settings")
 def get_settings_api(
     _admin: CurrentUser = Depends(require_admin),
     settings: SettingsService = Depends(get_settings),
 ):
     return _payload(settings)
+
+
+@router.get("/me/player")
+def get_my_player(
+    user: CurrentUser = Depends(get_current_user),
+    engine=Depends(get_engine),
+    settings: SettingsService = Depends(get_settings),
+):
+    """当前用户的播放偏好；未设置时回落到全局默认。"""
+    return _player_preference_payload(settings, engine, user)
+
+
+@router.patch("/me/player")
+def patch_my_player(
+    body: PlayerPreferencePatch,
+    user: CurrentUser = Depends(get_current_user),
+    engine=Depends(get_engine),
+    settings: SettingsService = Depends(get_settings),
+):
+    """只允许修改 mode / fallback_on_error；显式 null 表示恢复跟随全局。"""
+    if body.mode == "desktop_mpv" and user.role != "admin":
+        raise APIError(403, "FORBIDDEN", "服务器桌面 mpv 仅管理员可用")
+    save_preference(engine, user.id, body.model_dump(exclude_unset=True))
+    return _player_preference_payload(settings, engine, user)
+
+
+@router.get("/about")
+def about(
+    user: CurrentUser = Depends(get_current_user),
+    settings: SettingsService = Depends(get_settings),
+):
+    """应用信息：所有登录用户可见；数据目录仅管理员可见。"""
+    return {
+        "app": "StrmAction",
+        "version": __version__,
+        "api_docs": "/docs",
+        "data_dir": str(settings.data_dir) if user.role == "admin" else None,
+    }
 
 
 @router.patch("/settings")

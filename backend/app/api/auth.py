@@ -159,9 +159,7 @@ def change_password(
     auth: AuthService = Depends(get_auth),
     engine=Depends(get_engine),
 ):
-    """v0.9: 修改当前用户密码（仅管理员可用，普通用户不能自己改密码）。"""
-    if user.role != "admin":
-        raise APIError(403, "FORBIDDEN", "普通用户不能修改密码，请联系管理员")
+    """v1.2: 修改当前用户密码（所有登录用户均可修改自己的密码）。"""
 
     with Session(engine) as db:
         db_user = db.get(User, user.id)
