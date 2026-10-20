@@ -1358,7 +1358,13 @@ class PlayerActivity : AppCompatActivity() {
             .followRedirects(true)
             .followSslRedirects(true)
             .retryOnConnectionFailure(true)
-            .protocols(listOf(Protocol.HTTP_1_1))
+            .protocols(
+                if (attempt == 0) {
+                    listOf(Protocol.HTTP_2, Protocol.HTTP_1_1)
+                } else {
+                    listOf(Protocol.HTTP_1_1)
+                },
+            )
             .addInterceptor { chain ->
                 val request = chain.request()
                 Log.d(
@@ -1372,7 +1378,7 @@ class PlayerActivity : AppCompatActivity() {
                     val response = chain.proceed(request)
                     Log.d(
                         TAG,
-                        "http ${response.code} " +
+                        "http ${response.code} proto=${response.protocol} " +
                             "${response.header("Content-Type")} " +
                             "len=${response.header("Content-Length")} " +
                             "range=${response.header("Content-Range")} " +
