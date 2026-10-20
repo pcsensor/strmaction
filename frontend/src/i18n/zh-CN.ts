@@ -317,6 +317,9 @@ export const zhCN = {
       needCompanion: '内置/外部播放器需要在伴侣 App 内使用。',
       needAndroid: 'intent:// 仅支持 Android 浏览器。',
       needServerMpv: '服务器桌面 mpv 需要服务端安装可用的 mpv。',
+      desktopNotice:
+        '当前为 StrmAction 桌面端：播放由本机 mpv 完成；以下偏好仅影响网页与伴侣 App。',
+      desktopSettings: '打开桌面端设置',
       inherit: '跟随全局默认（{mode}）',
       global: '全局播放器默认',
       globalNav: '全局播放器',
@@ -468,6 +471,9 @@ export const zhCN = {
     companionOnlyTitle: '网页端无法启动本机播放器',
     companionOnlyTip:
       '内置/外部播放器需要在伴侣 App 内使用；已复制播放地址，可粘贴到本机 mpv 打开。',
+    desktop: '已交给本机 mpv',
+    desktopTip: '播放窗口由 StrmAction 桌面端打开，进度会按服务端间隔自动回传。',
+    desktopBridgeMissing: '桌面端播放桥不可用，请重启 StrmAction。',
     intentOnlyTitle: '当前浏览器不支持 intent://',
     intentOnlyTip: 'intent:// 仅 Android 浏览器可用；已复制播放地址。',
     serverMpvAdminTitle: '服务器桌面 mpv 仅管理员可用',

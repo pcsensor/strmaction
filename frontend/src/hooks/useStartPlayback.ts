@@ -54,6 +54,37 @@ export function useStartPlayback() {
       const nativeMode =
         options.mode === 'external' || options.mode === 'external_mpv'
 
+      // 桌面端：网页负责取播放数据，Python 负责本机 mpv 播放
+      if (bridge?.isDesktop?.()) {
+        try {
+          const result = await play.mutateAsync({
+            itemId,
+            mode: 'direct',
+            mediaFileId: options.mediaFileId,
+          })
+          if (!bridge.playItem) {
+            throw new Error(t('player.desktopBridgeMissing'))
+          }
+          const reply = await bridge.playItem(JSON.stringify(result))
+          if (reply && typeof reply === 'object' && 'ok' in reply && !reply.ok) {
+            throw new Error(reply.error || t('player.failed'))
+          }
+          toast({
+            title: t('player.desktop'),
+            description: t('player.desktopTip'),
+            tone: 'success',
+          })
+          return result
+        } catch (error) {
+          toast({
+            title: t('player.failed'),
+            description: (error as Error).message || t('player.failed'),
+            tone: 'error',
+          })
+          return null
+        }
+      }
+
       // 伴侣 App：原生层自己请求 /api/play，网页不接触 URL 与 token（§12.8）
       if (bridge?.play) {
         try {

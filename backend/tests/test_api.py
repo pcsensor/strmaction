@@ -585,7 +585,17 @@ def test_multiuser_and_permissions():
             ).status_code == 403
             assert admin_client.post(f"/api/items/{movie_item['id']}/unlock").status_code == 200
 
-            # 6.1 外部播放器在桌面浏览器明确降级为 copy，并带降级原因
+            # 6.1 桌面端 direct：返回 URL/headers/token，不触发服务端播放器
+            direct_play = user_client.post(
+                f"/api/play/{movie_item['id']}", json={"mode": "direct"}
+            )
+            assert direct_play.status_code == 200, direct_play.text
+            assert direct_play.json()["mode"] == "direct"
+            assert direct_play.json()["play_url"]
+            assert direct_play.json()["play_token"]
+            assert direct_play.json()["downgraded"] is False
+
+            # 6.2 外部播放器在桌面浏览器明确降级为 copy，并带降级原因
             external_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
             assert external_play.status_code == 200, external_play.text
             assert external_play.json()["mode"] == "copy"

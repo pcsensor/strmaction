@@ -203,8 +203,8 @@ export type PlayMode =
   | 'copy'
 
 export interface PlayResponse {
-  mode: PlayMode
-  requested_mode: PlayMode | 'auto'
+  mode: PlayMode | 'direct'
+  requested_mode: PlayMode | 'auto' | 'direct'
   downgraded: boolean
   downgrade_reason:
     | 'requires_companion'

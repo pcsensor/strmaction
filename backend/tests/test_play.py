@@ -133,6 +133,10 @@ def test_server_mpv_is_admin_only(tmp_path):
         == "copy"
     )
     assert (
+        resolve_mode("direct", desktop, settings, db.engine, allow_server_mpv=False)
+        == "direct"
+    )
+    assert (
         resolve_mode("auto", companion, settings, db.engine, allow_server_mpv=False)
         == "builtin"
     )

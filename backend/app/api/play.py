@@ -162,6 +162,9 @@ def resolve_mode_detail(
     """返回 (实际 mode, 降级原因)；原因仅用于向用户解释，不影响播放。"""
     player = player or settings.player()
     mode = normalize_mode(requested, player)
+    if mode == "direct":
+        # 桌面端自己播放：服务端只返回 URL/headers/token，不启动任何播放器。
+        return "direct", None
     if mode == "auto":
         if context.is_companion:
             return "builtin", None

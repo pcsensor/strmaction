@@ -56,6 +56,19 @@ export function PlayerPreferenceSection() {
           ? t('settings.player.needServerMpv')
           : null
   const companion = typeof window !== 'undefined' ? window.StrmActionNative : undefined
+  const [isDesktop, setIsDesktop] = useState(
+    () => typeof window !== 'undefined' && Boolean(window.StrmActionNative?.isDesktop?.()),
+  )
+
+  useEffect(() => {
+    const update = () =>
+      setIsDesktop(
+        typeof window !== 'undefined' && Boolean(window.StrmActionNative?.isDesktop?.()),
+      )
+    update()
+    window.addEventListener('strmaction:desktop-ready', update)
+    return () => window.removeEventListener('strmaction:desktop-ready', update)
+  }, [])
 
   useEffect(() => {
     if (!data) return
@@ -88,6 +101,19 @@ export function PlayerPreferenceSection() {
   return (
     <Section id="player" title={t('settings.player.mine')} icon={Play}>
       <div className="card p-5">
+        {isDesktop ? (
+          <div className="mb-4 rounded-2xl border border-accent/20 bg-accent/5 p-3 text-[11.5px] leading-relaxed text-ink-300">
+            <p>{t('settings.player.desktopNotice')}</p>
+            <button
+              type="button"
+              onClick={() => companion?.openSettings?.()}
+              className="btn-ghost mt-2 px-4 py-2 text-[12px]"
+            >
+              {t('settings.player.desktopSettings')}
+            </button>
+          </div>
+        ) : null}
+
         {prefsQuery.isLoading ? <div className="skeleton h-28 rounded-xl" /> : null}
 
         {!prefsQuery.isLoading && !data ? (
