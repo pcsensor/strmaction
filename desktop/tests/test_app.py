@@ -39,3 +39,20 @@ def test_navigation_is_limited_to_server_and_settings_page():
     assert app._on_before_load("https://media.example.com.evil.test/") is False
     assert app._on_before_load("https://evil.example.com/") is False
     assert app._on_before_load("about:blank") is True
+
+
+def test_save_settings_updates_cache_limit(monkeypatch):
+    class FakeLogger:
+        def info(self, *args, **kwargs):
+            pass
+
+    app = DesktopApp(DesktopConfig(server_url="https://media.example.com"), logger=FakeLogger())
+    monkeypatch.setattr(DesktopConfig, "save", lambda self, path=None: None)
+    app.save_settings(
+        {
+            "server_url": "https://media.example.com",
+            "mpv_path": "/usr/bin/mpv",
+            "cache_limit_mb": 64,
+        }
+    )
+    assert app.config.cache_limit_mb == 64

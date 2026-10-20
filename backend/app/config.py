@@ -69,6 +69,7 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "mode": "builtin",
         "progress_interval_ms": 5000,
         "play_token_ttl_hours": 12,
+        "cache_limit_mb": 128,
         "fallback_on_error": True,
         "play_headers": {},
         "mpv_package": "is.xyz.mpv",

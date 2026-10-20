@@ -1,11 +1,23 @@
 from __future__ import annotations
 
 from strmaction_desktop.mpv import (
+    cache_args,
     find_mpv,
     headers_to_mpv,
     mpv_candidates,
     platform_key,
 )
+
+
+def test_cache_args():
+    assert cache_args(0) == ["--cache=no", "--cache-on-disk=no"]
+    args = cache_args(128)
+    assert "--cache=yes" in args
+    assert "--demuxer-max-bytes=128MiB" in args
+    assert "--demuxer-max-back-bytes=32MiB" in args
+    assert "--cache-on-disk=no" in args
+    assert cache_args(1) == cache_args(16)
+    assert cache_args(99999) == cache_args(2048)
 
 
 def test_platform_key():

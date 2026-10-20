@@ -13,6 +13,10 @@
     <string name="setup_invalid">请输入以 http:// 或 https:// 开头的地址</string>
     <string name="setup_mpv_label">mpv 包名（外部播放器兜底，默认 is.xyz.mpv）</string>
     <string name="setup_mpv_default">is.xyz.mpv</string>
+    <string name="setup_cache_label">播放缓存上限（MB）</string>
+    <string name="setup_cache_default_hint">留空跟随服务器默认</string>
+    <string name="setup_cache_hint">常用 64 / 128 / 256 / 512；0 表示最小预读。留空则跟随服务器默认（通常 128MB）。仅对内置播放器生效，外部 mpv 不受控制。</string>
+    <string name="setup_cache_invalid">缓存上限需为 0 或 16–2048 的整数（MB）</string>
 
     <!-- 浏览 -->
     <string name="web_error_title">无法加载页面</string>
@@ -35,6 +39,7 @@
     <string name="player_menu_subtitle">字幕</string>
     <string name="player_menu_audio">音轨</string>
     <string name="player_menu_speed">播放速度</string>
+    <string name="player_menu_cache">播放缓存</string>
     <string name="player_menu_next">下一集</string>
     <string name="player_menu_mpv">用 mpv 打开</string>
     <string name="player_subtitle_off">关闭字幕</string>
@@ -78,6 +83,14 @@
     <string name="player_no_prev">没有上一集了</string>
     <string name="player_compat_retry">直连较慢，正在尝试兼容模式…</string>
     <string name="player_network_timeout">连接网盘超时，当前网络可能无法直接播放该片源。</string>
+    <string name="player_cache_title">播放缓存</string>
+    <string name="player_cache_hint">只限制内置播放器的预读缓存；修改后下一集生效</string>
+    <string name="player_cache_applied">缓存上限：%1$s，下一集生效</string>
+    <string name="player_cache_external">外部 mpv 不受此设置控制</string>
+    <string name="player_cache_custom_hint">自定义数值请在 App 设置页修改</string>
+    <string name="player_cache_current">当前：%1$s</string>
+    <string name="player_seek_buffered">%1$s · 已缓冲</string>
+    <string name="player_seek_buffering">%1$s · 缓冲中</string>
 
     <!-- 外部 mpv -->
     <string name="mpv_missing">未安装 mpv-android，请先安装 is.xyz.mpv</string>

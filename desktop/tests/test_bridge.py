@@ -93,6 +93,7 @@ def test_bridge_settings_and_actions():
     settings = bridge.get_settings()
     assert settings["server_url"] == "https://media.example.com"
     assert settings["mpv_path"] == "/mpv"
+    assert settings["cache_limit_mb"] == 128
     assert settings["detected_mpv"] == "/usr/local/bin/mpv"
     assert bridge.save_settings({"server_url": "https://x.test"})["ok"] is True
     assert app.settings_saved["server_url"] == "https://x.test"

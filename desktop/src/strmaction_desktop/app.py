@@ -75,6 +75,7 @@ class DesktopApp:
             payload,
             mpv,
             server_url=self.config.server_url,
+            cache_limit_mb=self.config.cache_limit_mb,
             logger=self.logger,
             on_auth_error=self._on_progress_auth_error,
         )
@@ -106,9 +107,16 @@ class DesktopApp:
     def save_settings(self, data: dict) -> None:
         server = normalize_server_url(str(data.get("server_url") or ""))
         mpv_path = str(data.get("mpv_path") or "").strip()
+        try:
+            cache_limit = int(
+                data.get("cache_limit_mb", self.config.cache_limit_mb)
+            )
+        except (TypeError, ValueError):
+            cache_limit = self.config.cache_limit_mb
         self.config = DesktopConfig(
             server_url=server,
             mpv_path=mpv_path,
+            cache_limit_mb=cache_limit,
             window_width=self.config.window_width,
             window_height=self.config.window_height,
             log_level=self.config.log_level,

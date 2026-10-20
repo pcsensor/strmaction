@@ -60,6 +60,7 @@ import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.TransferListener
 import androidx.media3.datasource.okhttp.OkHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
@@ -499,8 +500,10 @@ class PlayerActivity : AppCompatActivity() {
             max = SEEK_MAX
             progress = 0
             progressTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
-            progressBackgroundTintList = ColorStateList.valueOf(0x55FFFFFF)
+            secondaryProgressTintList = ColorStateList.valueOf(Color.parseColor("#66E8B06A"))
+            progressBackgroundTintList = ColorStateList.valueOf(Color.parseColor("#33FFFFFF"))
             thumbTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
+            splitTrack = false
             setPadding(dp(6), 0, dp(6), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
@@ -513,7 +516,17 @@ class PlayerActivity : AppCompatActivity() {
                 userSeeking = true
                 val duration = currentDuration()
                 if (duration > 0) {
-                    timeView.text = "${formatTime(duration * progress / SEEK_MAX)} / ${formatTime(duration)}"
+                    val target = duration * progress / SEEK_MAX
+                    val buffered = bufferedPositionMs()
+                    val stateRes = if (target <= buffered) {
+                        R.string.player_seek_buffered
+                    } else {
+                        R.string.player_seek_buffering
+                    }
+                    timeView.text = getString(
+                        stateRes,
+                        formatTime(target),
+                    )
                 }
             }
 
@@ -1000,6 +1013,29 @@ class PlayerActivity : AppCompatActivity() {
                 showSpeedMenu()
             })
 
+            val cacheMb = PlaybackCache.limitMb(
+                this,
+                info?.cacheLimitMb ?: PlaybackCache.DEFAULT_LIMIT_MB,
+            )
+            val externalMpv = info?.mode == "external_mpv"
+            val cacheDesc = if (externalMpv) {
+                getString(R.string.player_cache_external)
+            } else {
+                val percent = bufferedPercent()
+                if (percent != null) {
+                    "${PlaybackCache.label(cacheMb)} · 已缓冲 $percent%"
+                } else {
+                    PlaybackCache.label(cacheMb)
+                }
+            }
+            layout.addView(drawerActionRow("💾 " + getString(R.string.player_menu_cache), cacheDesc) {
+                if (externalMpv) {
+                    toast(getString(R.string.player_cache_external))
+                } else {
+                    showCacheMenu()
+                }
+            })
+
             if (info?.nextItemId != null) {
                 val suffix = info?.nextTitle?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
                 layout.addView(drawerActionRow("⏭️ " + getString(R.string.player_menu_next), suffix.trimStart(' ', '·')) {
@@ -1015,6 +1051,68 @@ class PlayerActivity : AppCompatActivity() {
 
             container.addView(layout)
         }
+    }
+
+    private fun showCacheMenu() {
+        val current = PlaybackCache.limitMb(
+            this,
+            info?.cacheLimitMb ?: PlaybackCache.DEFAULT_LIMIT_MB,
+        )
+        openDrawer(
+            getString(R.string.player_cache_title),
+            getString(R.string.player_cache_hint),
+            onBack = { showMenu() },
+        ) { container ->
+            val layout = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                layoutParams = FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+            }
+            layout.addView(TextView(this).apply {
+                text = getString(R.string.player_cache_current, PlaybackCache.label(current))
+                setTextColor(Color.parseColor("#9AA2B1"))
+                textSize = 12f
+                setPadding(dp(4), 0, dp(4), dp(12))
+            })
+            PlaybackCache.PRESETS.forEach { limit ->
+                layout.addView(
+                    drawerItem(
+                        PlaybackCache.label(limit),
+                        limit == current,
+                    ) {
+                        selectCacheLimit(limit)
+                    },
+                )
+            }
+            layout.addView(TextView(this).apply {
+                text = getString(R.string.player_cache_custom_hint)
+                setTextColor(Color.parseColor("#6B7280"))
+                textSize = 11f
+                setPadding(dp(4), dp(10), dp(4), 0)
+            })
+            container.addView(layout)
+        }
+    }
+
+    private fun selectCacheLimit(limitMb: Int) {
+        val normalized = PlaybackCache.normalize(limitMb)
+        PlaybackCache.save(this, normalized)
+        // 强制下一集重建播放器，让新的 DefaultLoadControl 生效。
+        playerHeadersKey = null
+        closeDrawer()
+        toast(getString(R.string.player_cache_applied, PlaybackCache.label(normalized)))
+    }
+
+    private fun bufferedPercent(): Int? {
+        val duration = currentDuration()
+        if (duration <= 0) return null
+        val buffered = bufferedPositionMs()
+        if (buffered <= 0) return null
+        return (buffered.coerceAtMost(duration) * 100 / duration)
+            .toInt()
+            .coerceIn(0, 100)
     }
 
     private fun textTracks(): List<Pair<Tracks.Group, Int>> =
@@ -1292,7 +1390,22 @@ class PlayerActivity : AppCompatActivity() {
             },
         )
         val defaultDataSourceFactory = DefaultDataSource.Factory(this, resolvingFactory)
+        val cacheLimitMb = PlaybackCache.effectiveLimitMb(this, playInfo.cacheLimitMb)
+        val loadControl = DefaultLoadControl.Builder()
+            .setTargetBufferBytes(
+                PlaybackCache.targetBufferBytes(this, playInfo.cacheLimitMb),
+            )
+            .setBufferDurationsMs(
+                5_000,
+                PlaybackCache.maxBufferMs(cacheLimitMb),
+                2_500,
+                5_000,
+            )
+            // 让字节上限优先于时间阈值，否则小缓存会被时间窗口突破。
+            .setPrioritizeTimeOverSizeThresholds(false)
+            .build()
         val exo = ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
             .setMediaSourceFactory(DefaultMediaSourceFactory(defaultDataSourceFactory))
             .setRenderersFactory(
                 DefaultRenderersFactory(this).setEnableDecoderFallback(true),
@@ -1468,17 +1581,33 @@ class PlayerActivity : AppCompatActivity() {
             ?: 0L
     }
 
+    /** 当前已缓冲到的绝对位置；未知时返回 0。 */
+    private fun bufferedPositionMs(): Long {
+        val buffered = player?.bufferedPosition ?: return 0L
+        return if (buffered == C.TIME_UNSET || buffered <= 0L) 0L else buffered
+    }
+
     private fun updateProgressUi() {
         val exo = player ?: return
         val duration = currentDuration()
+        val position = exo.currentPosition.coerceAtLeast(0L)
+        val buffered = bufferedPositionMs()
         if (!userSeeking) {
             if (duration > 0) {
-                val progress = (exo.currentPosition.coerceAtLeast(0L) * SEEK_MAX / duration)
+                val progress = (position * SEEK_MAX / duration)
                     .toInt()
                     .coerceIn(0, SEEK_MAX)
                 seekBar.progress = progress
+                val bufferedProgress = (buffered.coerceAtMost(duration) * SEEK_MAX / duration)
+                    .toInt()
+                    .coerceIn(0, SEEK_MAX)
+                if (seekBar.secondaryProgress != bufferedProgress) {
+                    seekBar.secondaryProgress = bufferedProgress
+                }
+            } else if (seekBar.secondaryProgress != 0) {
+                seekBar.secondaryProgress = 0
             }
-            timeView.text = "${formatTime(exo.currentPosition)} / ${formatTime(duration)}"
+            timeView.text = "${formatTime(position)} / ${formatTime(duration)}"
         }
         val isPlaying = exo.isPlaying
         val isBuffering = exo.playbackState == Player.STATE_BUFFERING && exo.playWhenReady

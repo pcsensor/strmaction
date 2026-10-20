@@ -22,6 +22,7 @@ from sqlmodel import Session
 from ..config_store import SettingsService
 from ..models import Item, MediaFile, PlayProgress, utcnow
 from .base import PlayContext, mask_url
+from .cache import mpv_cache_args
 
 
 def write_progress(
@@ -247,6 +248,8 @@ class MpvIpcAdapter:
             args.append(f"--start={max(0, resume_ms / 1000):.1f}")
         for extra in self.settings.player().get("mpv_extra_args") or []:
             args.append(str(extra))
+        # 缓存上限统一覆盖 mpv.conf / mpv_extra_args 里的同名设置。
+        args.extend(mpv_cache_args(self.settings.player().get("cache_limit_mb")))
         if context.headers:
             joined = ",".join(f"{key}: {value}" for key, value in context.headers.items())
             args.append(f"--http-header-fields={joined}")

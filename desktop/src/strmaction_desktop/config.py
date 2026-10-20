@@ -1,7 +1,8 @@
 """Configuration for the StrmAction desktop shell.
 
-Only non-secret preferences live here: server address, mpv path and window
-geometry. Account credentials and web session cookies stay in the WebView.
+Only non-secret preferences live here: server address, mpv path, playback
+cache budget and window geometry. Account credentials and web session cookies
+stay in the WebView.
 """
 
 from __future__ import annotations
@@ -18,6 +19,10 @@ DEFAULT_WIDTH = 1280
 DEFAULT_HEIGHT = 820
 MIN_WIDTH = 900
 MIN_HEIGHT = 640
+DEFAULT_CACHE_LIMIT_MB = 128
+MIN_CACHE_LIMIT_MB = 0
+MIN_ACTIVE_CACHE_LIMIT_MB = 16
+MAX_CACHE_LIMIT_MB = 2048
 
 
 class ConfigError(ValueError):
@@ -67,10 +72,22 @@ def _clamp(value: int, low: int, high: int, default: int) -> int:
     return max(low, min(number, high))
 
 
+def normalize_cache_limit(value: int) -> int:
+    """0 keeps the cache off; other values use a 16–2048MB budget."""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_CACHE_LIMIT_MB
+    if number <= MIN_CACHE_LIMIT_MB:
+        return MIN_CACHE_LIMIT_MB
+    return min(max(number, MIN_ACTIVE_CACHE_LIMIT_MB), MAX_CACHE_LIMIT_MB)
+
+
 @dataclass
 class DesktopConfig:
     server_url: str = ""
     mpv_path: str = ""
+    cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB
     window_width: int = DEFAULT_WIDTH
     window_height: int = DEFAULT_HEIGHT
     log_level: str = "INFO"
@@ -83,6 +100,7 @@ class DesktopConfig:
         return DesktopConfig(
             server_url=server,
             mpv_path=(self.mpv_path or "").strip(),
+            cache_limit_mb=normalize_cache_limit(self.cache_limit_mb),
             window_width=_clamp(self.window_width, MIN_WIDTH, 3840, DEFAULT_WIDTH),
             window_height=_clamp(self.window_height, MIN_HEIGHT, 2160, DEFAULT_HEIGHT),
             log_level=(self.log_level or "INFO").upper(),
@@ -102,6 +120,7 @@ class DesktopConfig:
         return cls(
             server_url=str(raw.get("server_url") or ""),
             mpv_path=str(raw.get("mpv_path") or ""),
+            cache_limit_mb=raw.get("cache_limit_mb", DEFAULT_CACHE_LIMIT_MB),
             window_width=raw.get("window_width", DEFAULT_WIDTH),
             window_height=raw.get("window_height", DEFAULT_HEIGHT),
             log_level=str(raw.get("log_level") or "INFO"),

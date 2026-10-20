@@ -99,6 +99,10 @@
     </div>
     <p class="hint" id="detected"></p>
 
+    <label for="cache">播放缓存上限（MB）</label>
+    <input id="cache" type="number" min="0" max="2048" step="16" inputmode="numeric" placeholder="128">
+    <p class="hint">默认 128MB；0 表示关闭本机 mpv 的预读缓存，非 0 时按 16–2048MB 执行。仅影响本机 mpv，不改变服务器设置。</p>
+
     <div class="actions">
       <button id="save" class="primary" type="button">保存并打开</button>
       <button id="quit" type="button">退出</button>
@@ -114,6 +118,7 @@
     const $ = (id) => document.getElementById(id)
     const server = $('server')
     const mpv = $('mpv')
+    const cache = $('cache')
     const status = $('status')
     let api = null
 
@@ -132,6 +137,7 @@
         const data = await api.get_settings()
         server.value = data.server_url || ''
         mpv.value = data.mpv_path || ''
+        cache.value = data.cache_limit_mb ?? 128
         $('version').textContent = 'v' + (data.version || '?')
         $('detected').textContent = data.detected_mpv
           ? '已找到：' + data.detected_mpv
@@ -157,10 +163,17 @@
         setStatus('服务器地址必须以 http:// 或 https:// 开头。', 'err')
         return
       }
+      const cacheValue = Number(cache.value)
+      if (!Number.isInteger(cacheValue) || cacheValue < 0 || cacheValue > 2048 ||
+          (cacheValue > 0 && cacheValue < 16)) {
+        setStatus('播放缓存上限必须是 0 或 16–2048 之间的整数（MB）。', 'err')
+        return
+      }
       setStatus('正在保存…')
       const result = await api.save_settings({
         server_url: value,
         mpv_path: mpv.value.trim(),
+        cache_limit_mb: cacheValue,
       })
       if (result && result.ok) {
         setStatus('已保存，正在打开网页…', 'ok')

@@ -11,8 +11,23 @@ from app.api.play import resolve_mode
 from app.models import Item, Library, PlayProgress, User
 from app.players import PlayContext, select_adapter
 from app.players.base import mask_url
+from app.players.cache import mpv_cache_args, normalize_cache_limit
 from app.players.mpv_ipc import write_progress
 from app.players.web_intent import build_mpv_intent
+
+
+def test_cache_limit_and_mpv_args():
+    assert normalize_cache_limit(128) == 128
+    assert normalize_cache_limit(-1) == 0
+    assert normalize_cache_limit(1) == 16
+    assert normalize_cache_limit(99999) == 2048
+    assert normalize_cache_limit("bad") == 128
+    assert mpv_cache_args(0) == ["--cache=no", "--cache-on-disk=no"]
+    args = mpv_cache_args(128)
+    assert "--cache=yes" in args
+    assert "--demuxer-max-bytes=128MiB" in args
+    assert "--demuxer-max-back-bytes=32MiB" in args
+    assert "--cache-on-disk=no" in args
 
 
 def test_intent_encoding_handles_query_and_fragment():

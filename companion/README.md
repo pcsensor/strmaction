@@ -119,6 +119,18 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 - JS 桥的所有 WebView 访问都切回主线程（否则会抛
   `A WebView method was called on thread 'JavaBridge'`，网页显示「播放失败」）。
 
+## 播放缓存与缓冲进度
+
+- **缓存上限**：设置页「播放缓存上限（MB）」可填 0–2048，留空跟随服务端
+  `player.cache_limit_mb`（默认 128）；播放器「更多」菜单提供 最小 / 64 / 128 / 256 / 512
+  快捷档。修改后下一集生效。
+- **执行方式**：`DefaultLoadControl.setTargetBufferBytes()` + 收窄时间窗口，并按进程堆内存
+  的 1/4 做上限钳制；0 在 Media3 中无法真正关闭缓冲，实际按 16MB 执行。
+- **缓冲进度**：进度条第二层（半透明金色）显示 `bufferedPosition`；拖动时提示
+  「已缓冲 / 缓冲中」，播放器菜单显示当前上限与已缓冲百分比。
+- **边界**：只控制内置 Media3；通过 Intent 拉起的「外部 mpv」无法传参，仍由
+  `mpv.conf` 决定缓存。
+
 ## 外部 mpv 兜底（E.6 的 6 个坑）
 
 | # | 处理 |
@@ -137,6 +149,9 @@ http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/
 cache=yes
 demuxer-max-bytes=256MiB
 ```
+
+> 这段只影响外部 mpv；内置 Media3 播放器的缓存由 App 设置页/播放器菜单控制，
+> 不会读取 `mpv.conf`。
 
 ## 网页上传支持
 
@@ -158,8 +173,9 @@ app/src/main/java/top/strmaction/companion/
 ├─ ProgressReporter.kt  # play_token 进度上报 + 失败队列
 ├─ PlayApi.kt           # POST /api/play/{id} 解析
 ├─ PlayInfo.kt          # 播放参数 + Device 检测
+├─ PlaybackCache.kt     # 播放缓存上限 / 缓冲进度辅助
 ├─ MpvFallback.kt       # 外部 mpv intent
-└─ SetupActivity.kt     # 服务器地址 / mpv 包名
+└─ SetupActivity.kt     # 服务器地址 / mpv 包名 / 缓存上限
 ```
 
 ## 已知限制
@@ -167,6 +183,7 @@ app/src/main/java/top/strmaction/companion/
 - 复杂 ASS 特效字幕无法还原（Media3 只支持基础样式），需要原样显示请用 mpv；
 - 杜比视界 P5 在非 DV 设备上颜色异常，属于设备能力限制；
 - 外部 mpv 路径只能拿到退出时的进度，断电/强杀会丢最后一段；
+- 外部 mpv 无法接收缓存上限参数，其缓存仍由 `mpv.conf` 控制；
 - 电视端浏览器内核由系统 WebView 提供，Android 7 以下不再保证体验。
 
 

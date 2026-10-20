@@ -23,6 +23,7 @@ class SetupActivity : AppCompatActivity() {
 
     private lateinit var urlInput: EditText
     private lateinit var packageInput: EditText
+    private lateinit var cacheInput: EditText
     private lateinit var statusView: TextView
     private lateinit var testButton: Button
     private lateinit var saveButton: Button
@@ -100,6 +101,38 @@ class SetupActivity : AppCompatActivity() {
             inputType = InputType.TYPE_CLASS_TEXT
         }
         container.addView(packageInput, matchWidth(top = 6))
+
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.setup_cache_label)
+                textSize = 12f
+                setTextColor(Color.parseColor("#8A93A5"))
+                setPadding(0, dp(18), 0, 0)
+            },
+        )
+        cacheInput = EditText(this).apply {
+            val saved = PlaybackCache.savedLimitMb(this@SetupActivity)
+            if (saved != null) {
+                setText(saved.toString())
+            }
+            hint = getString(R.string.setup_cache_default_hint)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#5C6678"))
+            setSingleLine(true)
+            textSize = 15f
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        container.addView(cacheInput, matchWidth(top = 6))
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.setup_cache_hint)
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#5C6678"))
+                setPadding(0, dp(8), 0, 0)
+                setLineSpacing(dp(3).toFloat(), 1f)
+            },
+        )
 
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -194,6 +227,15 @@ class SetupActivity : AppCompatActivity() {
             showStatus(getString(R.string.setup_invalid), true)
             return
         }
+        val cacheText = cacheInput.text.toString().trim()
+        val cacheLimit = if (cacheText.isBlank()) {
+            null
+        } else {
+            PlaybackCache.parse(cacheText) ?: run {
+                showStatus(getString(R.string.setup_cache_invalid), true)
+                return
+            }
+        }
         val packageName = packageInput.text.toString().trim()
             .ifBlank { MpvFallback.DEFAULT_PACKAGE }
         getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
@@ -201,6 +243,11 @@ class SetupActivity : AppCompatActivity() {
             .putString(MainActivity.KEY_SERVER, base)
             .putString(MainActivity.KEY_MPV_PACKAGE, packageName)
             .apply()
+        if (cacheLimit != null) {
+            PlaybackCache.save(this, cacheLimit)
+        } else {
+            PlaybackCache.clear(this)
+        }
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK),

@@ -21,6 +21,7 @@ import uuid
 from pathlib import Path
 from typing import Callable, Sequence
 
+from .config import DEFAULT_CACHE_LIMIT_MB, normalize_cache_limit
 from .security import PlaybackPayload
 
 
@@ -122,6 +123,29 @@ def headers_to_mpv(headers: dict[str, str]) -> list[str]:
     return [f"{key}: {value}" for key, value in headers.items() if key and value]
 
 
+def cache_args(limit_mb: int) -> list[str]:
+    """Build mpv demuxer-cache arguments for the configured MB budget.
+
+    ``0`` disables the demuxer cache entirely.  Other values cap both the
+    forward and back cache so a low-bitrate episode cannot fill the whole
+    buffer with one download.
+    """
+    try:
+        limit = int(limit_mb)
+    except (TypeError, ValueError):
+        limit = DEFAULT_CACHE_LIMIT_MB
+    limit = normalize_cache_limit(limit)
+    if limit <= 0:
+        return ["--cache=no", "--cache-on-disk=no"]
+    back = max(8, limit // 4)
+    return [
+        "--cache=yes",
+        f"--demuxer-max-bytes={limit}MiB",
+        f"--demuxer-max-back-bytes={back}MiB",
+        "--cache-on-disk=no",
+    ]
+
+
 class MpvController:
     """One mpv process controlled via JSON IPC."""
 
@@ -129,6 +153,7 @@ class MpvController:
         self,
         executable: str,
         *,
+        cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB,
         on_position: Callable[[float], None] | None = None,
         on_duration: Callable[[float | None], None] | None = None,
         on_paused: Callable[[bool], None] | None = None,
@@ -138,6 +163,7 @@ class MpvController:
         logger=None,
     ):
         self.executable = executable
+        self.cache_limit_mb = cache_limit_mb
         self._on_position = on_position
         self._on_duration = on_duration
         self._on_paused = on_paused
@@ -188,6 +214,7 @@ class MpvController:
         ]
         if payload.resume_ms > 3000:
             args.append(f"--start={payload.resume_ms / 1000:.1f}")
+        args.extend(cache_args(self.cache_limit_mb))
         creationflags = 0x08000000 if os.name == "nt" else 0
         try:
             self._process = subprocess.Popen(

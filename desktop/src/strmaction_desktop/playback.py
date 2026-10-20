@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import threading
 
+from .config import DEFAULT_CACHE_LIMIT_MB
 from .mpv import MpvController
 from .progress import ProgressReporter
 from .security import PlaybackPayload
@@ -16,6 +17,7 @@ class PlaybackSession:
         mpv_path: str,
         *,
         server_url: str,
+        cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB,
         logger=None,
         on_auth_error=None,
     ):
@@ -36,6 +38,7 @@ class PlaybackSession:
         )
         self.controller = MpvController(
             mpv_path,
+            cache_limit_mb=cache_limit_mb,
             on_position=self._on_position,
             on_duration=self._on_duration,
             on_paused=self._on_paused,

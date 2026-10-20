@@ -123,6 +123,9 @@ object PlayApi {
             nextItemId = nextId.takeIf { it > 0 },
             nextTitle = nextTitle,
             progressIntervalMs = interval.coerceIn(3000L, 60_000L),
+            cacheLimitMb = PlaybackCache.normalize(
+                json.optInt("cache_limit_mb", PlaybackCache.DEFAULT_LIMIT_MB),
+            ),
             fallbackOnError = json.optBoolean("fallback_on_error", true),
             mpvPackage = json.optString("mpv_package").ifBlank { mpvPackage(context) },
             subtitles = subtitles,

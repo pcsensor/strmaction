@@ -205,10 +205,11 @@ uv run strmaction-desktop --debug
    - 结尾的 `/` 可省略；
 2. 填 mpv 路径，或让它自动检测；
    - 留空时按“配置 → 自带 → PATH → 常见安装路径”查找；
-3. 点「保存并打开」；
-4. 进入网页登录。
+3. 填「播放缓存上限（MB）」，默认 128；0 表示关闭本机 mpv 的预读缓存；
+4. 点「保存并打开」；
+5. 进入网页登录。
 
-之后要改服务器地址 / mpv 路径：
+之后要改服务器地址 / mpv 路径 / 缓存上限：
 
 - 网页「设置 → 我的播放方式 → 打开桌面端设置」；
 - 或命令行 `uv run strmaction-desktop --settings`。
@@ -224,6 +225,22 @@ uv run strmaction-desktop --debug
 | A. 使用系统已安装的 mpv | 开发、个人使用 | 是 | 装 mpv，留空配置让它自动找 |
 | B. 打包时自带 mpv | 正式分发给别人 | **否** | `scripts/prepare_mpv.py` + 重新构建 |
 | C. 手动指定 mpv 路径 | 自定义位置 | 是 | 设置页选择，或 `--mpv` |
+
+### 6.1.1 播放缓存上限
+
+桌面端设置页的「播放缓存上限（MB）」会转成 mpv 参数，覆盖用户 `mpv.conf` 里的缓存设置：
+
+```text
+--cache=yes
+--demuxer-max-bytes=128MiB
+--demuxer-max-back-bytes=32MiB
+--cache-on-disk=no
+```
+
+- 默认 128MB；范围 0–2048；
+- `0` 会改为 `--cache=no`，网络片源可能更容易卡顿；
+- 这是**进程内缓存**，退出 mpv 即释放，不产生离线缓存文件；
+- mpv 是独立窗口，桌面端不显示缓冲进度条；缓冲进度只在伴侣 App 内置播放器里显示。
 
 ### 6.2 “打包时自带 mpv”是什么意思
 
@@ -332,6 +349,7 @@ desktop/dist/StrmAction/_internal/vendor/mpv/windows-x64/mpv.exe
 
 - `server_url`
 - `mpv_path`
+- `cache_limit_mb`（0 = 关闭预读；非 0 按 16–2048MB）
 - 窗口尺寸
 - 日志级别
 

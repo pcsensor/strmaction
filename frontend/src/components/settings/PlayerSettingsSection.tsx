@@ -17,6 +17,7 @@ export function PlayerSettingsSection({
   const [playerMode, setPlayerMode] = useState<string>('builtin')
   const [progressInterval, setProgressInterval] = useState('5000')
   const [tokenTtl, setTokenTtl] = useState('12')
+  const [cacheLimitMb, setCacheLimitMb] = useState('128')
   const [fallbackOnError, setFallbackOnError] = useState(true)
   const [playHeadersGlobal, setPlayHeadersGlobal] = useState('')
   const [mpvPath, setMpvPath] = useState('')
@@ -28,6 +29,7 @@ export function PlayerSettingsSection({
     setPlayerMode(settings.player.mode || 'builtin')
     setProgressInterval(String(settings.player.progress_interval_ms ?? 5000))
     setTokenTtl(String(settings.player.play_token_ttl_hours ?? 12))
+    setCacheLimitMb(String(settings.player.cache_limit_mb ?? 128))
     setFallbackOnError(settings.player.fallback_on_error !== false)
     setPlayHeadersGlobal(headersToText(settings.player.play_headers))
     setMpvPath(settings.player.mpv_path || '')
@@ -52,6 +54,7 @@ export function PlayerSettingsSection({
         mode: playerMode,
         progress_interval_ms: Number(progressInterval) || 5000,
         play_token_ttl_hours: Number(tokenTtl) || 12,
+        cache_limit_mb: Math.min(Math.max(Number(cacheLimitMb) || 0, 0), 2048),
         fallback_on_error: fallbackOnError,
         play_headers: textToHeaders(playHeadersGlobal),
         mpv_path: mpvPath,
@@ -97,6 +100,16 @@ export function PlayerSettingsSection({
               inputMode="numeric"
               value={tokenTtl}
               onChange={(event) => setTokenTtl(event.target.value)}
+            />
+          </Field>
+          <Field label={t('settings.player.cacheLimit')} hint={t('settings.player.cacheLimitHint')}>
+            <input
+              className="input"
+              inputMode="numeric"
+              min={0}
+              max={2048}
+              value={cacheLimitMb}
+              onChange={(event) => setCacheLimitMb(event.target.value)}
             />
           </Field>
         </div>

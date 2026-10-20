@@ -52,6 +52,7 @@ class DesktopBridge:
             "ok": True,
             "server_url": self._app.config.server_url,
             "mpv_path": self._app.config.mpv_path,
+            "cache_limit_mb": self._app.config.cache_limit_mb,
             "detected_mpv": self._app.detected_mpv() or "",
             "version": __version__,
         }
