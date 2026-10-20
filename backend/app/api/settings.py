@@ -23,6 +23,7 @@ from ..deps import (
 from ..errors import APIError
 from ..jobs import SchedulerService
 from ..players import PlayContext, clean_headers
+from ..players.cache import normalize_cache_limit
 from ..preferences import (
     allowed_player_modes,
     available_player_modes,
@@ -86,6 +87,9 @@ def _sanitize(patch: dict[str, Any]) -> dict[str, Any]:
             except (TypeError, ValueError):
                 hours = 12
             player["play_token_ttl_hours"] = min(max(hours, 1), 72)
+        if "cache_limit_mb" in player:
+            # 0 表示最小预读；伴侣 App 最低按 16MB 执行。
+            player["cache_limit_mb"] = normalize_cache_limit(player["cache_limit_mb"])
         if "mode" in player:
             player.pop("default", None)
     return patch

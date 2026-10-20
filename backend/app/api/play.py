@@ -30,6 +30,7 @@ from ..players import (
     normalize_mode,
     parse_headers,
 )
+from ..players.cache import normalize_cache_limit
 from ..schemas import PlayBody
 from ..serializers import episode_code, series_of
 from .items import _choose_play_target, _episode_sequence
@@ -43,6 +44,11 @@ SUBTITLE_MIME = {
     ".ssa": "text/x-ssa",
     ".vtt": "text/vtt",
 }
+
+
+def cache_limit_mb(player: dict | None) -> int:
+    """播放缓存上限（MB）。0 表示最小预读，由客户端按自身能力执行。"""
+    return normalize_cache_limit((player or {}).get("cache_limit_mb"))
 
 
 # ---------------------------------------------------------------------------
@@ -459,6 +465,7 @@ async def play(
         "play_token": token,
         "play_token_expires_at": expires_at,
         "progress_interval_ms": int(player.get("progress_interval_ms") or 5000),
+        "cache_limit_mb": cache_limit_mb(player),
         "fallback_on_error": bool(player.get("fallback_on_error", True)),
         "mpv_package": str(settings.player().get("mpv_package") or "is.xyz.mpv"),
         "subtitles": subtitle_payload,

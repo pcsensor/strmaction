@@ -232,6 +232,7 @@ export interface PlayResponse {
   play_token: string
   play_token_expires_at: string
   progress_interval_ms: number
+  cache_limit_mb: number
   fallback_on_error: boolean
   mpv_package: string
   subtitles: PlaySubtitle[]
@@ -330,6 +331,7 @@ export interface AppSettings {
     mode: PlayMode | 'auto'
     progress_interval_ms: number
     play_token_ttl_hours: number
+    cache_limit_mb: number
     fallback_on_error: boolean
     play_headers: Record<string, string>
     mpv_path: string

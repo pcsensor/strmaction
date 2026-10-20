@@ -29,6 +29,7 @@ def test_config_roundtrip(tmp_path):
     config = DesktopConfig(
         server_url="https://media.example.com/",
         mpv_path="/opt/homebrew/bin/mpv",
+        cache_limit_mb=64,
         window_width=1400,
         window_height=900,
         log_level="debug",
@@ -37,6 +38,7 @@ def test_config_roundtrip(tmp_path):
     loaded = DesktopConfig.load(path)
     assert loaded.server_url == "https://media.example.com"
     assert loaded.mpv_path == "/opt/homebrew/bin/mpv"
+    assert loaded.cache_limit_mb == 64
     assert loaded.window_width == 1400
     assert loaded.window_height == 900
     assert loaded.log_level == "DEBUG"
@@ -52,6 +54,27 @@ def test_config_clamps_window_size(tmp_path):
     loaded = DesktopConfig.load(path)
     assert loaded.window_width == 900
     assert loaded.window_height == 2160
+
+
+def test_config_clamps_cache_limit(tmp_path):
+    path = tmp_path / "config.json"
+    path.write_text(
+        json.dumps({"server_url": "https://x.test", "cache_limit_mb": 99999}),
+        "utf-8",
+    )
+    assert DesktopConfig.load(path).cache_limit_mb == 2048
+
+    path.write_text(
+        json.dumps({"server_url": "https://x.test", "cache_limit_mb": -5}),
+        "utf-8",
+    )
+    assert DesktopConfig.load(path).cache_limit_mb == 0
+
+    path.write_text(
+        json.dumps({"server_url": "https://x.test", "cache_limit_mb": 1}),
+        "utf-8",
+    )
+    assert DesktopConfig.load(path).cache_limit_mb == 16
 
 
 def test_config_invalid_json(tmp_path):

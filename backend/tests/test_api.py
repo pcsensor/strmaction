@@ -235,6 +235,19 @@ def test_full_flow():
             "/api/settings", json={"scraper": {"language": "zh-CN"}}
         )
         assert patched.status_code == 200
+        cache_setting = client.patch(
+            "/api/settings", json={"player": {"cache_limit_mb": 64}}
+        )
+        assert cache_setting.status_code == 200
+        assert cache_setting.json()["settings"]["player"]["cache_limit_mb"] == 64
+        cache_play = client.post(f"/api/play/{series['id']}", json={})
+        assert cache_play.status_code == 200
+        assert cache_play.json()["cache_limit_mb"] == 64
+        cache_clamped = client.patch(
+            "/api/settings", json={"player": {"cache_limit_mb": 99999}}
+        )
+        assert cache_clamped.json()["settings"]["player"]["cache_limit_mb"] == 2048
+        client.patch("/api/settings", json={"player": {"cache_limit_mb": 128}})
         test = client.post(
             "/api/settings/provider-test", json={"provider": "tmdb"}
         ).json()
@@ -328,6 +341,7 @@ def test_play_token_headers_and_subtitles():
         assert data["play_token"].startswith("pt_")
         assert data["play_token_expires_at"]
         assert data["progress_interval_ms"] == 5000
+        assert data["cache_limit_mb"] == 128
         assert data["next_item_id"] is not None  # 第二集
         assert len(data["subtitles"]) == 1
         assert data["subtitles"][0]["lang"] == "zh"

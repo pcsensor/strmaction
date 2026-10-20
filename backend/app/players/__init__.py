@@ -14,6 +14,12 @@ from .base import (
     mask_url,
     parse_headers,
 )
+from .cache import (
+    DEFAULT_CACHE_LIMIT_MB,
+    MAX_CACHE_LIMIT_MB,
+    mpv_cache_args,
+    normalize_cache_limit,
+)
 from .mpv_ipc import MpvIpcAdapter, write_progress
 from .web_intent import ClipboardAdapter, WebIntentAdapter, build_mpv_intent
 
@@ -28,6 +34,10 @@ __all__ = [
     "headers_hint",
     "parse_headers",
     "DEFAULT_HEADERS_HINT",
+    "DEFAULT_CACHE_LIMIT_MB",
+    "MAX_CACHE_LIMIT_MB",
+    "mpv_cache_args",
+    "normalize_cache_limit",
     "write_progress",
     "mask_url",
     "normalize_mode",

@@ -95,6 +95,8 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 
 - ❌ 不做视频转码
 - ❌ 不做视频流中转/反代/缓存
+  - 例外：客户端播放器允许配置**本地预读缓存上限**（`player.cache_limit_mb`），
+    只限制播放器自身的内存/预读，不属于服务端视频缓存。
 - ❌ 不实现网盘登录、不做 Alist 的替代
 - ❌ **不依赖、不读取、不迁移任何 Jellyfin / Emby / Plex 的数据**（本项目是替代品，不是外挂）
 - ❌ 不做弹幕、评论、社交
@@ -1208,6 +1210,7 @@ player:
                                           # builtin 仅在伴侣 App 内生效；浏览器自动降级
   progress_interval_ms: 5000              # 内置播放器心跳间隔
   play_token_ttl_hours: 12
+  cache_limit_mb: 128                     # 播放缓存上限；0=最小预读（桌面 mpv 为关闭）
   fallback_on_error: true                 # 内置播放失败时提示切 mpv
   mpv_path: /usr/bin/mpv                  # 桌面模式
   mpv_extra_args:

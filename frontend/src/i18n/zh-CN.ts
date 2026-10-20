@@ -346,6 +346,9 @@ export const zhCN = {
       progressIntervalHint: '5 秒为默认值，范围 2–60 秒。',
       tokenTtl: '播放凭证有效期（小时）',
       tokenTtlHint: 'play_token 只用于回写进度，最长 72 小时。',
+      cacheLimit: '播放缓存上限（MB）',
+      cacheLimitHint:
+        '默认 128MB；0 表示最小预读（桌面端会关闭预读缓存），非 0 时按 16–2048MB 执行。桌面端对 mpv 生效，伴侣 App 对内置播放器生效。',
       fallback: '内置播放失败时提示切换 mpv',
       headers: '全局播放请求头（每行 Key: Value）',
       headersHint:
