@@ -219,6 +219,19 @@ class AuthService:
                 display_name=user.display_name,
             )
 
+    def revoke_user_sessions(self, user_id: int) -> int:
+        """注销某个用户的全部会话（改密 / 管理员重置密码时使用）。"""
+        with Session(self.engine) as session:
+            from sqlmodel import select
+
+            rows = session.exec(
+                select(SessionRow).where(SessionRow.user_id == user_id)
+            ).all()
+            for row in rows:
+                session.delete(row)
+            session.commit()
+            return len(rows)
+
     def revoke_session(self, token: str | None) -> None:
         if not token or "." not in token:
             return

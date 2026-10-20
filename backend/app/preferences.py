@@ -34,6 +34,20 @@ def allowed_player_modes(is_admin: bool) -> list[str]:
     return list(ALL_PLAYER_MODES if is_admin else USER_PLAYER_MODES)
 
 
+def available_player_modes(
+    is_admin: bool, is_companion: bool, is_android: bool
+) -> list[str]:
+    """当前客户端真正能执行的模式；用于设置页提示“当前设备不支持”。"""
+    if is_companion:
+        return ["auto", "builtin", "external_mpv", "copy"]
+    if is_android:
+        return ["auto", "browser_intent", "copy"]
+    modes = ["auto", "copy"]
+    if is_admin:
+        modes.append("desktop_mpv")
+    return modes
+
+
 def get_preference(engine, user_id: int) -> UserPreference | None:
     with Session(engine) as session:
         return session.get(UserPreference, user_id)

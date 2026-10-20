@@ -227,6 +227,10 @@ async def update_user(
         db.commit()
         db.refresh(user)
 
+        # 管理员重置他人密码后，注销对方全部会话
+        if body.password is not None and user.id != admin.id:
+            auth.revoke_user_sessions(user.id)
+
         # 统计库数量
         lib_count = None
         if user.role == "user":
@@ -302,7 +306,12 @@ async def delete_user(
         for session in db.exec(select(SessionRow).where(SessionRow.user_id == user.id)).all():
             db.delete(session)
 
-        # 6. 删除用户
+        # 6. 清理其他用户对它的 created_by 引用，避免外键阻止删除
+        for child in db.exec(select(User).where(User.created_by == user.id)).all():
+            child.created_by = None
+            db.add(child)
+
+        # 7. 删除用户
         db.delete(user)
         db.commit()
 

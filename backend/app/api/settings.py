@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Body, Depends
+from fastapi import APIRouter, Body, Depends, Request
 
 from .. import __version__
 from ..config_store import SettingsService
@@ -22,10 +22,12 @@ from ..deps import (
 )
 from ..errors import APIError
 from ..jobs import SchedulerService
-from ..players import clean_headers
+from ..players import PlayContext, clean_headers
 from ..preferences import (
     allowed_player_modes,
+    available_player_modes,
     defaults_summary,
+    effective_player,
     effective_summary,
     get_preference,
     preference_payload,
@@ -97,16 +99,56 @@ def _payload(settings: SettingsService) -> dict[str, Any]:
     }
 
 
+def _client_flags(request: Request) -> tuple[PlayContext, dict[str, bool]]:
+    user_agent = request.headers.get("user-agent", "")
+    is_companion = (
+        "StrmActionCompanion" in user_agent
+        or request.headers.get("x-strmaction-companion") is not None
+    )
+    is_android = "Android" in user_agent
+    context = PlayContext(
+        user_agent=user_agent,
+        is_android=is_android,
+        is_companion=is_companion,
+        client_ip=request.client.host if request.client else "",
+    )
+    return context, {
+        "is_companion": is_companion,
+        "is_android": is_android,
+        "is_browser": not is_companion,
+    }
+
+
 def _player_preference_payload(
-    settings: SettingsService, engine, user: CurrentUser
+    settings: SettingsService,
+    engine,
+    user: CurrentUser,
+    request: Request,
 ) -> dict[str, Any]:
     allow_desktop_mpv = user.role == "admin"
     pref = get_preference(engine, user.id)
+    context, client = _client_flags(request)
+    # 延迟导入，避免 api 包初始化时的循环依赖。
+    from .play import resolve_mode
+
+    resolved_mode = resolve_mode(
+        None,
+        context,
+        settings,
+        engine,
+        player=effective_player(settings, pref),
+        allow_server_mpv=allow_desktop_mpv,
+    )
     return {
         "overrides": preference_payload(pref, allow_desktop_mpv),
         "defaults": defaults_summary(settings, allow_desktop_mpv),
         "effective": effective_summary(settings, pref, allow_desktop_mpv),
         "allowed_modes": allowed_player_modes(allow_desktop_mpv),
+        "available_modes": available_player_modes(
+            allow_desktop_mpv, client["is_companion"], client["is_android"]
+        ),
+        "client": client,
+        "resolved_mode": resolved_mode,
     }
 
 
@@ -120,17 +162,19 @@ def get_settings_api(
 
 @router.get("/me/player")
 def get_my_player(
+    request: Request,
     user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
 ):
     """当前用户的播放偏好；未设置时回落到全局默认。"""
-    return _player_preference_payload(settings, engine, user)
+    return _player_preference_payload(settings, engine, user, request)
 
 
 @router.patch("/me/player")
 def patch_my_player(
     body: PlayerPreferencePatch,
+    request: Request,
     user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
     settings: SettingsService = Depends(get_settings),
@@ -139,7 +183,7 @@ def patch_my_player(
     if body.mode == "desktop_mpv" and user.role != "admin":
         raise APIError(403, "FORBIDDEN", "服务器桌面 mpv 仅管理员可用")
     save_preference(engine, user.id, body.model_dump(exclude_unset=True))
-    return _player_preference_payload(settings, engine, user)
+    return _player_preference_payload(settings, engine, user, request)
 
 
 @router.get("/about")

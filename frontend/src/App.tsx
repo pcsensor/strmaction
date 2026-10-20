@@ -83,6 +83,14 @@ function Splash() {
   )
 }
 
+function AdminRoute({ children }: { children: ReactNode }) {
+  const auth = useAuthState()
+  if (auth.data?.user?.role !== 'admin') {
+    return <Navigate to="/" replace />
+  }
+  return <>{children}</>
+}
+
 class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | null }> {
   state = { error: null as Error | null }
 
@@ -203,10 +211,31 @@ export default function App() {
           <Route path="/libraries/:id" element={<LibrariesPage />} />
           <Route path="/item/:id" element={<DetailPage />} />
           <Route path="/search" element={<SearchPage />} />
-          <Route path="/users" element={<UsersPage />} />
-          <Route path="/tasks" element={<TasksPage />} />
+          <Route
+            path="/users"
+            element={
+              <AdminRoute>
+                <UsersPage />
+              </AdminRoute>
+            }
+          />
+          <Route
+            path="/tasks"
+            element={
+              <AdminRoute>
+                <TasksPage />
+              </AdminRoute>
+            }
+          />
           <Route path="/settings" element={<SettingsPage />} />
-          <Route path="/fix" element={<FixPage />} />
+          <Route
+            path="/fix"
+            element={
+              <AdminRoute>
+                <FixPage />
+              </AdminRoute>
+            }
+          />
           <Route path="/login" element={<Navigate to="/" replace />} />
           <Route path="*" element={<NotFound />} />
         </Routes>

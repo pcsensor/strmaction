@@ -55,7 +55,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
   - **全局内容隔离**：首页 Hero 轮播、继续观看、最近添加、分类横滑、搜索与条目详情全局按用户媒体库授权范围严格过滤，彻底杜绝越权访问。
   - **播放进度与已看独立**：每个用户的播放进度、断点与已看状态完全独立，换设备换账号互不干扰。
   - **后台与个人管理**：内置 `/users` 用户管理控制台，管理员可直观增删改查用户、重置密码、勾选媒体库分配；支持各用户自主修改个人登录密码。
-  - **设置分层**：普通用户打开「设置」只看到「我的播放方式」「安全」「关于」，可自选 `builtin / external_mpv / browser_intent / copy / auto` 与失败回退提示；`desktop_mpv`（服务器桌面 mpv）仅管理员可用。全局播放器默认、库管理、元数据源等仍仅管理员可改，`/api/export`、`/api/import` 同样要求管理员。
+  - **设置分层**：普通用户打开「设置」只看到「我的播放方式」「安全」「关于」，可自选 `builtin / external_mpv / browser_intent / copy / auto` 与失败回退提示；`desktop_mpv`（服务器桌面 mpv）仅管理员可用。设置页会显示「当前设备实际使用」并对不支持的播放方式给出降级提示。全局播放器默认、库管理、元数据源等仍仅管理员可改，`/api/export`、`/api/import` 同样要求管理员。
 - **播放**：伴侣 App 内置 Media3 成为默认路径；5 秒进度心跳、`play_token` 回传、播完无缝连播，
   外部 mpv 降级为兜底；播放请求头按媒体库下发。
 - **播放控件主流化与长按倍速**：全面重构伴侣 App 播放器 UI，换用现代主流矢量图标；新增屏幕中心
@@ -280,14 +280,15 @@ cd frontend && npm run build
 | mode | 使用方 | 进度 | 说明 |
 |---|---|---|---|
 | `builtin` | 伴侣 App | **5 秒心跳** | 默认；Media3 解码、直连网盘 |
-| `external_mpv` | 伴侣 App | 退出时一次 | 兜底，画质/字幕特效优先 |
-| `browser_intent` | Android 浏览器 | 无 | 无伴侣 App 时的降级 |
+| `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；桌面浏览器会明确提示并降级为 `copy` |
+| `browser_intent` | Android 浏览器 | 无 | 无伴侣 App 时的降级；桌面浏览器降级为 `copy` |
 | `desktop_mpv` | 桌面浏览器（后端同机，仅管理员） | 5 秒（JSON IPC） | 由服务端 spawn mpv；普通用户自动降级为 `copy`/`intent` |
 | `copy` | 任意 | 无 | 最终兜底 |
 
+> 桌面浏览器没有权限直接启动用户电脑上的程序：选 `builtin` / `external_mpv` 会收到明确的降级提示并复制播放地址。要真正在本机 mpv 打开，需要桌面伴侣或协议助手（后续能力）。
+>
 > `POST /api/play/{item_id}` 只负责下发 `play_url / headers / resume_ms / play_token /
-next_item_id`。`play_token` 是 item 级、12 小时有效的进度写入凭证，原生播放器**不需要**
-也不接触会话 Cookie。
+next_item_id`，并带 `requested_mode / downgraded / downgrade_reason` 说明是否发生降级。`play_token` 是 item 级、12 小时有效的进度写入凭证，原生播放器**不需要**也不接触会话 Cookie。
 
 ### 伴侣 App 内置播放器（默认）
 

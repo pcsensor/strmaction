@@ -127,6 +127,12 @@ def test_server_mpv_is_admin_only(tmp_path):
         == "browser_intent"
     )
     assert (
+        resolve_mode(
+            "browser_intent", desktop, settings, db.engine, allow_server_mpv=False
+        )
+        == "copy"
+    )
+    assert (
         resolve_mode("auto", companion, settings, db.engine, allow_server_mpv=False)
         == "builtin"
     )

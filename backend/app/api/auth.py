@@ -178,8 +178,8 @@ def change_password(
         db.commit()
         db.refresh(db_user)
 
-        # 撤销旧会话，创建新会话
-        auth.revoke_session(request.cookies.get(SESSION_COOKIE))
+        # 注销该用户全部会话，再为当前设备创建新会话
+        auth.revoke_user_sessions(db_user.id)
         token, expires = auth.create_session(db_user)
         _set_session_cookie(response, request, token, expires)
 

@@ -12,6 +12,37 @@ interface StartOptions {
   silent?: boolean
 }
 
+function downgradeCopyText(reason: PlayResponse['downgrade_reason']): {
+  title: string
+  description: string
+} {
+  switch (reason) {
+    case 'requires_companion':
+      return {
+        title: t('player.companionOnlyTitle'),
+        description: t('player.companionOnlyTip'),
+      }
+    case 'requires_android':
+      return {
+        title: t('player.intentOnlyTitle'),
+        description: t('player.intentOnlyTip'),
+      }
+    case 'admin_only':
+      return {
+        title: t('player.serverMpvAdminTitle'),
+        description: t('player.serverMpvAdminTip'),
+      }
+    case 'mpv_unavailable':
+    case 'launch_failed':
+      return {
+        title: t('player.mpvUnavailableTitle'),
+        description: t('player.mpvUnavailableTip'),
+      }
+    default:
+      return { title: t('player.copyTitle'), description: t('player.copyTip') }
+  }
+}
+
 export function useStartPlayback() {
   const play = usePlay()
   const toast = useToast()
@@ -49,11 +80,14 @@ export function useStartPlayback() {
           mediaFileId: options.mediaFileId,
         })
 
-        const copy = async () => {
+        const copy = async (
+          title = t('player.copyTitle'),
+          description = t('player.copyTip'),
+        ) => {
           const ok = await copyText(result.play_url)
           toast({
-            title: ok ? t('player.copyTitle') : t('toast.copyFailed'),
-            description: ok ? t('player.copyTip') : result.play_url,
+            title: ok ? title : t('toast.copyFailed'),
+            description: ok ? description : result.play_url,
             tone: ok ? 'success' : 'error',
             timeout: 7000,
           })
@@ -69,7 +103,12 @@ export function useStartPlayback() {
           })
           window.location.href = result.action
         } else if (result.mode === 'copy') {
-          await copy()
+          if (result.downgraded) {
+            const message = downgradeCopyText(result.downgrade_reason)
+            await copy(message.title, message.description)
+          } else {
+            await copy()
+          }
         } else if (result.mode === 'desktop_mpv') {
           toast({
             title: t('player.backend'),

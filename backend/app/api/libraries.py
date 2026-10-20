@@ -116,7 +116,11 @@ def list_libraries(
             ).all()
         return {
             "libraries": [
-                library_payload(library, _counts(session, library.id or 0))
+                library_payload(
+                    library,
+                    _counts(session, library.id or 0),
+                    include_private=user.role == "admin",
+                )
                 for library in libraries
             ]
         }

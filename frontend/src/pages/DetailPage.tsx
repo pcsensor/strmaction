@@ -32,6 +32,7 @@ import {
   useUnlockItem,
   useUnmatchItem,
   useUploadPoster,
+  useAuthState,
 } from '../api/hooks'
 import { DetailSkeleton, RowSkeleton } from '../components/Skeleton'
 import { EmptyState } from '../components/EmptyState'
@@ -76,6 +77,11 @@ export function DetailPage() {
   const navigate = useNavigate()
   const start = useStartPlayback()
   const toast = useToast()
+  const auth = useAuthState()
+  const isAdmin = auth.data?.user?.role === 'admin'
+  const canExternalPlay =
+    typeof window !== 'undefined' && Boolean(window.StrmActionNative?.playExternal)
+  const showManageMenu = isAdmin || canExternalPlay
   const markWatched = useMarkWatched()
   const refresh = useRefreshItem()
   const unlock = useUnlockItem()
@@ -498,105 +504,112 @@ export function DetailPage() {
                   {allWatched ? t('common.markUnwatched') : t('common.markWatched')}
                 </button>
 
-                <div className="relative">
-                  <button
-                    type="button"
-                    onClick={(event) => {
-                      event.stopPropagation()
-                      setMenuOpen((value) => !value)
-                    }}
-                    className="btn-ghost gap-2 px-5 py-3.5"
-                  >
-                    <Edit3 className="h-4 w-4" />
-                    管理
-                  </button>
-                  {menuOpen ? (
-                    <div
-                      className="absolute left-0 top-[calc(100%+8px)] z-30 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#0e1219]/97 p-1.5 shadow-lift backdrop-blur-xl"
-                      onClick={(event) => event.stopPropagation()}
+                {showManageMenu ? (
+                  <div className="relative">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        setMenuOpen((value) => !value)
+                      }}
+                      className="btn-ghost gap-2 px-5 py-3.5"
                     >
-                      {typeof window !== 'undefined' && window.StrmActionNative?.playExternal ? (
-                        <MenuButton
-                          icon={MonitorPlay}
-                          label={t('detail.playExternal')}
-                          onClick={() => {
-                            setMenuOpen(false)
-                            void playExternal()
-                          }}
-                        />
-                      ) : null}
-                      <MenuButton
-                        icon={Search}
-                        label={t('detail.rematch')}
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setMatchOpen(true)
-                        }}
-                      />
-                      <MenuButton
-                        icon={RefreshCw}
-                        label={t('detail.refreshMeta')}
-                        onClick={async () => {
-                          setMenuOpen(false)
-                          await refresh.mutateAsync(item.id)
-                          toast({ title: t('toast.refreshStarted'), description: '可在任务页查看进度', tone: 'success' })
-                        }}
-                      />
-                      <MenuButton
-                        icon={Edit3}
-                        label={t('detail.editFields')}
-                        onClick={() => {
-                          setMenuOpen(false)
-                          setEditOpen(true)
-                        }}
-                      />
-                      {item.locked_fields.length ? (
-                        <MenuButton
-                          icon={RefreshCw}
-                          label={t('detail.restoreAuto')}
-                          onClick={async () => {
-                            setMenuOpen(false)
-                            await unlock.mutateAsync(item.id)
-                            await refresh.mutateAsync(item.id)
-                            toast({ title: t('detail.restoredAuto'), tone: 'success' })
-                            query.refetch()
-                          }}
-                        />
-                      ) : null}                      <MenuButton
-                        icon={ImagePlus}
-                        label={t('detail.uploadPoster')}
-                        onClick={() => {
-                          setMenuOpen(false)
-                          posterInput.current?.click()
-                        }}
-                      />
-                      <MenuButton
-                        icon={Upload}
-                        label={t('detail.uploadBackdrop')}
-                        onClick={() => {
-                          setMenuOpen(false)
-                          backdropInput.current?.click()
-                        }}
-                      />
-                      {item.match_state === 'manual' ? (
-                        <MenuButton
-                          icon={Unlink}
-                          label={t('detail.unmatch')}
-                          danger
-                          onClick={async () => {
-                            setMenuOpen(false)
-                            await unmatch.mutateAsync(item.id)
-                            toast({ title: t('toast.unmatchDone') })
-                            query.refetch()
-                          }}
-                        />
-                      ) : null}
-                    </div>
-                  ) : null}
-                </div>
+                      <Edit3 className="h-4 w-4" />
+                      {isAdmin ? '管理' : t('detail.more')}
+                    </button>
+                    {menuOpen ? (
+                      <div
+                        className="absolute left-0 top-[calc(100%+8px)] z-30 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#0e1219]/97 p-1.5 shadow-lift backdrop-blur-xl"
+                        onClick={(event) => event.stopPropagation()}
+                      >
+                        {canExternalPlay ? (
+                          <MenuButton
+                            icon={MonitorPlay}
+                            label={t('detail.playExternal')}
+                            onClick={() => {
+                              setMenuOpen(false)
+                              void playExternal()
+                            }}
+                          />
+                        ) : null}
+                        {isAdmin ? (
+                          <>
+                            <MenuButton
+                              icon={Search}
+                              label={t('detail.rematch')}
+                              onClick={() => {
+                                setMenuOpen(false)
+                                setMatchOpen(true)
+                              }}
+                            />
+                            <MenuButton
+                              icon={RefreshCw}
+                              label={t('detail.refreshMeta')}
+                              onClick={async () => {
+                                setMenuOpen(false)
+                                await refresh.mutateAsync(item.id)
+                                toast({ title: t('toast.refreshStarted'), description: '可在任务页查看进度', tone: 'success' })
+                              }}
+                            />
+                            <MenuButton
+                              icon={Edit3}
+                              label={t('detail.editFields')}
+                              onClick={() => {
+                                setMenuOpen(false)
+                                setEditOpen(true)
+                              }}
+                            />
+                            {item.locked_fields.length ? (
+                              <MenuButton
+                                icon={RefreshCw}
+                                label={t('detail.restoreAuto')}
+                                onClick={async () => {
+                                  setMenuOpen(false)
+                                  await unlock.mutateAsync(item.id)
+                                  await refresh.mutateAsync(item.id)
+                                  toast({ title: t('detail.restoredAuto'), tone: 'success' })
+                                  query.refetch()
+                                }}
+                              />
+                            ) : null}
+                            <MenuButton
+                              icon={ImagePlus}
+                              label={t('detail.uploadPoster')}
+                              onClick={() => {
+                                setMenuOpen(false)
+                                posterInput.current?.click()
+                              }}
+                            />
+                            <MenuButton
+                              icon={Upload}
+                              label={t('detail.uploadBackdrop')}
+                              onClick={() => {
+                                setMenuOpen(false)
+                                backdropInput.current?.click()
+                              }}
+                            />
+                            {item.match_state === 'manual' ? (
+                              <MenuButton
+                                icon={Unlink}
+                                label={t('detail.unmatch')}
+                                danger
+                                onClick={async () => {
+                                  setMenuOpen(false)
+                                  await unmatch.mutateAsync(item.id)
+                                  toast({ title: t('toast.unmatchDone') })
+                                  query.refetch()
+                                }}
+                              />
+                            ) : null}
+                          </>
+                        ) : null}
+                      </div>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
-              {item.locked_fields.length ? (
+              {isAdmin && item.locked_fields.length ? (
                 <p className="mt-4 flex items-center gap-1.5 text-[11px] text-ink-500">
                   <Info className="h-3.5 w-3.5" />
                   {t('detail.lockedHint', { count: item.locked_fields.length })}
@@ -606,20 +619,24 @@ export function DetailPage() {
                 {t('detail.playHint')}
               </p>
 
-              <input
-                ref={posterInput}
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={(event) => onUpload(event.target.files?.[0], 'poster')}
-              />
-              <input
-                ref={backdropInput}
-                type="file"
-                accept="image/*"
-                hidden
-                onChange={(event) => onUpload(event.target.files?.[0], 'backdrop')}
-              />
+              {isAdmin ? (
+                <>
+                  <input
+                    ref={posterInput}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(event) => onUpload(event.target.files?.[0], 'poster')}
+                  />
+                  <input
+                    ref={backdropInput}
+                    type="file"
+                    accept="image/*"
+                    hidden
+                    onChange={(event) => onUpload(event.target.files?.[0], 'backdrop')}
+                  />
+                </>
+              ) : null}
             </motion.div>
           </div>
         </div>
@@ -850,16 +867,20 @@ export function DetailPage() {
         </div>
       </div>
 
-      <MatchDialog
-        open={matchOpen}
-        item={item}
-        defaultQuery={item.original_title || item.title}
-        onClose={() => {
-          setMatchOpen(false)
-          query.refetch()
-        }}
-      />
-      <EditDialog open={editOpen} item={item} onClose={() => setEditOpen(false)} />
+      {isAdmin ? (
+        <>
+          <MatchDialog
+            open={matchOpen}
+            item={item}
+            defaultQuery={item.original_title || item.title}
+            onClose={() => {
+              setMatchOpen(false)
+              query.refetch()
+            }}
+          />
+          <EditDialog open={editOpen} item={item} onClose={() => setEditOpen(false)} />
+        </>
+      ) : null}
     </div>
   )
 }

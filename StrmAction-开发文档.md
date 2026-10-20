@@ -1024,36 +1024,37 @@ interface StrmActionNative {
 | DELETE | `/users/{id}` | （仅管理员）删除用户（不可删除自己或最后一名管理员） |
 | GET | `/users/me` | 当前用户获取个人信息 |
 | PATCH | `/users/me/password` | 当前用户修改个人密码 `{old_password, new_password}` |
-| GET | `/libraries` | 库列表（普通用户自动按授权范围过滤；含条目数、最近扫描时间） |
-| POST | `/libraries` | 新建库 `{name, root_path, type, scan_cron}` |
-| PATCH | `/libraries/{id}` | 修改（含启用/禁用） |
-| DELETE | `/libraries/{id}` | 删除库（含级联） |
-| POST | `/libraries/{id}/scan` | 触发扫描（异步，返回 task_id） |
-| POST | `/libraries/{id}/scrape` | 触发刮削（仅处理 `pending/failed`） |
-| POST | `/libraries/{id}/refresh` | 全库刷新元数据（跳过 `manual` 与锁定字段） |
+| GET | `/libraries` | 库列表（普通用户按授权范围过滤，且不返回 `root_path` / `play_headers`；含条目数、最近扫描时间） |
+| POST | `/libraries` | （仅管理员）新建库 `{name, root_path, type, scan_cron}` |
+| PATCH | `/libraries/{id}` | （仅管理员）修改（含启用/禁用） |
+| DELETE | `/libraries/{id}` | （仅管理员）删除库（含级联） |
+| POST | `/libraries/{id}/scan` | （仅管理员）触发扫描（异步，返回 task_id） |
+| POST | `/libraries/{id}/scrape` | （仅管理员）触发刮削（仅处理 `pending/failed`） |
+| POST | `/libraries/{id}/refresh` | （仅管理员）全库刷新元数据（跳过 `manual` 与锁定字段） |
 | GET | `/items` | 查询：`library_id, kind, q, genre, year, sort, page, page_size`（受用户权限控制） |
-| GET | `/items/{id}` | 详情（含子项、media_files、当前用户进度） |
-| POST | `/items/{id}/match` | 手动绑定 `{provider, provider_id}` → `manual` |
-| POST | `/items/{id}/unmatch` | 解除绑定 → `failed` |
-| GET | `/items/{id}/match-candidates` | `?q=` → TMDB 候选列表 |
-| PATCH | `/items/{id}` | 手动编辑字段（标题/简介/年份/合集…），写入 `locked_fields` |
-| POST | `/items/{id}/poster` | multipart 上传自定义海报/背景 |
-| POST | `/items/{id}/refresh` | 单条重刮 |
+| GET | `/items/{id}` | 详情（含子项、media_files、当前用户进度；普通用户的 library 信息脱敏） |
+| POST | `/items/{id}/match` | （仅管理员）手动绑定 `{provider, provider_id}` → `manual` |
+| POST | `/items/{id}/unmatch` | （仅管理员）解除绑定 → `failed` |
+| GET | `/items/{id}/match-candidates` | （仅管理员）`?q=` → TMDB 候选列表 |
+| PATCH | `/items/{id}` | （仅管理员）手动编辑字段（标题/简介/年份/合集…），写入 `locked_fields` |
+| POST | `/items/{id}/unlock` | （仅管理员）恢复自动刮削，清空 `locked_fields` |
+| POST | `/items/{id}/poster` | （仅管理员）multipart 上传自定义海报/背景 |
+| POST | `/items/{id}/refresh` | （仅管理员）单条重刮 |
 | POST | `/items/{id}/watched` | `{finished: bool}` 手动标记当前用户已看/未看 |
 | DELETE/POST | `/items/{id}/continue` 或 `POST /items/{id}/dismiss-continue` | 从首页「继续观看」移除该条目（保留其当前用户播放进度与已看记录，见 §12.11） |
 | GET | `/search` | 全库搜索（标题/别名/演职员，受用户授权媒体库范围过滤） |
 | GET | `/home` | 首页聚合：`hero[]`, `continue[]`, `recent[]`, `rows[]`（受用户授权媒体库范围过滤，个人进度隔离） |
-| POST | `/play/{item_id}` | 返回 `mode / play_url / resume_ms / headers / play_token / next_item_id`；mode 按「请求体 > 用户偏好 > 全局默认」解析 |
+| POST | `/play/{item_id}` | 返回 `mode / requested_mode / downgraded / downgrade_reason / play_url / resume_ms / headers / play_token / next_item_id`；mode 按「请求体 > 用户偏好 > 全局默认」解析并带降级原因 |
 | POST | `/items/{id}/progress` | `{position_ms, duration_ms, finished}`；鉴权支持 Cookie 或 `Bearer <play_token>`（自动关联对应用户，见 §12.7） |
-| GET | `/tasks` | 任务列表与日志 |
+| GET | `/tasks` | （仅管理员）任务列表与日志 |
 | GET | `/settings` | （仅管理员）读取全局配置（脱敏：`api_key` 返回 `sk-****`） |
 | PATCH | `/settings` | （仅管理员）修改全局配置（TMDB/TVDB Key、源优先级、语言、季集类型、全局播放器、模板） |
-| GET | `/me/player` | 当前用户播放偏好：`overrides`（`mode`、`fallback_on_error`，null=跟随全局）、`defaults`、`effective`、`allowed_modes`（普通用户不含 `desktop_mpv`） |
+| GET | `/me/player` | 当前用户播放偏好：`overrides`、`defaults`、`effective`、`allowed_modes`、`available_modes`、`client`、`resolved_mode`（当前设备实际模式） |
 | PATCH | `/me/player` | 修改自己的播放偏好（仅允许 `mode` / `fallback_on_error`；显式 null 清除覆盖；普通用户传 `desktop_mpv` 返回 403） |
 | GET | `/about` | 应用信息：`version` / `api_docs` / `data_dir`（`data_dir` 仅管理员返回） |
 | POST | `/settings/provider-test` | `{provider}` → 测试连通性与凭证，返回 `ok` / `401` / `network` |
-| GET | `/export` | （仅管理员）导出库配置、条目、进度与设置（不含 `.strm` URL） |
-| POST | `/import` | （仅管理员）导入备份；`settings=true` 时覆盖全局设置 |
+| GET | `/export` | （仅管理员）导出库配置、条目、进度（含 `user_id`）与设置（不含 `.strm` URL） |
+| POST | `/import` | （仅管理员）导入备份；进度按 `user_id` 恢复，旧备份归导入管理员；`settings=true` 时覆盖全局设置 |
 | GET | `/img/{name}` | 静态图片（带 `Cache-Control: max-age=31536000, immutable`） |
 
 **响应示例（`GET /home`）**
@@ -1232,7 +1233,8 @@ ui:
 5. **多用户与权限隔离**：支持管理员与普通用户角色；密码使用 argon2 哈希；基于会话签名 Cookie 与服务端状态追踪；登录失败 5 次锁定 5 分钟；普通用户受媒体库访问权限隔离。普通用户可修改自己的播放偏好与登录密码，但 `desktop_mpv`（服务端 mpv）以及全局设置、库管理、任务、用户管理、导出/导入仅管理员可用。
 6. **`play_token` 最小权限**：12h 有效、绑定单个 `item_id`、只能写该条目进度、不可读取任何列表或 URL；注销登录时不强制吊销（到期自然失效）。
 7. **原生层不持有会话**：伴侣 App 的播放器只用 `play_token` 与后端通信，不在 native 层复制或持久化会话 Cookie。
-8. **越权写保护**：全局设置的唯一写入口是管理员接口；`/import` 携带 `settings=true` 时同样要求管理员，避免绕过 `PATCH /settings` 的权限边界。
+8. **越权写保护**：全局设置的唯一写入口是管理员接口；`/import` 携带 `settings=true` 时同样要求管理员，避免绕过 `PATCH /settings` 的权限边界。`unlock`、`poster` 等元数据写接口也仅管理员可用。
+9. **改密即失效**：用户修改自己的密码或管理员重置密码后，服务端注销该用户全部会话，旧设备需要重新登录。
 
 ---
 
