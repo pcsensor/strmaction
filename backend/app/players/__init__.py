@@ -41,7 +41,15 @@ MODE_ALIASES = {
     "backend": "desktop_mpv",
     "default": "builtin",
 }
-VALID_MODES = {"builtin", "external_mpv", "browser_intent", "desktop_mpv", "copy", "auto"}
+VALID_MODES = {
+    "builtin",
+    "external_mpv",
+    "browser_intent",
+    "desktop_mpv",
+    "copy",
+    "auto",
+    "direct",
+}
 
 
 def normalize_mode(

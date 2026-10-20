@@ -283,6 +283,7 @@ cd frontend && npm run build
 | `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；桌面浏览器会明确提示并降级为 `copy` |
 | `browser_intent` | Android 浏览器 | 无 | 无伴侣 App 时的降级；桌面浏览器降级为 `copy` |
 | `desktop_mpv` | 桌面浏览器（后端同机，仅管理员） | 5 秒（JSON IPC） | 由服务端 spawn mpv；普通用户自动降级为 `copy`/`intent` |
+| `direct` | StrmAction 桌面端 | 由桌面端上报 | 服务端只返回 URL/headers/play_token，本机 mpv 播放 |
 | `copy` | 任意 | 无 | 最终兜底 |
 
 > 桌面浏览器没有权限直接启动用户电脑上的程序：选 `builtin` / `external_mpv` 会收到明确的降级提示并复制播放地址。要真正在本机 mpv 打开，需要桌面伴侣或协议助手（后续能力）。
@@ -387,6 +388,15 @@ adb install -r companion/app/build/outputs/apk/release/app-release.apk
 
 网页里的海报/背景图上传也支持：Android 侧通过 `onShowFileChooser` 调起系统文件选择器。
 
+## 桌面端（Windows / macOS）
+
+源码与构建说明在 [`desktop/`](desktop/README.md)。
+
+- Python + pywebview 加载同一套网页；
+- 网页把 `/api/play` 的 `direct` 播放数据交给 Python；
+- Python 启动本机 mpv（独立窗口）、自动设置服务端下发的全部请求头，并用 `play_token` 上报进度；
+- 不保存账号密码/网页 Cookie；本机可用 `uv` 管理 Python 环境。
+
 ## API
 
 启动后访问 **`/docs`** 查看完整 OpenAPI。统一前缀 `/api`，除以下接口外全部需要
@@ -484,6 +494,7 @@ frontend/src/
 └─ hooks/                useStartPlayback useTVMode（空间导航）
 
 companion/               Android WebView 壳 + Media3 播放器（解耦 PlayerDrawer / 音轨 / 倍速）+ JS Bridge + mpv 兜底
+desktop/                 Windows/macOS 桌面端（pywebview + 本机 mpv + direct 播放/进度上报）
 scripts/                 make_samples.py / seed_demo.py
 docs/screenshots/        截图
 docs/deploy-cloud.md     云服务器（公网 + HTTPS）部署指南

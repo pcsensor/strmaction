@@ -3,12 +3,22 @@ export interface StrmActionNativeBridge {
   play?: (itemId: number) => void
   /** 外部 mpv 兜底 */
   playExternal?: (itemId: number) => void
-  /** 打开伴侣 App 的服务器设置 */
+  /** 打开伴侣 App 的服务器设置 / 桌面端设置 */
   openSettings?: () => void
   isCompanion?: () => boolean
   isTV?: () => boolean
   version?: () => string
   serverHost?: () => string
+  /** v1.2 桌面端：WebView 壳 + 本机 mpv */
+  isDesktop?: () => boolean
+  playItem?: (
+    payload: string,
+  ) =>
+    | Promise<{ ok: boolean; error?: string } | void>
+    | { ok: boolean; error?: string }
+    | void
+  stopPlayback?: () => void
+  quit?: () => void
 }
 
 declare global {

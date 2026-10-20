@@ -1,0 +1,183 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>StrmAction 桌面端设置</title>
+  <style>
+    :root {
+      --accent: #e8b06a;
+      --bg: #07080a;
+      --card: #11151c;
+      --line: rgba(255,255,255,.10);
+      --text: #e8eaef;
+      --muted: #8b94a7;
+      --danger: #fda4af;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      background: radial-gradient(1200px 600px at 50% -10%, rgba(232,176,106,.12), transparent 60%), var(--bg);
+      color: var(--text);
+      font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 32px;
+    }
+    .card {
+      width: min(720px, 100%);
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 20px;
+      padding: 28px;
+      box-shadow: 0 30px 80px -40px #000;
+    }
+    .brand { display: flex; align-items: center; gap: 12px; margin-bottom: 6px; }
+    .brand img { width: 42px; height: 42px; border-radius: 12px; }
+    h1 { font-size: 20px; margin: 0; letter-spacing: -.02em; }
+    .sub { color: var(--muted); font-size: 12px; margin: 0 0 24px; }
+    label { display: block; font-size: 12px; color: var(--muted); margin: 18px 0 7px; }
+    input {
+      width: 100%;
+      background: #090c11;
+      color: var(--text);
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 11px 13px;
+      font: inherit;
+      outline: none;
+    }
+    input:focus { border-color: rgba(232,176,106,.65); box-shadow: 0 0 0 3px rgba(232,176,106,.12); }
+    .row { display: flex; gap: 8px; }
+    .row input { flex: 1; }
+    button {
+      border: 1px solid var(--line);
+      background: rgba(255,255,255,.06);
+      color: var(--text);
+      border-radius: 10px;
+      padding: 10px 15px;
+      font: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    button:hover { background: rgba(255,255,255,.11); }
+    button.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #17120b;
+      font-weight: 700;
+    }
+    button.primary:hover { filter: brightness(1.05); }
+    .actions { display: flex; gap: 10px; margin-top: 26px; flex-wrap: wrap; }
+    .hint { color: var(--muted); font-size: 11.5px; margin-top: 10px; }
+    .status { margin-top: 16px; min-height: 22px; font-size: 12.5px; }
+    .status.ok { color: #86efac; }
+    .status.err { color: var(--danger); }
+    .meta { margin-top: 18px; border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); font-size: 11.5px; }
+  </style>
+</head>
+<body>
+  <main class="card">
+    <div class="brand">
+      <img src="icon.png" alt="" onerror="this.style.display='none'">
+      <div>
+        <h1>StrmAction 桌面端</h1>
+        <p class="sub">WebView 浏览网页，本机 mpv 播放；播放进度自动回传。</p>
+      </div>
+    </div>
+
+    <label for="server">服务器地址</label>
+    <input id="server" type="url" placeholder="https://media.example.com" autocomplete="off" spellcheck="false">
+    <p class="hint">必须带 http:// 或 https://；结尾的 / 可省略。</p>
+
+    <label for="mpv">mpv 路径</label>
+    <div class="row">
+      <input id="mpv" type="text" placeholder="留空则自动查找：自带 mpv → PATH → 常见安装路径" spellcheck="false">
+      <button id="pick" type="button">选择…</button>
+    </div>
+    <p class="hint" id="detected"></p>
+
+    <div class="actions">
+      <button id="save" class="primary" type="button">保存并打开</button>
+      <button id="quit" type="button">退出</button>
+    </div>
+    <div id="status" class="status"></div>
+
+    <div class="meta">
+      版本 <span id="version">—</span> · 桌面端不会保存账号密码或网页 Cookie；登录在网页内完成。
+    </div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id)
+    const server = $('server')
+    const mpv = $('mpv')
+    const status = $('status')
+    let api = null
+
+    function setStatus(text, tone) {
+      status.textContent = text || ''
+      status.className = 'status' + (tone ? ' ' + tone : '')
+    }
+
+    async function init() {
+      if (!window.pywebview || !window.pywebview.api) {
+        setStatus('桌面端桥接未就绪，请重启 StrmAction。', 'err')
+        return
+      }
+      api = window.pywebview.api
+      try {
+        const data = await api.get_settings()
+        server.value = data.server_url || ''
+        mpv.value = data.mpv_path || ''
+        $('version').textContent = 'v' + (data.version || '?')
+        $('detected').textContent = data.detected_mpv
+          ? '已找到：' + data.detected_mpv
+          : '未自动找到 mpv，请手动选择或先安装。'
+      } catch (error) {
+        setStatus('读取设置失败：' + (error && error.message ? error.message : error), 'err')
+      }
+    }
+
+    $('pick').addEventListener('click', async () => {
+      if (!api) return
+      const result = await api.choose_mpv()
+      if (result && result.path) {
+        mpv.value = result.path
+        setStatus('已选择 mpv，点击“保存并打开”生效。', 'ok')
+      }
+    })
+
+    $('save').addEventListener('click', async () => {
+      if (!api) return
+      const value = server.value.trim()
+      if (!/^https?:\/\//i.test(value)) {
+        setStatus('服务器地址必须以 http:// 或 https:// 开头。', 'err')
+        return
+      }
+      setStatus('正在保存…')
+      const result = await api.save_settings({
+        server_url: value,
+        mpv_path: mpv.value.trim(),
+      })
+      if (result && result.ok) {
+        setStatus('已保存，正在打开网页…', 'ok')
+      } else {
+        setStatus((result && result.error) || '保存失败', 'err')
+      }
+    })
+
+    $('quit').addEventListener('click', async () => {
+      if (api) await api.quit()
+    })
+
+    window.addEventListener('pywebviewready', init)
+    window.addEventListener('DOMContentLoaded', () => {
+      // pywebviewready may have fired before this script ran.
+      if (window.pywebview && window.pywebview.api) init()
+    })
+  </script>
+</body>
+</html>
