@@ -1417,6 +1417,13 @@ class PlayerActivity : AppCompatActivity() {
                     throw error
                 }
             }
+        // 开关开启后，片源（可能是另一台自签名 Alist）也一并放行。
+        if (TlsPolicy.isAllowed(this, playInfo.playUrl)) {
+            TlsPolicy.clientTls(playInfo.playUrl)?.let { tls ->
+                clientBuilder.sslSocketFactory(tls.socketFactory, tls.trustManager)
+                clientBuilder.hostnameVerifier(tls.hostnameVerifier)
+            }
+        }
         val httpFactory = OkHttpDataSource.Factory(clientBuilder.build())
             .setDefaultRequestProperties(headers)
         val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
@@ -1540,6 +1547,7 @@ class PlayerActivity : AppCompatActivity() {
         if (duration != null && duration > 0) position = position.coerceAtMost(duration)
         if (position <= 0 && !finished) return
         ProgressReporter.post(
+            this,
             ProgressReporter.Report(
                 serverUrl = playInfo.serverUrl,
                 token = playInfo.playToken,
@@ -1853,6 +1861,7 @@ class PlayerActivity : AppCompatActivity() {
             else -> rawPosition.coerceAtLeast(0)
         }
         ProgressReporter.post(
+            this,
             ProgressReporter.Report(
                 serverUrl = playInfo.serverUrl,
                 token = playInfo.playToken,

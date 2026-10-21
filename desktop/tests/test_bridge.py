@@ -16,6 +16,8 @@ class FakeApp:
     stopped: int = 0
     settings_saved: dict | None = None
     play_error: Exception | None = None
+    last_error: str = ""
+    retried: int = 0
 
     def __post_init__(self):
         self.played = []
@@ -28,6 +30,9 @@ class FakeApp:
     def stop_playback(self):
         self.stopped += 1
 
+    def retry_connection(self):
+        self.retried += 1
+
     def open_settings(self):
         pass
 
@@ -36,6 +41,7 @@ class FakeApp:
 
     def save_settings(self, data):
         self.settings_saved = data
+        return False
 
     def choose_mpv(self):
         return "/opt/homebrew/bin/mpv"
@@ -95,8 +101,13 @@ def test_bridge_settings_and_actions():
     assert settings["mpv_path"] == "/mpv"
     assert settings["cache_limit_mb"] == 128
     assert settings["detected_mpv"] == "/usr/local/bin/mpv"
-    assert bridge.save_settings({"server_url": "https://x.test"})["ok"] is True
+    saved = bridge.save_settings({"server_url": "https://x.test"})
+    assert saved["ok"] is True
+    assert saved["restart_required"] is False
     assert app.settings_saved["server_url"] == "https://x.test"
     assert bridge.stopPlayback()["ok"] is True
     assert app.stopped == 1
     assert bridge.choose_mpv()["path"] == "/opt/homebrew/bin/mpv"
+    assert bridge.getConnectionError()["error"] == ""
+    assert bridge.retryConnection()["ok"] is True
+    assert app.retried == 1

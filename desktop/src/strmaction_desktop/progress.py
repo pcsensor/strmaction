@@ -28,6 +28,7 @@ class ProgressReporter:
         interval_ms: int = 5000,
         *,
         client: httpx.Client | None = None,
+        verify_ssl: bool = True,
         on_auth_error: Callable[[], None] | None = None,
         logger=None,
         session_id: str | None = None,
@@ -37,7 +38,8 @@ class ProgressReporter:
         self._token = play_token
         self._interval = max(2.0, min(interval_ms / 1000.0, 60.0))
         self._client = client or httpx.Client(
-            timeout=httpx.Timeout(5.0, connect=3.0)
+            timeout=httpx.Timeout(5.0, connect=3.0),
+            verify=verify_ssl,
         )
         self._owns_client = client is None
         self._headers = {

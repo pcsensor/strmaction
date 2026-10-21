@@ -88,6 +88,7 @@ class DesktopConfig:
     server_url: str = ""
     mpv_path: str = ""
     cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB
+    allow_self_signed_https: bool = False
     window_width: int = DEFAULT_WIDTH
     window_height: int = DEFAULT_HEIGHT
     log_level: str = "INFO"
@@ -101,6 +102,7 @@ class DesktopConfig:
             server_url=server,
             mpv_path=(self.mpv_path or "").strip(),
             cache_limit_mb=normalize_cache_limit(self.cache_limit_mb),
+            allow_self_signed_https=bool(self.allow_self_signed_https),
             window_width=_clamp(self.window_width, MIN_WIDTH, 3840, DEFAULT_WIDTH),
             window_height=_clamp(self.window_height, MIN_HEIGHT, 2160, DEFAULT_HEIGHT),
             log_level=(self.log_level or "INFO").upper(),
@@ -121,6 +123,7 @@ class DesktopConfig:
             server_url=str(raw.get("server_url") or ""),
             mpv_path=str(raw.get("mpv_path") or ""),
             cache_limit_mb=raw.get("cache_limit_mb", DEFAULT_CACHE_LIMIT_MB),
+            allow_self_signed_https=bool(raw.get("allow_self_signed_https", False)),
             window_width=raw.get("window_width", DEFAULT_WIDTH),
             window_height=raw.get("window_height", DEFAULT_HEIGHT),
             log_level=str(raw.get("log_level") or "INFO"),

@@ -17,10 +17,21 @@
     <string name="setup_cache_default_hint">留空跟随服务器默认</string>
     <string name="setup_cache_hint">常用 64 / 128 / 256 / 512；0 表示最小预读。留空则跟随服务器默认（通常 128MB）。仅对内置播放器生效，外部 mpv 不受控制。</string>
     <string name="setup_cache_invalid">缓存上限需为 0 或 16–2048 的整数（MB）</string>
+    <string name="setup_allow_self_signed">允许所有自签名 HTTPS 证书</string>
+    <string name="setup_allow_self_signed_hint">开启后对 StrmAction、Alist、片源 CDN 等所有 HTTPS 连接跳过证书链和 hostname 校验。存在中间人风险，只在你信任当前网络时开启。</string>
+    <string name="setup_cert_fail">证书不受信任。若这是你自己的服务器，请勾选“允许所有自签名 HTTPS 证书”后重试。</string>
+    <string name="setup_timeout">连接服务器超时，请检查服务器是否启动。</string>
+    <string name="setup_unreachable">无法连接服务器，请检查地址、端口和服务器状态。</string>
+    <string name="setup_connect_failed">连接服务器失败。</string>
 
     <!-- 浏览 -->
     <string name="web_error_title">无法加载页面</string>
     <string name="web_error_desc">请检查服务器是否启动，以及手机与服务器是否在同一网络。</string>
+    <string name="web_connecting">正在连接服务器…</string>
+    <string name="web_ssl_error">HTTPS 证书不受信任。请检查服务器地址，或在服务器设置中允许此服务器的自签名证书。</string>
+    <string name="web_timeout">连接服务器超时，请检查服务器是否启动。</string>
+    <string name="web_unreachable">无法连接服务器，请检查地址和网络。</string>
+    <string name="web_http_error">服务器返回 HTTP %1$d。</string>
     <string name="web_retry">重试</string>
     <string name="web_settings">服务器设置</string>
     <string name="settings_hint">伴侣 App 设置</string>

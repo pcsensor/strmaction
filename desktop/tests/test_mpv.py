@@ -6,6 +6,7 @@ from strmaction_desktop.mpv import (
     headers_to_mpv,
     mpv_candidates,
     platform_key,
+    tls_args,
 )
 
 
@@ -18,6 +19,11 @@ def test_cache_args():
     assert "--cache-on-disk=no" in args
     assert cache_args(1) == cache_args(16)
     assert cache_args(99999) == cache_args(2048)
+
+
+def test_tls_args():
+    assert tls_args(True) == []
+    assert tls_args(False) == ["--tls-verify=no"]
 
 
 def test_platform_key():

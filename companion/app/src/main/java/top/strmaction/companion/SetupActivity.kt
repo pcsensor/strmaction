@@ -1,6 +1,7 @@
 package top.strmaction.companion
 
 import android.content.Intent
+import android.content.res.ColorStateList
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -8,15 +9,20 @@ import android.text.InputType
 import android.view.Gravity
 import android.view.ViewGroup
 import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import androidx.appcompat.app.AppCompatActivity
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.security.cert.CertPathValidatorException
 import java.util.concurrent.Executors
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /** 首次启动 / 重新配置服务器地址。手机可滚动，电视可遥控填写。 */
 class SetupActivity : AppCompatActivity() {
@@ -24,6 +30,7 @@ class SetupActivity : AppCompatActivity() {
     private lateinit var urlInput: EditText
     private lateinit var packageInput: EditText
     private lateinit var cacheInput: EditText
+    private lateinit var allowSelfSignedInput: CheckBox
     private lateinit var statusView: TextView
     private lateinit var testButton: Button
     private lateinit var saveButton: Button
@@ -134,6 +141,25 @@ class SetupActivity : AppCompatActivity() {
             },
         )
 
+        allowSelfSignedInput = CheckBox(this).apply {
+            text = getString(R.string.setup_allow_self_signed)
+            setTextColor(Color.WHITE)
+            textSize = if (tv) 15f else 13.5f
+            buttonTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
+            isChecked = TlsPolicy.isEnabled(this@SetupActivity)
+            setPadding(0, dp(6), 0, 0)
+        }
+        container.addView(allowSelfSignedInput, matchWidth(top = 16))
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.setup_allow_self_signed_hint)
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#FF8A8A"))
+                setPadding(0, dp(2), 0, 0)
+                setLineSpacing(dp(3).toFloat(), 1f)
+            },
+        )
+
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.START
@@ -191,10 +217,15 @@ class SetupActivity : AppCompatActivity() {
         }
         testButton.isEnabled = false
         saveButton.isEnabled = false
+        val allowSelfSigned = allowSelfSignedInput.isChecked
         showStatus(getString(R.string.setup_testing), false)
         executor.execute {
             val result = runCatching {
-                val conn = (URL("$base/api/health").openConnection() as HttpURLConnection).apply {
+                val conn = TlsPolicy.openConnection(
+                    this@SetupActivity,
+                    "$base/api/health",
+                    allowSelfSigned,
+                ).apply {
                     requestMethod = "GET"
                     connectTimeout = 5000
                     readTimeout = 5000
@@ -215,11 +246,27 @@ class SetupActivity : AppCompatActivity() {
                 result.onSuccess { version ->
                     showStatus(getString(R.string.setup_ok, version), false)
                 }.onFailure { error ->
-                    val message = error.message ?: error.javaClass.simpleName
-                    showStatus(getString(R.string.setup_fail, message), true)
+                    showStatus(getString(R.string.setup_fail, connectionErrorMessage(error)), true)
                 }
             }
         }
+    }
+
+    private fun connectionErrorMessage(error: Throwable): String {
+        var cause: Throwable? = error
+        while (cause != null) {
+            when (cause) {
+                is CertPathValidatorException, is SSLHandshakeException, is SSLPeerUnverifiedException ->
+                    return getString(R.string.setup_cert_fail)
+                is SocketTimeoutException ->
+                    return getString(R.string.setup_timeout)
+                is ConnectException, is UnknownHostException ->
+                    return getString(R.string.setup_unreachable)
+            }
+            cause = cause.cause
+        }
+        return error.message?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.setup_connect_failed)
     }
 
     private fun saveAndEnter() {
@@ -238,6 +285,7 @@ class SetupActivity : AppCompatActivity() {
         }
         val packageName = packageInput.text.toString().trim()
             .ifBlank { MpvFallback.DEFAULT_PACKAGE }
+        TlsPolicy.setEnabled(this, allowSelfSignedInput.isChecked)
         getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
             .edit()
             .putString(MainActivity.KEY_SERVER, base)

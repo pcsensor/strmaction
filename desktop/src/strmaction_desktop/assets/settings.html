@@ -72,6 +72,21 @@
     button.primary:hover { filter: brightness(1.05); }
     .actions { display: flex; gap: 10px; margin-top: 26px; flex-wrap: wrap; }
     .hint { color: var(--muted); font-size: 11.5px; margin-top: 10px; }
+    .hint.danger { color: var(--danger); }
+    .check {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 18px 0 0;
+      color: var(--text);
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .check input {
+      width: auto;
+      margin: 0;
+      accent-color: var(--accent);
+    }
     .status { margin-top: 16px; min-height: 22px; font-size: 12.5px; }
     .status.ok { color: #86efac; }
     .status.err { color: var(--danger); }
@@ -103,6 +118,15 @@
     <input id="cache" type="number" min="0" max="2048" step="16" inputmode="numeric" placeholder="128">
     <p class="hint">默认 128MB；0 表示关闭本机 mpv 的预读缓存，非 0 时按 16–2048MB 执行。仅影响本机 mpv，不改变服务器设置。</p>
 
+    <label class="check" for="allowSelfSigned">
+      <input id="allowSelfSigned" type="checkbox">
+      <span>允许所有自签名 HTTPS 证书</span>
+    </label>
+    <p class="hint danger">
+      开启后对 StrmAction、Alist、片源 CDN 等所有 HTTPS 连接跳过证书链和 hostname 校验。
+      存在中间人风险。桌面端使用 WebView2，该设置需要在重启 StrmAction 后生效。
+    </p>
+
     <div class="actions">
       <button id="save" class="primary" type="button">保存并打开</button>
       <button id="quit" type="button">退出</button>
@@ -119,6 +143,7 @@
     const server = $('server')
     const mpv = $('mpv')
     const cache = $('cache')
+    const allowSelfSigned = $('allowSelfSigned')
     const status = $('status')
     let api = null
 
@@ -138,6 +163,7 @@
         server.value = data.server_url || ''
         mpv.value = data.mpv_path || ''
         cache.value = data.cache_limit_mb ?? 128
+        allowSelfSigned.checked = !!data.allow_self_signed_https
         $('version').textContent = 'v' + (data.version || '?')
         $('detected').textContent = data.detected_mpv
           ? '已找到：' + data.detected_mpv
@@ -174,8 +200,11 @@
         server_url: value,
         mpv_path: mpv.value.trim(),
         cache_limit_mb: cacheValue,
+        allow_self_signed_https: allowSelfSigned.checked,
       })
-      if (result && result.ok) {
+      if (result && result.ok && result.restart_required) {
+        setStatus('已保存。需要重启 StrmAction 后生效。', 'ok')
+      } else if (result && result.ok) {
         setStatus('已保存，正在打开网页…', 'ok')
       } else {
         setStatus((result && result.error) || '保存失败', 'err')

@@ -30,6 +30,7 @@ def test_config_roundtrip(tmp_path):
         server_url="https://media.example.com/",
         mpv_path="/opt/homebrew/bin/mpv",
         cache_limit_mb=64,
+        allow_self_signed_https=True,
         window_width=1400,
         window_height=900,
         log_level="debug",
@@ -39,6 +40,7 @@ def test_config_roundtrip(tmp_path):
     assert loaded.server_url == "https://media.example.com"
     assert loaded.mpv_path == "/opt/homebrew/bin/mpv"
     assert loaded.cache_limit_mb == 64
+    assert loaded.allow_self_signed_https is True
     assert loaded.window_width == 1400
     assert loaded.window_height == 900
     assert loaded.log_level == "DEBUG"

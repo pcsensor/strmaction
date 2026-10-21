@@ -1,10 +1,10 @@
 package top.strmaction.companion
 
+import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import org.json.JSONObject
 import java.net.HttpURLConnection
-import java.net.URL
 import java.util.ArrayDeque
 import java.util.concurrent.Executors
 
@@ -33,19 +33,20 @@ object ProgressReporter {
         Thread(runnable, "strmaction-progress").apply { isDaemon = true }
     }
 
-    fun post(report: Report, onTokenExpired: (() -> Unit)? = null) {
+    fun post(context: Context, report: Report, onTokenExpired: (() -> Unit)? = null) {
         synchronized(lock) {
             queue.addLast(report)
             while (queue.size > 3) queue.removeFirst()
         }
-        executor.execute { drain(onTokenExpired) }
+        val appContext = context.applicationContext
+        executor.execute { drain(appContext, onTokenExpired) }
     }
 
-    private fun drain(onTokenExpired: (() -> Unit)?) {
+    private fun drain(context: Context, onTokenExpired: (() -> Unit)?) {
         while (true) {
             val report = synchronized(lock) { queue.firstOrNull() } ?: return
             val status = try {
-                send(report)
+                send(context, report)
             } catch (_: Exception) {
                 // 网络错误：保留队列，等下一次心跳补发
                 return
@@ -61,7 +62,7 @@ object ProgressReporter {
         }
     }
 
-    private fun send(report: Report): Int {
+    private fun send(context: Context, report: Report): Int {
         val url = "${report.serverUrl.trimEnd('/')}/api/items/${report.itemId}/progress"
         val position = report.positionMs.coerceAtLeast(0L)
         val body = JSONObject().apply {
@@ -70,7 +71,7 @@ object ProgressReporter {
             put("finished", report.finished)
         }.toString()
 
-        val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+        val conn = TlsPolicy.openConnection(context, url).apply {
             requestMethod = "POST"
             doOutput = true
             useCaches = false
