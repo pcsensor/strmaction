@@ -8,6 +8,7 @@ import android.graphics.Path
 import android.graphics.RectF
 import android.graphics.drawable.ColorDrawable
 import android.util.AttributeSet
+import android.view.MotionEvent
 import android.widget.SeekBar
 
 /**
@@ -41,6 +42,28 @@ class BufferedSeekBar @JvmOverloads constructor(
         thumb = null
         minimumHeight = context.dp(28)
         setPadding(context.dp(10), 0, context.dp(10), 0)
+    }
+
+    /**
+     * thumb = null 时，AOSP AbsSeekBar 不会在 progress 变化时 invalidate；
+     * 这里主动补上，否则自绘轨道会停在上一帧。
+     */
+    override fun setProgress(progress: Int) {
+        val old = this.progress
+        super.setProgress(progress)
+        if (this.progress != old) invalidate()
+    }
+
+    override fun setSecondaryProgress(secondaryProgress: Int) {
+        val old = this.secondaryProgress
+        super.setSecondaryProgress(secondaryProgress)
+        if (this.secondaryProgress != old) invalidate()
+    }
+
+    override fun onTouchEvent(event: MotionEvent): Boolean {
+        val handled = super.onTouchEvent(event)
+        if (handled) invalidate()
+        return handled
     }
 
     override fun onDraw(canvas: Canvas) {

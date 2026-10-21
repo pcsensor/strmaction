@@ -122,6 +122,8 @@ class PlayerActivity : AppCompatActivity() {
         PROGRESS,
     }
     private var activeGesture = GestureMode.NONE
+    private var gestureSuppressed = false
+    private var gesturePreviewActive = false
     private var gestureStartX = 0f
     private var gestureStartY = 0f
     private var gestureStartProgressMs = 0L
@@ -511,17 +513,7 @@ class PlayerActivity : AppCompatActivity() {
                 userSeeking = true
                 val duration = currentDuration()
                 if (duration > 0) {
-                    val target = duration * progress / SEEK_MAX
-                    val buffered = bufferedPositionMs()
-                    val stateRes = if (target <= buffered) {
-                        R.string.player_seek_buffered
-                    } else {
-                        R.string.player_seek_buffering
-                    }
-                    timeView.text = getString(
-                        stateRes,
-                        formatTime(target),
-                    )
+                    previewSeekPosition(duration * progress / SEEK_MAX)
                 }
             }
 
@@ -676,16 +668,26 @@ class PlayerActivity : AppCompatActivity() {
         container.addView(scroll)
     }
 
+    private fun resetGestureState() {
+        activeGesture = GestureMode.NONE
+        gestureSuppressed = false
+        gesturePreviewActive = false
+    }
+
     private fun setupPlayerGestures(view: View) {
         val gestureDetector = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
             override fun onDown(e: MotionEvent): Boolean {
                 gestureStartX = e.x
                 gestureStartY = e.y
-                activeGesture = GestureMode.NONE
+                resetGestureState()
                 gestureStartProgressMs = player?.currentPosition ?: 0L
                 gestureTargetProgressMs = gestureStartProgressMs
                 gestureStartBrightness = getCurrentBrightness()
                 gestureStartVolume = getAudioVolume()
+                if (controlsVisible) {
+                    // 手势期间不要被 4.5 秒自动隐藏打断
+                    main.removeCallbacks(hideControls)
+                }
                 return true
             }
 
@@ -715,6 +717,7 @@ class PlayerActivity : AppCompatActivity() {
 
             override fun onLongPress(e: MotionEvent) {
                 if (locked) return
+                if (gestureSuppressed) return
                 if (activeGesture != GestureMode.NONE) return
                 if (player?.isPlaying == true) {
                     view.performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
@@ -730,6 +733,7 @@ class PlayerActivity : AppCompatActivity() {
             ): Boolean {
                 if (locked) return false
                 if (speedBeforeLongPress != null) return false
+                if (gestureSuppressed) return true
                 val width = view.width.toFloat()
                 val height = view.height.toFloat()
                 if (width <= 0f || height <= 0f) return false
@@ -746,21 +750,41 @@ class PlayerActivity : AppCompatActivity() {
                     if (absDx < touchSlop && absDy < touchSlop) {
                         return false
                     }
-                    activeGesture = if (absDx > absDy) {
-                        GestureMode.PROGRESS
+                    if (absDx > absDy) {
+                        activeGesture = GestureMode.PROGRESS
+                        gesturePreviewActive = true
+                        main.removeCallbacks(hideControls)
+                    } else if (controlsVisible) {
+                        // 控件已呼出时，纵向滑动不再调节亮度/音量。
+                        gestureSuppressed = true
+                        return true
                     } else {
-                        if (startX < width * 0.5f) GestureMode.BRIGHTNESS else GestureMode.VOLUME
+                        activeGesture = if (startX < width * 0.5f) {
+                            GestureMode.BRIGHTNESS
+                        } else {
+                            GestureMode.VOLUME
+                        }
                     }
                 }
 
                 when (activeGesture) {
                     GestureMode.BRIGHTNESS -> {
+                        if (controlsVisible) {
+                            gestureSuppressed = true
+                            activeGesture = GestureMode.NONE
+                            return true
+                        }
                         val deltaPercent = -deltaY / (height * 0.85f)
                         val newBrightness = (gestureStartBrightness + deltaPercent).coerceIn(0.01f, 1.0f)
                         applyBrightness(newBrightness)
                         showGestureFeedback("☀️ 亮度 ${(newBrightness * 100).toInt()}%")
                     }
                     GestureMode.VOLUME -> {
+                        if (controlsVisible) {
+                            gestureSuppressed = true
+                            activeGesture = GestureMode.NONE
+                            return true
+                        }
                         val maxVol = getMaxAudioVolume()
                         val deltaSteps = (-deltaY / (height * 0.85f)) * maxVol
                         val newVol = (gestureStartVolume + deltaSteps).toInt().coerceIn(0, maxVol)
@@ -770,6 +794,7 @@ class PlayerActivity : AppCompatActivity() {
                         showGestureFeedback("$icon 音量 $percent%")
                     }
                     GestureMode.PROGRESS -> {
+                        gesturePreviewActive = true
                         val duration = currentDuration()
                         val scrubRangeMs = if (duration > 0) min(duration, 180_000L) else 180_000L
                         val deltaMs = (deltaX / width * scrubRangeMs).toLong()
@@ -781,12 +806,7 @@ class PlayerActivity : AppCompatActivity() {
                         val sign = if (diffSec >= 0) "+${diffSec}s" else "${diffSec}s"
                         val icon = if (diffSec >= 0) "⏩" else "⏪"
                         showGestureFeedback("$icon ${formatTime(gestureTargetProgressMs)} / ${formatTime(duration)} ($sign)")
-                        if (duration > 0) {
-                            val progress = (gestureTargetProgressMs.coerceAtLeast(0L) * SEEK_MAX / duration)
-                                .toInt()
-                                .coerceIn(0, SEEK_MAX)
-                            seekBar.progress = progress
-                        }
+                        previewSeekPosition(gestureTargetProgressMs)
                     }
                     GestureMode.NONE -> {}
                 }
@@ -800,13 +820,19 @@ class PlayerActivity : AppCompatActivity() {
                 if (speedBeforeLongPress != null) {
                     stopLongPressSpeed()
                 }
-                if (activeGesture == GestureMode.PROGRESS) {
+                val wasProgress = activeGesture == GestureMode.PROGRESS || gesturePreviewActive
+                if (wasProgress) {
                     player?.seekTo(gestureTargetProgressMs)
-                    updateProgressUi()
                 }
                 if (activeGesture != GestureMode.NONE) {
                     hideGestureFeedbackDelayed(600L)
-                    activeGesture = GestureMode.NONE
+                }
+                resetGestureState()
+                if (wasProgress) {
+                    updateProgressUi()
+                }
+                if (controlsVisible) {
+                    scheduleHide()
                 }
             }
             handled
@@ -1303,6 +1329,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun playItem(playInfo: PlayInfo, startMs: Long, attempt: Int = 0) {
+        resetGestureState()
         playbackAttempt = attempt
         info = playInfo
         currentItemId = playInfo.itemId
@@ -1604,6 +1631,22 @@ class PlayerActivity : AppCompatActivity() {
         return if (buffered == C.TIME_UNSET || buffered <= 0L) 0L else buffered
     }
 
+    /** 拖动进度条或横向手势时，只更新预览，不触发 seek。 */
+    private fun previewSeekPosition(positionMs: Long) {
+        val duration = currentDuration()
+        if (duration <= 0) return
+        val target = positionMs.coerceIn(0L, duration)
+        val progress = (target * SEEK_MAX / duration).toInt().coerceIn(0, SEEK_MAX)
+        seekBar.progress = progress
+        seekBar.invalidate()
+        val stateRes = if (target <= bufferedPositionMs()) {
+            R.string.player_seek_buffered
+        } else {
+            R.string.player_seek_buffering
+        }
+        timeView.text = getString(stateRes, formatTime(target))
+    }
+
     private fun updateProgressUi() {
         val exo = player ?: return
         val duration = currentDuration()
@@ -1616,7 +1659,7 @@ class PlayerActivity : AppCompatActivity() {
         } else {
             0
         }
-        if (!userSeeking) {
+        if (!userSeeking && !gesturePreviewActive) {
             if (duration > 0) {
                 val progress = (position * SEEK_MAX / duration)
                     .toInt()
@@ -1891,6 +1934,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        resetGestureState()
         if (!isInPictureInPictureMode) {
             player?.let { exo ->
                 wasPlaying = exo.isPlaying
