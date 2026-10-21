@@ -42,6 +42,14 @@ class DesktopBridge:
         self._app.stop_playback()
         return {"ok": True}
 
+    # -- connection ----------------------------------------------------
+    def retryConnection(self) -> dict:
+        self._app.retry_connection()
+        return {"ok": True}
+
+    def getConnectionError(self) -> dict:
+        return {"ok": True, "error": self._app.last_error}
+
     # -- settings ------------------------------------------------------
     def openSettings(self) -> dict:
         self._app.open_settings()
@@ -53,14 +61,15 @@ class DesktopBridge:
             "server_url": self._app.config.server_url,
             "mpv_path": self._app.config.mpv_path,
             "cache_limit_mb": self._app.config.cache_limit_mb,
+            "allow_self_signed_https": self._app.config.allow_self_signed_https,
             "detected_mpv": self._app.detected_mpv() or "",
             "version": __version__,
         }
 
     def save_settings(self, data: dict) -> dict:
         try:
-            self._app.save_settings(data or {})
-            return {"ok": True}
+            restart_required = self._app.save_settings(data or {})
+            return {"ok": True, "restart_required": restart_required}
         except Exception as exc:
             if self._logger:
                 self._logger.warning("保存设置失败：%s", type(exc).__name__)

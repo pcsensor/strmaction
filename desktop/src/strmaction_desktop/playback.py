@@ -18,6 +18,7 @@ class PlaybackSession:
         *,
         server_url: str,
         cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB,
+        allow_self_signed_https: bool = False,
         logger=None,
         on_auth_error=None,
     ):
@@ -33,12 +34,14 @@ class PlaybackSession:
             item_id=payload.item_id,
             play_token=payload.play_token,
             interval_ms=payload.progress_interval_ms,
+            verify_ssl=not allow_self_signed_https,
             logger=logger,
             on_auth_error=on_auth_error,
         )
         self.controller = MpvController(
             mpv_path,
             cache_limit_mb=cache_limit_mb,
+            tls_verify=not allow_self_signed_https,
             on_position=self._on_position,
             on_duration=self._on_duration,
             on_paused=self._on_paused,

@@ -4,8 +4,11 @@ import android.annotation.SuppressLint
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
+import android.net.http.SslError
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.view.Gravity
 import android.view.KeyEvent
 import android.view.MotionEvent
@@ -13,6 +16,7 @@ import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.webkit.CookieManager
+import android.webkit.SslErrorHandler
 import android.webkit.ValueCallback
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
@@ -23,6 +27,7 @@ import android.webkit.WebViewClient
 import android.widget.Button
 import android.widget.FrameLayout
 import android.widget.LinearLayout
+import android.widget.ProgressBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.activity.addCallback
@@ -31,6 +36,13 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
+import java.net.ConnectException
+import java.net.SocketTimeoutException
+import java.net.UnknownHostException
+import java.security.cert.CertPathValidatorException
+import java.util.concurrent.Executors
+import javax.net.ssl.SSLHandshakeException
+import javax.net.ssl.SSLPeerUnverifiedException
 
 /**
  * 手机优先的 WebView 壳（电视端同样可用）：
@@ -50,12 +62,28 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var errorView: LinearLayout
+    private lateinit var errorDetailView: TextView
+    private lateinit var loadingView: LinearLayout
     private lateinit var serverUrl: String
     private lateinit var allowedHost: String
     private lateinit var mpvPackage: String
     private var isTv = false
     private var pageFailed = false
+    private var pageLoaded = false
+    private var checkingConnection = false
+    private var healthCheckGeneration = 0
     private var fileChooserCallback: ValueCallback<Array<Uri>>? = null
+
+    private val main = Handler(Looper.getMainLooper())
+    private val healthExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "strmaction-health").apply { isDaemon = true }
+    }
+
+    private val pageTimeout = Runnable {
+        if (!pageLoaded && !pageFailed) {
+            showError(getString(R.string.web_timeout))
+        }
+    }
 
     private val playerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult(),
@@ -158,7 +186,11 @@ class MainActivity : AppCompatActivity() {
 
                 override fun onPageFinished(view: WebView, url: String) {
                     super.onPageFinished(view, url)
+                    if (checkingConnection) return
+                    pageLoaded = true
+                    main.removeCallbacks(pageTimeout)
                     if (!pageFailed) {
+                        loadingView.visibility = View.GONE
                         errorView.visibility = View.GONE
                     }
                     // 电视遥控器：页面加载完后必须把焦点还给 WebView，否则方向键无效
@@ -171,9 +203,46 @@ class MainActivity : AppCompatActivity() {
                     error: WebResourceError,
                 ) {
                     super.onReceivedError(view, request, error)
+                    if (checkingConnection) return
                     if (request.isForMainFrame) {
-                        pageFailed = true
-                        errorView.visibility = View.VISIBLE
+                        val detail = error.description?.toString()
+                            ?.takeIf { it.isNotBlank() }
+                            ?: getString(R.string.web_unreachable)
+                        showError(detail)
+                    }
+                }
+
+                override fun onReceivedHttpError(
+                    view: WebView,
+                    request: WebResourceRequest,
+                    errorResponse: android.webkit.WebResourceResponse,
+                ) {
+                    super.onReceivedHttpError(view, request, errorResponse)
+                    if (checkingConnection) return
+                    if (request.isForMainFrame) {
+                        showError(getString(R.string.web_http_error, errorResponse.statusCode))
+                    }
+                }
+
+                override fun onReceivedSslError(
+                    view: WebView,
+                    handler: SslErrorHandler,
+                    error: SslError,
+                ) {
+                    if (checkingConnection) {
+                        handler.cancel()
+                        return
+                    }
+                    if (TlsPolicy.isEnabled(this@MainActivity)) {
+                        handler.proceed()
+                        return
+                    }
+                    handler.cancel()
+                    val url: String? = error.url
+                    val host = url?.let { runCatching { Uri.parse(it).host }.getOrNull() }
+                    // 外部子资源的证书问题不把整页切成错误页，只拦掉该资源。
+                    if (host == null || host.equals(allowedHost, ignoreCase = true)) {
+                        showError(getString(R.string.web_ssl_error))
                     }
                 }
             }
@@ -213,13 +282,15 @@ class MainActivity : AppCompatActivity() {
 
         errorView = buildErrorView()
         root.addView(errorView)
+        loadingView = buildLoadingView()
+        root.addView(loadingView)
 
         setContentView(root)
         pageFailed = false
         if (BuildConfig.DEBUG) {
             WebView.setWebContentsDebuggingEnabled(true)
         }
-        webView.loadUrl(withTvFlag(serverUrl))
+        startConnectionCheck()
 
         onBackPressedDispatcher.addCallback(this) {
             if (webView.canGoBack()) {
@@ -257,9 +328,17 @@ class MainActivity : AppCompatActivity() {
                 setTextColor(Color.parseColor("#9AA3B2"))
                 textSize = 13f
                 gravity = Gravity.CENTER
-                setPadding(0, dp(10), 0, dp(22))
+                setPadding(0, dp(10), 0, dp(8))
             },
         )
+        errorDetailView = TextView(this).apply {
+            setTextColor(Color.parseColor("#FF8A8A"))
+            textSize = 12f
+            gravity = Gravity.CENTER
+            setPadding(0, 0, 0, dp(18))
+            visibility = View.GONE
+        }
+        container.addView(errorDetailView)
         val row = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER
@@ -267,11 +346,7 @@ class MainActivity : AppCompatActivity() {
         row.addView(
             Button(this).apply {
                 text = getString(R.string.web_retry)
-                setOnClickListener {
-                    pageFailed = false
-                    errorView.visibility = View.GONE
-                    webView.loadUrl(withTvFlag(serverUrl))
-                }
+                setOnClickListener { startConnectionCheck() }
             },
         )
         row.addView(
@@ -282,6 +357,116 @@ class MainActivity : AppCompatActivity() {
         )
         container.addView(row)
         return container
+    }
+
+    private fun buildLoadingView(): LinearLayout {
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(Color.parseColor("#07080A"))
+            setPadding(dp(28), dp(28), dp(28), dp(28))
+            visibility = View.VISIBLE
+            isClickable = true
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+        }
+        container.addView(
+            ProgressBar(this).apply {
+                isIndeterminate = true
+                indeterminateTintList = android.content.res.ColorStateList.valueOf(
+                    Color.parseColor("#E8B06A"),
+                )
+            },
+        )
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.web_connecting)
+                setTextColor(Color.parseColor("#9AA3B2"))
+                textSize = 13f
+                gravity = Gravity.CENTER
+                setPadding(0, dp(12), 0, 0)
+            },
+        )
+        return container
+    }
+
+    private fun startConnectionCheck() {
+        val generation = ++healthCheckGeneration
+        checkingConnection = true
+        pageLoaded = false
+        pageFailed = false
+        webView.stopLoading()
+        main.removeCallbacks(pageTimeout)
+        errorView.visibility = View.GONE
+        loadingView.visibility = View.VISIBLE
+        loadingView.bringToFront()
+
+        val appContext = applicationContext
+        healthExecutor.execute {
+            val result = runCatching {
+                val url = "${serverUrl.trimEnd('/')}/api/health"
+                val conn = TlsPolicy.openConnection(appContext, url).apply {
+                    requestMethod = "GET"
+                    connectTimeout = 5_000
+                    readTimeout = 5_000
+                    setRequestProperty("X-StrmAction-Companion", "1")
+                }
+                try {
+                    val code = conn.responseCode
+                    if (code !in 200..299) error("HTTP $code")
+                } finally {
+                    conn.disconnect()
+                }
+            }
+            main.post {
+                if (isFinishing || isDestroyed || generation != healthCheckGeneration) {
+                    return@post
+                }
+                result.onSuccess { loadWebPage() }
+                    .onFailure { showError(connectionErrorMessage(it)) }
+            }
+        }
+    }
+
+    private fun loadWebPage() {
+        checkingConnection = false
+        loadingView.visibility = View.GONE
+        errorView.visibility = View.GONE
+        pageLoaded = false
+        pageFailed = false
+        webView.loadUrl(withTvFlag(serverUrl))
+        main.removeCallbacks(pageTimeout)
+        main.postDelayed(pageTimeout, 10_000L)
+    }
+
+    private fun showError(message: String) {
+        checkingConnection = false
+        pageFailed = true
+        main.removeCallbacks(pageTimeout)
+        loadingView.visibility = View.GONE
+        errorDetailView.text = message
+        errorDetailView.visibility = View.VISIBLE
+        errorView.visibility = View.VISIBLE
+        errorView.bringToFront()
+    }
+
+    private fun connectionErrorMessage(error: Throwable): String {
+        var cause: Throwable? = error
+        while (cause != null) {
+            when (cause) {
+                is CertPathValidatorException, is SSLHandshakeException, is SSLPeerUnverifiedException ->
+                    return getString(R.string.web_ssl_error)
+                is SocketTimeoutException ->
+                    return getString(R.string.web_timeout)
+                is ConnectException, is UnknownHostException ->
+                    return getString(R.string.web_unreachable)
+            }
+            cause = cause.cause
+        }
+        return error.message?.takeIf { it.isNotBlank() }
+            ?: getString(R.string.web_error_desc)
     }
 
     private fun handleUrl(url: String): Boolean {
@@ -394,6 +579,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onDestroy() {
+        healthExecutor.shutdownNow()
+        main.removeCallbacks(pageTimeout)
         if (::webView.isInitialized) {
             webView.removeJavascriptInterface("StrmActionNative")
             webView.destroy()

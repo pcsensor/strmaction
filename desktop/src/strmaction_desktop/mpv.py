@@ -146,6 +146,11 @@ def cache_args(limit_mb: int) -> list[str]:
     ]
 
 
+def tls_args(verify: bool) -> list[str]:
+    """mpv's TLS verification switch for self-signed Alist/CDN endpoints."""
+    return [] if verify else ["--tls-verify=no"]
+
+
 class MpvController:
     """One mpv process controlled via JSON IPC."""
 
@@ -154,6 +159,7 @@ class MpvController:
         executable: str,
         *,
         cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB,
+        tls_verify: bool = True,
         on_position: Callable[[float], None] | None = None,
         on_duration: Callable[[float | None], None] | None = None,
         on_paused: Callable[[bool], None] | None = None,
@@ -164,6 +170,7 @@ class MpvController:
     ):
         self.executable = executable
         self.cache_limit_mb = cache_limit_mb
+        self.tls_verify = tls_verify
         self._on_position = on_position
         self._on_duration = on_duration
         self._on_paused = on_paused
@@ -214,6 +221,7 @@ class MpvController:
         ]
         if payload.resume_ms > 3000:
             args.append(f"--start={payload.resume_ms / 1000:.1f}")
+        args.extend(tls_args(self.tls_verify))
         args.extend(cache_args(self.cache_limit_mb))
         creationflags = 0x08000000 if os.name == "nt" else 0
         try:

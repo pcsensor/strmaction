@@ -3,8 +3,6 @@ package top.strmaction.companion
 import android.content.Context
 import android.webkit.CookieManager
 import org.json.JSONObject
-import java.net.HttpURLConnection
-import java.net.URL
 
 /** 原生层直接请求 /api/play/{id}，播放地址不经过 JS（§12.8）。 */
 object PlayApi {
@@ -26,7 +24,7 @@ object PlayApi {
     fun fetch(context: Context, itemId: Int, mode: String?): PlayInfo {
         val base = serverUrl(context)
         if (base.isBlank()) throw PlayApiException(0, "尚未配置服务器地址")
-        val conn = (URL("$base/api/play/$itemId").openConnection() as HttpURLConnection).apply {
+        val conn = TlsPolicy.openConnection(context, "$base/api/play/$itemId").apply {
             requestMethod = "POST"
             doOutput = true
             useCaches = false
