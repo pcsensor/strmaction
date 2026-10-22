@@ -53,13 +53,14 @@ import androidx.media3.common.C
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
-import androidx.media3.common.TrackSelectionOverride
 import androidx.media3.common.Tracks
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.TransferListener
+import androidx.media3.datasource.cache.CacheDataSink
+import androidx.media3.datasource.cache.CacheDataSource
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
@@ -87,6 +88,8 @@ class PlayerActivity : AppCompatActivity() {
         const val EXTRA_MODE = "mode"
         private const val TAG = "StrmActionPlayer"
         private const val SEEK_MAX = 1000
+        /** 落盘按 5MB 分片，减少小文件数量与写放大。 */
+        private const val CACHE_FRAGMENT_SIZE = 5L * 1024L * 1024L
     }
 
     private lateinit var root: FrameLayout
@@ -96,6 +99,7 @@ class PlayerActivity : AppCompatActivity() {
     private lateinit var bottomBar: LinearLayout
     private lateinit var titleView: TextView
     private lateinit var timeView: TextView
+    private lateinit var speedView: TextView
     private lateinit var seekBar: BufferedSeekBar
     private lateinit var backButton: ImageView
     private lateinit var pipButton: ImageView
@@ -178,9 +182,30 @@ class PlayerActivity : AppCompatActivity() {
     private var currentPlayUri: Uri? = null
     private var resolvedMediaUri: Uri? = null
 
+    /** 切集后要删除的上一集缓存 key；等新片源 READY 再删，避免打断旧数据源。 */
+    private var pendingCacheRemoval: String? = null
+
+    /** 后台磁盘预取：内存缓冲之外提前把后续内容拉到磁盘。 */
+    private val prefetcher = PlaybackPrefetcher { PlaybackDiskCache.current() }
+
+    /** 预取专用的数据源工厂（OkHttp + CacheDataSource，独立于播放器那条链）。 */
+    private var prefetchSourceFactory: DataSource.Factory? = null
+
+    /** 拖动/跳转后等待播放器追上目标：期间进度条钉在目标值，避免回弹闪动。 */
+    private var pendingSeekProgress = -1
+    private var pendingSeekAtMs = 0L
+
+    /**
+     * 当前视频已确认缓存过的区间（进度单位，升序不重叠）。
+     * 只做并集、从不删减，所以进度条上的缓存线只增不减，不会因为 seek 闪跳。
+     */
+    private var cachedRanges: List<IntRange> = emptyList()
+
     private val progressTicker = object : Runnable {
         override fun run() {
             updateProgressUi()
+            updatePrefetcherState()
+            updateSpeedUi()
             main.postDelayed(this, 500L)
         }
     }
@@ -227,6 +252,7 @@ class PlayerActivity : AppCompatActivity() {
                     loadingView.visibility = View.GONE
                     bufferingView.visibility = View.GONE
                     updateProgressUi()
+                    flushCacheRemoval()
                     if (player?.isPlaying == true) {
                         startHeartbeat()
                         scheduleHide()
@@ -305,6 +331,8 @@ class PlayerActivity : AppCompatActivity() {
         buildUi()
         setContentView(root)
         setControlsVisible(true)
+        prefetcher.start()
+        NetworkSpeedMeter.reset()
         main.post(progressTicker)
         load(itemId, intent.getStringExtra(EXTRA_MODE))
     }
@@ -484,10 +512,46 @@ class PlayerActivity : AppCompatActivity() {
         }
         root.addView(lockButton)
 
+        buildBottomBar()
+
+        loadingView = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            gravity = Gravity.CENTER
+            setBackgroundColor(0x66000000)
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+            )
+        }
+        loadingView.addView(
+            ProgressBar(this).apply {
+                indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
+            },
+        )
+        loadingText = TextView(this).apply {
+            text = getString(R.string.player_loading)
+            setTextColor(Color.parseColor("#C9CFDA"))
+            textSize = 14f
+            gravity = Gravity.CENTER
+            setPadding(0, dp(14), 0, 0)
+        }
+        loadingView.addView(loadingText)
+        loadingView.isClickable = true
+        root.addView(loadingView)
+
+        initDrawer()
+    }
+
+    /** 构建底部控制栏；横竖屏切换时整体重建，保证按钮不会被挤出屏幕。 */
+    private fun buildBottomBar() {
+        // 竖屏手机宽度不够，把操作按钮拆成两行，避免右侧按钮被裁到屏幕外。
+        val narrow = resources.configuration.screenWidthDp < 600
+
         // 底部控制栏
         bottomBar = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setPadding(dp(12), dp(8), dp(12), dp(12))
+            val hPad = if (narrow) dp(8) else dp(12)
+            setPadding(hPad, dp(8), hPad, if (narrow) dp(10) else dp(12))
             background = GradientDrawable(
                 GradientDrawable.Orientation.BOTTOM_TOP,
                 intArrayOf(0xE6000000.toInt(), 0xAA000000.toInt(), 0x00000000),
@@ -498,13 +562,13 @@ class PlayerActivity : AppCompatActivity() {
             ).apply { gravity = Gravity.BOTTOM }
         }
 
-        // 进度条：B 站风格三层轨道，触摸区域 28dp，视觉轨道 4dp。
+        // 进度条：8dp 轨道 + 中间细线表示已缓存；触摸区 32dp。
         seekBar = BufferedSeekBar(this).apply {
             max = SEEK_MAX
             progress = 0
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT,
-                dp(28),
+                dp(32),
             )
         }
         seekBar.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -525,6 +589,7 @@ class PlayerActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(bar: SeekBar?) {
                 val duration = currentDuration()
                 if (bar != null && duration > 0) {
+                    markPendingSeek(bar.progress)
                     player?.seekTo(duration * bar.progress / SEEK_MAX)
                 }
                 userSeeking = false
@@ -561,7 +626,7 @@ class PlayerActivity : AppCompatActivity() {
         timeView = TextView(this).apply {
             text = "00:00 / 00:00"
             setTextColor(Color.parseColor("#D6DCE6"))
-            textSize = 12f
+            textSize = if (narrow) 11.5f else 12f
             setPadding(dp(8), 0, dp(4), 0)
             layoutParams = LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -569,6 +634,22 @@ class PlayerActivity : AppCompatActivity() {
             )
         }
         actionRow.addView(timeView)
+
+        // 实时网速：只统计真正走网络的流量（命中磁盘缓存时归零）。
+        speedView = TextView(this).apply {
+            text = "0 KB/s"
+            setTextColor(Color.parseColor("#8C93A3"))
+            textSize = 11f
+            includeFontPadding = false
+            gravity = Gravity.START
+            minWidth = dp(if (narrow) 52 else 62)
+            setPadding(dp(8), 0, 0, 0)
+            layoutParams = LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+            )
+        }
+        actionRow.addView(speedView)
 
         // 弹性占位，将右侧功能区推至最右
         actionRow.addView(View(this), LinearLayout.LayoutParams(0, 1, 1f))
@@ -584,39 +665,33 @@ class PlayerActivity : AppCompatActivity() {
             toggleFullscreen()
         }
 
-        actionRow.addView(playlistButton)
-        actionRow.addView(speedButton)
-        actionRow.addView(fullscreenButton)
+        if (narrow) {
+            // 窄屏：第一行只放播放/选集/时间/网速/全屏，选集与倍速放到第二行，
+            // 否则一行排不下会把全屏按钮推到屏幕外。
+            actionRow.addView(fullscreenButton)
+            bottomBar.addView(actionRow)
 
-        bottomBar.addView(actionRow)
+            val optionRow = LinearLayout(this).apply {
+                orientation = LinearLayout.HORIZONTAL
+                gravity = Gravity.CENTER_VERTICAL
+                setPadding(dp(4), dp(2), dp(4), 0)
+                layoutParams = LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                )
+                addView(View(this@PlayerActivity), LinearLayout.LayoutParams(0, 1, 1f))
+                addView(playlistButton)
+                addView(speedButton)
+            }
+            bottomBar.addView(optionRow)
+        } else {
+            actionRow.addView(playlistButton)
+            actionRow.addView(speedButton)
+            actionRow.addView(fullscreenButton)
+            bottomBar.addView(actionRow)
+        }
+
         controls.addView(bottomBar)
-
-        loadingView = LinearLayout(this).apply {
-            orientation = LinearLayout.VERTICAL
-            gravity = Gravity.CENTER
-            setBackgroundColor(0x66000000)
-            layoutParams = FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT,
-                ViewGroup.LayoutParams.MATCH_PARENT,
-            )
-        }
-        loadingView.addView(
-            ProgressBar(this).apply {
-                indeterminateTintList = ColorStateList.valueOf(Color.parseColor("#E8B06A"))
-            },
-        )
-        loadingText = TextView(this).apply {
-            text = getString(R.string.player_loading)
-            setTextColor(Color.parseColor("#C9CFDA"))
-            textSize = 14f
-            gravity = Gravity.CENTER
-            setPadding(0, dp(14), 0, 0)
-        }
-        loadingView.addView(loadingText)
-        loadingView.isClickable = true
-        root.addView(loadingView)
-
-        initDrawer()
     }
 
     private fun initDrawer() {
@@ -822,6 +897,10 @@ class PlayerActivity : AppCompatActivity() {
                 }
                 val wasProgress = activeGesture == GestureMode.PROGRESS || gesturePreviewActive
                 if (wasProgress) {
+                    val duration = currentDuration()
+                    if (duration > 0) {
+                        markPendingSeek((gestureTargetProgressMs * SEEK_MAX / duration).toInt())
+                    }
                     player?.seekTo(gestureTargetProgressMs)
                 }
                 if (activeGesture != GestureMode.NONE) {
@@ -1054,29 +1133,6 @@ class PlayerActivity : AppCompatActivity() {
                 showSpeedMenu()
             })
 
-            val cacheMb = PlaybackCache.limitMb(
-                this,
-                info?.cacheLimitMb ?: PlaybackCache.DEFAULT_LIMIT_MB,
-            )
-            val externalMpv = info?.mode == "external_mpv"
-            val cacheDesc = if (externalMpv) {
-                getString(R.string.player_cache_external)
-            } else {
-                val ahead = bufferedAheadMs()
-                if (ahead >= 1_000L) {
-                    "${PlaybackCache.label(cacheMb)} · 缓冲 ${formatTime(ahead)}"
-                } else {
-                    PlaybackCache.label(cacheMb)
-                }
-            }
-            layout.addView(drawerActionRow("💾 " + getString(R.string.player_menu_cache), cacheDesc) {
-                if (externalMpv) {
-                    toast(getString(R.string.player_cache_external))
-                } else {
-                    showCacheMenu()
-                }
-            })
-
             if (info?.nextItemId != null) {
                 val suffix = info?.nextTitle?.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty()
                 layout.addView(drawerActionRow("⏭️ " + getString(R.string.player_menu_next), suffix.trimStart(' ', '·')) {
@@ -1094,61 +1150,32 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun showCacheMenu() {
-        val current = PlaybackCache.limitMb(
-            this,
-            info?.cacheLimitMb ?: PlaybackCache.DEFAULT_LIMIT_MB,
+    private fun updatePrefetcherState() {
+        val exo = player ?: return
+        val duration = exo.duration.takeIf { it != C.TIME_UNSET && it > 0 } ?: 0L
+        prefetcher.setWindowMb(
+            PlaybackCache.prefetchWindowMb(this, PlaybackDiskCache.limitMb()),
         )
-        openDrawer(
-            getString(R.string.player_cache_title),
-            getString(R.string.player_cache_hint),
-            onBack = { showMenu() },
-        ) { container ->
-            val layout = LinearLayout(this).apply {
-                orientation = LinearLayout.VERTICAL
-                layoutParams = FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                )
-            }
-            layout.addView(TextView(this).apply {
-                text = getString(R.string.player_cache_current, PlaybackCache.label(current))
-                setTextColor(Color.parseColor("#9AA2B1"))
-                textSize = 12f
-                setPadding(dp(4), 0, dp(4), dp(12))
-            })
-            PlaybackCache.PRESETS.forEach { limit ->
-                layout.addView(
-                    drawerItem(
-                        PlaybackCache.label(limit),
-                        limit == current,
-                    ) {
-                        selectCacheLimit(limit)
-                    },
-                )
-            }
-            layout.addView(TextView(this).apply {
-                text = getString(R.string.player_cache_custom_hint)
-                setTextColor(Color.parseColor("#6B7280"))
-                textSize = 11f
-                setPadding(dp(4), dp(10), dp(4), 0)
-            })
-            addScrollableDrawerContent(container, layout)
-        }
+        prefetcher.onTick(
+            positionMs = exo.currentPosition.coerceAtLeast(0L),
+            bufferedMs = exo.bufferedPosition.coerceAtLeast(0L),
+            durationMs = duration,
+            buffering = exo.playbackState == Player.STATE_BUFFERING && exo.playWhenReady,
+        )
     }
 
-    private fun selectCacheLimit(limitMb: Int) {
-        val normalized = PlaybackCache.normalize(limitMb)
-        PlaybackCache.save(this, normalized)
-        // 强制下一集重建播放器，让新的 DefaultLoadControl 生效。
-        playerHeadersKey = null
-        closeDrawer()
-        toast(getString(R.string.player_cache_applied, PlaybackCache.label(normalized)))
+    /** 实时网速：只统计真正走网络的字节，命中磁盘时自然归零。 */
+    private fun updateSpeedUi() {
+        if (!this::speedView.isInitialized) return
+        val bps = NetworkSpeedMeter.sample()
+        speedView.text = NetworkSpeedMeter.format(bps)
     }
 
-    private fun bufferedAheadMs(): Long {
-        val position = player?.currentPosition ?: 0L
-        return (bufferedPositionMs() - position).coerceAtLeast(0L)
+    /** 新片源 READY 后清理上一集的磁盘缓存。 */
+    private fun flushCacheRemoval() {
+        val key = pendingCacheRemoval ?: return
+        pendingCacheRemoval = null
+        PlaybackDiskCache.removeItem(key)
     }
 
     private fun textTracks(): List<Pair<Tracks.Group, Int>> =
@@ -1291,14 +1318,11 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
-    private fun drawerItem(
-        label: String,
-        selected: Boolean,
+    private fun drawerActionRow(
+        title: String,
+        subtitle: String?,
         action: () -> Unit,
-    ): View = drawer.createItem(label, selected, action)
-
-    private fun drawerActionRow(title: String, subtitle: String?, action: () -> Unit): View =
-        drawer.createActionRow(title, subtitle, action)
+    ): View = drawer.createActionRow(title, subtitle, action)
 
     // ------------------------------------------------------------------
     // 加载与播放
@@ -1330,8 +1354,12 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun playItem(playInfo: PlayInfo, startMs: Long, attempt: Int = 0) {
         resetGestureState()
+        pendingSeekProgress = -1
         playbackAttempt = attempt
         info = playInfo
+        // 切集时只缓存当前视频：换集后删掉上一集的数据（异步，不阻塞起播）。
+        val previousItemId = currentItemId
+        val previousUri = currentPlayUri?.toString()
         currentItemId = playInfo.itemId
         advancing = false
         titleView.text = playInfo.title
@@ -1340,8 +1368,15 @@ class PlayerActivity : AppCompatActivity() {
         if (attempt == 0) {
             resolvedMediaUri = null
         }
+        // 换集就清空缓存线，重新按新片源的缓存数据累积。
+        if (playInfo.itemId != previousItemId && this::seekBar.isInitialized) {
+            cachedRanges = emptyList()
+            seekBar.setBufferedRanges(emptyList())
+        }
 
         val exo = ensurePlayer(playInfo, attempt)
+        // 复用播放器时 ensurePlayer 不会重建数据源，这里把预取切到当前集。
+        prefetcher.setSource(prefetchSourceFactory, currentPlayUri)
         val subtitles = playInfo.subtitles.mapIndexed { index, subtitle ->
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(subtitle.url))
                 .setMimeType(subtitle.mime)
@@ -1360,6 +1395,10 @@ class PlayerActivity : AppCompatActivity() {
         exo.prepare()
         exo.playWhenReady = true
         exo.play()
+        // 新片源已经接管，旧集的数据可以安全删除（等新片源 READY 后真正删除）。
+        if (playInfo.itemId != previousItemId) {
+            pendingCacheRemoval = previousUri
+        }
         updateProgressUi()
         updateEpisodeButtons()
         setControlsVisible(true)
@@ -1411,6 +1450,16 @@ class PlayerActivity : AppCompatActivity() {
                             "range=${response.header("Content-Range")} " +
                             "loc=${response.header("Location")?.let { runCatching { Uri.parse(it).host }.getOrNull() }}",
                     )
+                    // 记录整片字节数：预取用它把“播放位置 + MB 上限”换算成字节区间。
+                    val totalBytes = response.header("Content-Range")
+                        ?.substringAfterLast('/')
+                        ?.toLongOrNull()
+                        ?: response.header("Content-Length")
+                            ?.toLongOrNull()
+                            ?.takeIf { response.code == 200 }
+                    if (totalBytes != null && totalBytes > 0) {
+                        prefetcher.setContentLength(totalBytes)
+                    }
                     response
                 } catch (error: Exception) {
                     Log.e(TAG, "http failed ${request.url.host}", error)
@@ -1426,6 +1475,8 @@ class PlayerActivity : AppCompatActivity() {
         }
         val httpFactory = OkHttpDataSource.Factory(clientBuilder.build())
             .setDefaultRequestProperties(headers)
+            // 统计实时网速：挂在缓存层之下，只计真正走网络的字节。
+            .setTransferListener(NetworkSpeedMeter)
         val ua = headers.entries.firstOrNull { it.key.equals("User-Agent", ignoreCase = true) }?.value
         if (!ua.isNullOrBlank()) {
             httpFactory.setUserAgent(ua)
@@ -1439,25 +1490,67 @@ class PlayerActivity : AppCompatActivity() {
                 resolvedMediaUri = uri
             },
         )
-        val defaultDataSourceFactory = DefaultDataSource.Factory(this, resolvingFactory)
+        // 磁盘缓存：拉取过的字节落盘，seek 回已拉取区间直接读盘、不再发请求。
+        // 缓存层放在 302 解析之下，Cache key 始终是稳定的播放地址。
+        val diskCache = PlaybackDiskCache.open(this)
+        val mediaDataSourceFactory: DataSource.Factory = if (diskCache != null) {
+            val cacheFactory = CacheDataSource.Factory()
+                .setCache(diskCache)
+                .setUpstreamDataSourceFactory(resolvingFactory)
+                .setCacheWriteDataSinkFactory(
+                    CacheDataSink.Factory()
+                        .setCache(diskCache)
+                        .setFragmentSize(CACHE_FRAGMENT_SIZE),
+                )
+                // 先查盘再决定是否走网络；写盘失败自动降级为纯网络播放。
+                .setFlags(
+                    CacheDataSource.FLAG_BLOCK_ON_CACHE or
+                        CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR,
+                )
+            DefaultDataSource.Factory(this, cacheFactory)
+        } else {
+            DefaultDataSource.Factory(this, resolvingFactory)
+        }
+        // 预取走独立数据源：和播放器共用同一个缓存目录与请求头，但互不占用对方状态。
+        prefetchSourceFactory = if (diskCache != null) {
+            CacheDataSource.Factory()
+                .setCache(diskCache)
+                // 复用 302 解析层：预取直接打直链，不再多一次跳转，请求头与播放器一致。
+                .setUpstreamDataSourceFactory(resolvingFactory)
+                .setCacheWriteDataSinkFactory(
+                    CacheDataSink.Factory()
+                        .setCache(diskCache)
+                        .setFragmentSize(CACHE_FRAGMENT_SIZE),
+                )
+                // 预取失败（磁盘满 / 片源拒绝 Range）直接放弃，不影响播放。
+                .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE)
+        } else {
+            null
+        }
+        // 内存缓冲固定 64MB：时间阈值统一成兜底值，唯一的刹车是字节上限；
+        // min 与 max 相同 → 播放消耗多少就立刻续拉多少。
+        val memoryLimitMb = PlaybackCache.memoryLimitMb()
+        Log.d(
+            TAG,
+            "memory buffer ${memoryLimitMb}MB, disk cache " +
+                (if (diskCache != null) "${PlaybackDiskCache.limitMb()}MB" else "off"),
+        )
         val loadControl = DefaultLoadControl.Builder()
-            .setTargetBufferBytes(
-                PlaybackCache.targetBufferBytes(this, playInfo.cacheLimitMb),
-            )
+            .setTargetBufferBytes(PlaybackCache.targetBufferBytes())
             .setBufferDurationsMs(
-                5_000,
-                PlaybackCache.maxBufferMs(),
-                2_500,
-                5_000,
+                PlaybackCache.bufferTimeCapMs(),
+                PlaybackCache.bufferTimeCapMs(),
+                PlaybackCache.bufferForPlaybackMs(),
+                PlaybackCache.bufferForPlaybackAfterRebufferMs(),
             )
-            // 保留最近 60 秒已播内容，当前集内往回拖可命中内存。
-            .setBackBuffer(PlaybackCache.backBufferMs(), true)
-            // 让字节上限优先于时间阈值，否则小缓存会被时间窗口突破。
+            // 回看缓存占用同一份字节预算，高码率下会挤占前向缓冲，这里关闭。
+            .setBackBuffer(PlaybackCache.backBufferMs(), false)
+            // 字节上限优先，时间阈值只做兜底。
             .setPrioritizeTimeOverSizeThresholds(false)
             .build()
         val exo = ExoPlayer.Builder(this)
             .setLoadControl(loadControl)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(defaultDataSourceFactory))
+            .setMediaSourceFactory(DefaultMediaSourceFactory(mediaDataSourceFactory))
             .setRenderersFactory(
                 DefaultRenderersFactory(this).setEnableDecoderFallback(true),
             )
@@ -1467,6 +1560,10 @@ class PlayerActivity : AppCompatActivity() {
         player = exo
         playerHeadersKey = headersKey
         playerView.player = exo
+        prefetcher.setSource(prefetchSourceFactory, currentPlayUri)
+        prefetcher.setWindowMb(
+            PlaybackCache.prefetchWindowMb(this, PlaybackDiskCache.limitMb()),
+        )
         return exo
     }
 
@@ -1639,6 +1736,61 @@ class PlayerActivity : AppCompatActivity() {
         return if (buffered == C.TIME_UNSET || buffered <= 0L) 0L else buffered
     }
 
+    private fun progressOf(positionMs: Long, durationMs: Long): Int =
+        (positionMs * SEEK_MAX / durationMs).toInt().coerceIn(0, SEEK_MAX)
+
+    /**
+     * 维护进度条上的缓存线：内存已缓冲区间 + 磁盘里真实存在的缓存分段，取并集后**只增不减**。
+     * 因为不做减法，往回拖时也不会出现「先塌掉再涨回来」的闪跳。
+     */
+    private fun updateCachedRanges(duration: Long) {
+        if (duration <= 0 || !this::seekBar.isInitialized) return
+        val additions = ArrayList<IntRange>(4)
+        val position = player?.currentPosition ?: 0L
+        val buffered = bufferedPositionMs()
+        if (buffered > position) {
+            additions += progressOf(position, duration)..progressOf(buffered, duration)
+        }
+        for (span in prefetcher.cachedSpansMs()) {
+            if (span.last > span.first) {
+                additions += progressOf(span.first, duration)..progressOf(span.last, duration)
+            }
+        }
+        if (additions.isEmpty()) return
+        val merged = mergeRanges(cachedRanges + additions)
+        if (merged != cachedRanges) {
+            cachedRanges = merged
+            seekBar.setBufferedRanges(merged)
+        }
+    }
+
+    /** 合并重叠/相邻区间，保证结果升序且互不重叠。 */
+    private fun mergeRanges(input: List<IntRange>): List<IntRange> {
+        if (input.isEmpty()) return emptyList()
+        val sorted = input.sortedBy { it.first }
+        val out = ArrayList<IntRange>(sorted.size)
+        var start = sorted[0].first
+        var end = sorted[0].last
+        for (index in 1 until sorted.size) {
+            val range = sorted[index]
+            if (range.first <= end + 1) {
+                if (range.last > end) end = range.last
+            } else {
+                if (end > start) out += start..end
+                start = range.first
+                end = range.last
+            }
+        }
+        if (end > start) out += start..end
+        return out
+    }
+
+    /** 记录本次跳转目标：进度条钉在目标值，直到播放器追上或 1.5 秒超时。 */
+    private fun markPendingSeek(progress: Int) {
+        pendingSeekProgress = progress.coerceIn(0, SEEK_MAX)
+        pendingSeekAtMs = SystemClock.uptimeMillis()
+    }
+
     /** 拖动进度条或横向手势时，只更新预览，不触发 seek。 */
     private fun previewSeekPosition(positionMs: Long) {
         val duration = currentDuration()
@@ -1659,27 +1811,25 @@ class PlayerActivity : AppCompatActivity() {
         val exo = player ?: return
         val duration = currentDuration()
         val position = exo.currentPosition.coerceAtLeast(0L)
-        val buffered = bufferedPositionMs()
-        val bufferedProgress = if (duration > 0) {
-            (buffered.coerceAtMost(duration) * SEEK_MAX / duration)
-                .toInt()
-                .coerceIn(0, SEEK_MAX)
-        } else {
-            0
-        }
+        // 缓存线独立于拖动状态：拖动时也照常按磁盘实际数据增长。
+        updateCachedRanges(duration)
         if (!userSeeking && !gesturePreviewActive) {
             if (duration > 0) {
-                val progress = (position * SEEK_MAX / duration)
+                val actual = (position * SEEK_MAX / duration)
                     .toInt()
                     .coerceIn(0, SEEK_MAX)
-                seekBar.progress = progress
-                if (seekBar.secondaryProgress != bufferedProgress) {
-                    seekBar.secondaryProgress = bufferedProgress
+                // seek 之后播放器要一两帧才追上目标，这期间钉住目标值，
+                // 否则进度条会先回弹到旧位置再弹回去（视觉上的“闪一下”）。
+                val now = SystemClock.uptimeMillis()
+                if (pendingSeekProgress >= 0) {
+                    val reached = abs(actual - pendingSeekProgress) <= 2
+                    if (reached || now - pendingSeekAtMs > 1_500L) {
+                        pendingSeekProgress = -1
+                    }
                 }
-            } else if (seekBar.secondaryProgress != 0) {
-                seekBar.secondaryProgress = 0
+                seekBar.progress = if (pendingSeekProgress >= 0) pendingSeekProgress else actual
+                timeView.text = "${formatTime(position)} / ${formatTime(duration)}"
             }
-            timeView.text = "${formatTime(position)} / ${formatTime(duration)}"
         }
         val isPlaying = exo.isPlaying
         val isBuffering = exo.playbackState == Player.STATE_BUFFERING && exo.playWhenReady
@@ -1962,12 +2112,29 @@ class PlayerActivity : AppCompatActivity() {
         }
     }
 
+    /** 自己处理横竖屏（清单里声明了 configChanges），所以这里重建底部栏。 */
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        if (!this::controls.isInitialized || !this::bottomBar.isInitialized) return
+        val previousProgress = seekBar.progress
+        controls.removeView(bottomBar)
+        buildBottomBar()
+        seekBar.progress = previousProgress
+        seekBar.setBufferedRanges(cachedRanges)
+        updateEpisodeButtons()
+        updateProgressUi()
+    }
+
     override fun onDestroy() {
         stopHeartbeat()
         main.removeCallbacksAndMessages(null)
+        prefetcher.stop()
+        NetworkSpeedMeter.reset()
         runCatching { player?.release() }
         player = null
         playerView.player = null
+        // 退出播放即清空本次会话的磁盘缓存（删除放在后台线程）。
+        PlaybackDiskCache.close(clear = true)
         executor.shutdownNow()
         super.onDestroy()
     }

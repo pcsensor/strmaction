@@ -88,8 +88,10 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 - **中心大按钮**：屏幕正中央悬浮播放/暂停半透明按钮，状态清晰直观；
 - **底部控制栏**：
   - 上方全宽精致进度条，支持实时拖拽预览时间；
-  - 下方左侧排列「播放/暂停」、「上一集」、「下一集」与当前/总时长；
+  - 下方左侧排列「播放/暂停」、「上一集」、「下一集」、当前/总时长与实时网速；
   - 下方右侧排列「选集」、「倍速」及「全屏」切换；
+  - **窄屏自动换行**：`screenWidthDp < 600`（竖屏手机）时，「选集 / 倍速」下移到第二行
+    右对齐，避免把「全屏」按钮挤出屏幕；横屏与电视仍是单行；
 - **40% 侧滑抽屉（全面替代原生丑陋弹窗）**：
   - **选集**：点击后从右侧平滑滑出抽屉面板，占据屏幕 40% 宽度，点击左侧 60% 遮罩区域即可即刻收回；卡片式分集列表，当前播放集高亮金黄色标签并带 `▶` 标志，已看集打勾 `✓`；
   - **倍速面板**：从右侧平滑滑出，单列展示 `0.5x`~`3.0x` 倍速，直接集成长按倍速配置；
@@ -121,18 +123,43 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 
 ## 播放缓存与缓冲进度
 
-- **缓存上限**：设置页「播放缓存上限（MB）」可填 0 或 16–2048，留空跟随服务端
-  `player.cache_limit_mb`（默认 128）；播放器「更多」菜单提供 最小 / 64 / 128 / 256 / 512
-  快捷档。修改后下一集生效。
-- **执行方式**：`DefaultLoadControl.setTargetBufferBytes()` 限制字节，时间窗口固定 60 秒，
-  避免长剧集的缓冲段被压成几个像素；并按进程堆内存的 1/4 做上限钳制。0 在 Media3 中
-  无法真正关闭缓冲，实际按 16MB 执行。
-- **缓冲进度**：自绘 B 站风格三层进度条（未缓冲/已缓冲/已播放），轨道 4dp、触摸区
-  28dp；拖动时提示「已缓冲 / 缓冲中」，播放器菜单显示当前上限与缓冲时长。
-- **当前集回看**：`DefaultLoadControl.setBackBuffer(60_000, true)` 保留最近 60 秒已播
-  数据，当前集内往回拖可命中内存；退出播放页后释放，不跨集、不跨进程。
-- **边界**：只控制内置 Media3；通过 Intent 拉起的「外部 mpv」无法传参，仍由
-  `mpv.conf` 决定缓存。
+三个概念分开，设置页里对应两个可填项：
+
+| 概念 | 值 | 说明 |
+|---|---|---|
+| 内存缓冲 | 固定 64MB | 播放器解码抖动缓冲，不可调；堆过小时按一半收敛 |
+| 缓冲大小 | 默认 512MB，0 关闭 | 实时预拉取窗口，决定「往后提前拉多少」 |
+| 磁盘缓存上限 | 默认 2048MB，0 关闭 | 落盘容量，超出按 LRU 淘汰 |
+
+预拉取的实际窗口 = `min(缓冲大小, 磁盘上限)`（落不了盘就白拉）；磁盘为 0 时预取也关闭。
+
+- **内存缓冲（固定 64MB）**：`DefaultLoadControl.setTargetBufferBytes(64MB)`。
+  `minBufferMs` 与 `maxBufferMs` 统一给到 6 小时兜底值，拉满后消耗多少补多少，
+  不再出现「跌到 5 秒再一次性拉满 60 秒」的锯齿。
+- **预拉取**：`PlaybackPrefetcher` 后台单线程从播放器已缓冲的末端继续往前拉，直到
+  「当前播放位置 + 窗口 MB」，播放与暂停都跑；播放器正在缓冲时让路，先保证不断流。
+- **磁盘缓存**：
+  - 数据源链 `DefaultDataSource → CacheDataSource → RedirectResolvingDataSource → OkHttp`，
+    `CacheDataSink` 把拉取过的字节按 5MB 分片落盘，seek 回已拉取区间直接读盘；
+  - `FLAG_BLOCK_ON_CACHE | FLAG_IGNORE_CACHE_ON_ERROR`：先查盘再决定是否走网络，
+    写盘失败（磁盘满/IO 错）自动降级为纯网络播放；
+  - 目录 `<externalCacheDir>/playback/s-<ts>/`，每次进入播放新建会话；
+  - 退出播放：release 后在后台线程用 `SimpleCache.delete()` 删掉会话目录与 SQLite 索引；
+  - 切集：`Cache.removeResource(上一集播放地址)`，只保留当前集；
+  - 上限还会按「可用空间 − 1GB」收敛，收敛后不足 256MB 时直接关闭缓存。
+- **进度条（缓存线置顶）**：8dp 全高圆角轨道（触摸区 32dp）。已播放段整段填金橙、全高
+  保留；**已缓存画成 2.5dp 白色细线，压在最上层并穿过已播放区域**，按真实缓存区间分段
+  （缓存有洞就断开）；播放头是 3.5×16dp 白色竖线，压在最上层、上下各露出轨道 4dp。
+- **缓存线只增不减**：`PlayerActivity` 每 500ms 取「内存已缓冲区间 + `SimpleCache` 里真实
+  存在的 span」的并集，合并后与历史累积再做并集，从不删减；换集才清空。所以往回拖时
+  不会出现先塌掉再涨回来的闪跳，线条永远只往右长。另外进度条在 seek 后会把播放位置钉在
+  目标值（追上或 1.5 秒超时），避免拇指回弹。
+- **网速**：控制栏时间右侧显示实时网速。`NetworkSpeedMeter` 挂在 OkHttp 工厂上
+  （缓存层之下），只统计真正走网络的字节，命中磁盘时自然归零；500ms 采样一次并做
+  非对称平滑（上升快、下降慢）。
+- **边界**：预取需要 `Content-Length`（渐进式 MP4）；HLS 分段拿不到整片长度时自动跳过
+  预取，播放器仍按内存缓冲正常播放。只控制内置 Media3；通过 Intent 拉起的「外部 mpv」
+  无法传参，仍由 `mpv.conf` 决定缓存；服务端 `player.cache_limit_mb` 现在只影响 mpv。
 
 ## 外部 mpv 兜底（E.6 的 6 个坑）
 
@@ -170,16 +197,19 @@ app/src/main/java/top/strmaction/companion/
 ├─ PlayerActivity.kt    # Media3 播放器主界面、手势、全屏与生命周期
 ├─ player/              # 播放器解耦模块
 │  ├─ PlayerDrawer.kt   # 40% 抽屉交互与集数渲染（选集/倍速/更多）
-│  ├─ BufferedSeekBar.kt # B 站风格三层缓冲进度条
+│  ├─ BufferedSeekBar.kt # 进度条（全高金橙 + 置顶缓存细线 + 竖线播放头）
 │  ├─ PlayerTrackHelper.kt # 音轨与字幕轨道管理
 │  ├─ PlayerSpeedHelper.kt # 倍速切换与长按极速播放管理
 │  └─ PlayerUiHelper.kt # UI 样式与时间格式化
 ├─ ProgressReporter.kt  # play_token 进度上报 + 失败队列
 ├─ PlayApi.kt           # POST /api/play/{id} 解析
 ├─ PlayInfo.kt          # 播放参数 + Device 检测
-├─ PlaybackCache.kt     # 播放缓存上限 / 缓冲进度辅助
+├─ PlaybackCache.kt     # 内存缓冲固定值 / 缓冲大小 / 磁盘上限设置
+├─ PlaybackDiskCache.kt # 会话级磁盘缓存（SimpleCache / 退出清理）
+├─ PlaybackPrefetcher.kt # 后台磁盘预取（按缓冲大小提前拉取后续内容）
+├─ NetworkSpeedMeter.kt # 实时网速统计（TransferListener + 平滑采样）
 ├─ MpvFallback.kt       # 外部 mpv intent
-└─ SetupActivity.kt     # 服务器地址 / mpv 包名 / 缓存上限
+└─ SetupActivity.kt     # 服务器地址 / mpv 包名 / 缓冲大小 / 磁盘缓存上限
 ```
 
 ## 已知限制
