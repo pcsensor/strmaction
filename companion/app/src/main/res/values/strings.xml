@@ -13,10 +13,14 @@
     <string name="setup_invalid">请输入以 http:// 或 https:// 开头的地址</string>
     <string name="setup_mpv_label">mpv 包名（外部播放器兜底，默认 is.xyz.mpv）</string>
     <string name="setup_mpv_default">is.xyz.mpv</string>
-    <string name="setup_cache_label">播放缓存上限（MB）</string>
-    <string name="setup_cache_default_hint">留空跟随服务器默认</string>
-    <string name="setup_cache_hint">常用 64 / 128 / 256 / 512；0 表示最小预读。留空则跟随服务器默认（通常 128MB）。仅对内置播放器生效，外部 mpv 不受控制。</string>
-    <string name="setup_cache_invalid">缓存上限需为 0 或 16–2048 的整数（MB）</string>
+    <string name="setup_buffer_label">缓冲大小（MB）</string>
+    <string name="setup_buffer_default_hint">留空默认 512，0 表示不预拉取</string>
+    <string name="setup_buffer_hint">实时预拉取窗口：播放（含暂停）时提前把后续内容拉下来，前拖/回拖到已拉过的区间不再重新下载。0 表示关闭预拉取；留空用默认 512MB，范围 64–8192。实际窗口不会超过磁盘缓存上限。仅对内置播放器生效，外部 mpv 不受控制。</string>
+    <string name="setup_buffer_invalid">缓冲大小需为 0 或 64–8192 的整数（MB）</string>
+    <string name="setup_disk_cache_label">磁盘缓存上限（MB）</string>
+    <string name="setup_disk_cache_default_hint">留空默认 2048，0 表示不落盘</string>
+    <string name="setup_disk_cache_hint">已拉取数据落盘的总容量上限：超出后按最久未用淘汰。0 表示关闭磁盘缓存（此时也不会预拉取）；留空用默认 2048MB，范围 256–16384。只保留当前视频，退出播放自动清空，实际值还会按可用空间收敛。</string>
+    <string name="setup_disk_cache_invalid">磁盘缓存上限需为 0 或 256–16384 的整数（MB）</string>
     <string name="setup_allow_self_signed">允许所有自签名 HTTPS 证书</string>
     <string name="setup_allow_self_signed_hint">开启后对 StrmAction、Alist、片源 CDN 等所有 HTTPS 连接跳过证书链和 hostname 校验。存在中间人风险，只在你信任当前网络时开启。</string>
     <string name="setup_cert_fail">证书不受信任。若这是你自己的服务器，请勾选“允许所有自签名 HTTPS 证书”后重试。</string>
@@ -50,7 +54,6 @@
     <string name="player_menu_subtitle">字幕</string>
     <string name="player_menu_audio">音轨</string>
     <string name="player_menu_speed">播放速度</string>
-    <string name="player_menu_cache">播放缓存</string>
     <string name="player_menu_next">下一集</string>
     <string name="player_menu_mpv">用 mpv 打开</string>
     <string name="player_subtitle_off">关闭字幕</string>
@@ -94,12 +97,6 @@
     <string name="player_no_prev">没有上一集了</string>
     <string name="player_compat_retry">直连较慢，正在尝试兼容模式…</string>
     <string name="player_network_timeout">连接网盘超时，当前网络可能无法直接播放该片源。</string>
-    <string name="player_cache_title">播放缓存</string>
-    <string name="player_cache_hint">只限制内置播放器的预读缓存；修改后下一集生效</string>
-    <string name="player_cache_applied">缓存上限：%1$s，下一集生效</string>
-    <string name="player_cache_external">外部 mpv 不受此设置控制</string>
-    <string name="player_cache_custom_hint">自定义数值请在 App 设置页修改</string>
-    <string name="player_cache_current">当前：%1$s</string>
     <string name="player_seek_buffered">%1$s · 已缓冲</string>
     <string name="player_seek_buffering">%1$s · 缓冲中</string>
 

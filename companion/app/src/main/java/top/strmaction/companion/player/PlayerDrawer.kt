@@ -241,7 +241,16 @@ class PlayerDrawer(
             setOnClickListener { action() }
         }
 
-    fun createActionRow(title: String, subtitle: String?, action: () -> Unit): View =
+    /**
+     * @param onSubtitleView 需要原地刷新副标题时，把对应的 TextView 抛给调用方，
+     * 避免为了更新一个数字重建整个抽屉（会打断滚动和点击）。
+     */
+    fun createActionRow(
+        title: String,
+        subtitle: String?,
+        action: () -> Unit,
+        onSubtitleView: ((TextView) -> Unit)? = null,
+    ): View =
         LinearLayout(activity).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
@@ -262,17 +271,21 @@ class PlayerDrawer(
                 layoutParams = LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f)
             })
             if (subtitle != null) {
-                addView(TextView(activity).apply {
+                val subtitleView = TextView(activity).apply {
                     text = subtitle
                     setTextColor(Color.parseColor("#9AA2B1"))
                     textSize = 12f
+                    maxLines = 1
+                    ellipsize = android.text.TextUtils.TruncateAt.END
                     layoutParams = LinearLayout.LayoutParams(
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT,
                     ).apply {
                         rightMargin = activity.dp(6)
                     }
-                })
+                }
+                addView(subtitleView)
+                onSubtitleView?.invoke(subtitleView)
             }
             addView(TextView(activity).apply {
                 text = "›"

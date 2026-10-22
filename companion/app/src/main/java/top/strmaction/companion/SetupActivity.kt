@@ -29,7 +29,8 @@ class SetupActivity : AppCompatActivity() {
 
     private lateinit var urlInput: EditText
     private lateinit var packageInput: EditText
-    private lateinit var cacheInput: EditText
+    private lateinit var bufferInput: EditText
+    private lateinit var diskCacheInput: EditText
     private lateinit var allowSelfSignedInput: CheckBox
     private lateinit var statusView: TextView
     private lateinit var testButton: Button
@@ -111,18 +112,18 @@ class SetupActivity : AppCompatActivity() {
 
         container.addView(
             TextView(this).apply {
-                text = getString(R.string.setup_cache_label)
+                text = getString(R.string.setup_buffer_label)
                 textSize = 12f
                 setTextColor(Color.parseColor("#8A93A5"))
                 setPadding(0, dp(18), 0, 0)
             },
         )
-        cacheInput = EditText(this).apply {
-            val saved = PlaybackCache.savedLimitMb(this@SetupActivity)
+        bufferInput = EditText(this).apply {
+            val saved = PlaybackCache.savedBufferLimitMb(this@SetupActivity)
             if (saved != null) {
                 setText(saved.toString())
             }
-            hint = getString(R.string.setup_cache_default_hint)
+            hint = getString(R.string.setup_buffer_default_hint)
             setTextColor(Color.WHITE)
             setHintTextColor(Color.parseColor("#5C6678"))
             setSingleLine(true)
@@ -130,10 +131,42 @@ class SetupActivity : AppCompatActivity() {
             setPadding(dp(14), dp(12), dp(14), dp(12))
             inputType = InputType.TYPE_CLASS_NUMBER
         }
-        container.addView(cacheInput, matchWidth(top = 6))
+        container.addView(bufferInput, matchWidth(top = 6))
         container.addView(
             TextView(this).apply {
-                text = getString(R.string.setup_cache_hint)
+                text = getString(R.string.setup_buffer_hint)
+                textSize = 11.5f
+                setTextColor(Color.parseColor("#5C6678"))
+                setPadding(0, dp(8), 0, 0)
+                setLineSpacing(dp(3).toFloat(), 1f)
+            },
+        )
+
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.setup_disk_cache_label)
+                textSize = 12f
+                setTextColor(Color.parseColor("#8A93A5"))
+                setPadding(0, dp(18), 0, 0)
+            },
+        )
+        diskCacheInput = EditText(this).apply {
+            val saved = PlaybackCache.savedDiskLimitMb(this@SetupActivity)
+            if (saved != null) {
+                setText(saved.toString())
+            }
+            hint = getString(R.string.setup_disk_cache_default_hint)
+            setTextColor(Color.WHITE)
+            setHintTextColor(Color.parseColor("#5C6678"))
+            setSingleLine(true)
+            textSize = 15f
+            setPadding(dp(14), dp(12), dp(14), dp(12))
+            inputType = InputType.TYPE_CLASS_NUMBER
+        }
+        container.addView(diskCacheInput, matchWidth(top = 6))
+        container.addView(
+            TextView(this).apply {
+                text = getString(R.string.setup_disk_cache_hint)
                 textSize = 11.5f
                 setTextColor(Color.parseColor("#5C6678"))
                 setPadding(0, dp(8), 0, 0)
@@ -274,12 +307,21 @@ class SetupActivity : AppCompatActivity() {
             showStatus(getString(R.string.setup_invalid), true)
             return
         }
-        val cacheText = cacheInput.text.toString().trim()
-        val cacheLimit = if (cacheText.isBlank()) {
+        val bufferText = bufferInput.text.toString().trim()
+        val bufferLimit = if (bufferText.isBlank()) {
             null
         } else {
-            PlaybackCache.parse(cacheText) ?: run {
-                showStatus(getString(R.string.setup_cache_invalid), true)
+            PlaybackCache.parseBuffer(bufferText) ?: run {
+                showStatus(getString(R.string.setup_buffer_invalid), true)
+                return
+            }
+        }
+        val diskText = diskCacheInput.text.toString().trim()
+        val diskLimit = if (diskText.isBlank()) {
+            null
+        } else {
+            PlaybackCache.parseDisk(diskText) ?: run {
+                showStatus(getString(R.string.setup_disk_cache_invalid), true)
                 return
             }
         }
@@ -291,10 +333,15 @@ class SetupActivity : AppCompatActivity() {
             .putString(MainActivity.KEY_SERVER, base)
             .putString(MainActivity.KEY_MPV_PACKAGE, packageName)
             .apply()
-        if (cacheLimit != null) {
-            PlaybackCache.save(this, cacheLimit)
+        if (bufferLimit != null) {
+            PlaybackCache.saveBuffer(this, bufferLimit)
         } else {
-            PlaybackCache.clear(this)
+            PlaybackCache.clearBuffer(this)
+        }
+        if (diskLimit != null) {
+            PlaybackCache.saveDisk(this, diskLimit)
+        } else {
+            PlaybackCache.clearDisk(this)
         }
         startActivity(
             Intent(this, MainActivity::class.java)
