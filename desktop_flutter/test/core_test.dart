@@ -1,0 +1,118 @@
+import 'package:flutter_test/flutter_test.dart';
+import 'package:strmaction_desktop/core/config.dart';
+import 'package:strmaction_desktop/models/playback_payload.dart';
+import 'package:strmaction_desktop/player/widgets/buffered_seekbar.dart';
+import 'package:strmaction_desktop/player/widgets/controls_overlay.dart';
+
+void main() {
+  group('config', () {
+    test('normalizes server url', () {
+      expect(normalizeServerUrl(' https://media.example.com/ '),
+          'https://media.example.com');
+      expect(() => normalizeServerUrl('media.example.com'),
+          throwsA(isA<ConfigException>()));
+      expect(() => normalizeServerUrl('ftp://media.example.com'),
+          throwsA(isA<ConfigException>()));
+    });
+
+    test('clamps cache and window values', () {
+      final config = const AppConfig(
+        serverUrl: 'https://media.example.com/',
+        cacheLimitMb: 4,
+        windowWidth: 10,
+        windowHeight: 99999,
+      ).normalized();
+      expect(config.serverUrl, 'https://media.example.com');
+      expect(config.cacheLimitMb, 16);
+      expect(config.windowWidth, 900);
+      expect(config.windowHeight, 2160);
+    });
+
+    test('keeps old config keys', () {
+      final config = AppConfig.fromJson({
+        'server_url': 'https://media.example.com',
+        'cache_limit_mb': 0,
+        'allow_self_signed_https': true,
+        'window_width': 1280,
+        'window_height': 820,
+        'log_level': 'debug',
+      });
+      expect(config.cacheLimitMb, 0);
+      expect(config.allowSelfSignedHttps, isTrue);
+      expect(config.logLevel, 'DEBUG');
+    });
+  });
+
+  group('playback payload', () {
+    Map<String, dynamic> payload() => {
+          'item_id': 42,
+          'play_url': 'https://cdn.example.com/video.mkv',
+          'headers': {
+            'User-Agent': 'pan.baidu.com',
+            'Referer': 'https://pan.baidu.com/',
+          },
+          'play_token': 'pt_12345678',
+          'resume_ms': 12000,
+          'progress_interval_ms': 5000,
+          'title': '第一集',
+          'series_title': '测试剧',
+          'duration_ms': 100000,
+          'subtitles': [
+            {'label': '简体', 'url': '/api/items/42/subtitles/0?pt=x'},
+          ],
+          'next_item_id': 43,
+          'playlist': [
+            {'item_id': 42, 'title': '第一集', 'code': 'S01E01', 'current': true},
+            {'item_id': 43, 'title': '第二集', 'code': 'S01E02'},
+          ],
+          'current_index': 0,
+        };
+
+    test('parses and joins subtitle urls', () {
+      final parsed =
+          PlaybackPayload.fromJson(payload(), 'https://media.example.com');
+      expect(parsed.itemId, 42);
+      expect(parsed.resumeMs, 12000);
+      expect(parsed.headers['User-Agent'], 'pan.baidu.com');
+      expect(parsed.httpHeaderFields,
+          'User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/');
+      expect(parsed.subtitles.single.url,
+          'https://media.example.com/api/items/42/subtitles/0?pt=x');
+      expect(parsed.nextItemId, 43);
+      expect(parsed.playlist, hasLength(2));
+    });
+
+    test('rejects bad token and non-http url', () {
+      final badToken = payload()..['play_token'] = 'bad token';
+      expect(
+        () => PlaybackPayload.fromJson(badToken, 'https://media.example.com'),
+        throwsA(isA<PlaybackPayloadException>()),
+      );
+      final badUrl = payload()..['play_url'] = 'file:///tmp/a.mkv';
+      expect(
+        () => PlaybackPayload.fromJson(badUrl, 'https://media.example.com'),
+        throwsA(isA<PlaybackPayloadException>()),
+      );
+    });
+
+    test('drops header names that break mpv grammar', () {
+      final parsed = PlaybackPayload.fromJson(
+        payload()..['headers'] = {'Bad,Key': 'x', 'Good': 'y'},
+        'https://media.example.com',
+      );
+      expect(parsed.httpHeaderFields, 'Good: y');
+    });
+  });
+
+  test('formats playback times', () {
+    expect(formatTime(0), '00:00');
+    expect(formatTime(65), '01:05');
+    expect(formatTime(3661), '01:01:01');
+  });
+
+  test('formats network speed', () {
+    expect(formatNetworkSpeed(0), '↓ 0 B/s');
+    expect(formatNetworkSpeed(1024), '↓ 1 KB/s');
+    expect(formatNetworkSpeed(1024 * 1024), '↓ 1.0 MB/s');
+  });
+}

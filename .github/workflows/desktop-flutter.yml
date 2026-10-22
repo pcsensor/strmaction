@@ -1,0 +1,89 @@
+name: Desktop Flutter
+
+on:
+  push:
+    paths:
+      - "desktop_flutter/**"
+      - ".github/workflows/desktop-flutter.yml"
+  pull_request:
+    paths:
+      - "desktop_flutter/**"
+      - ".github/workflows/desktop-flutter.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: desktop_flutter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+
+  macos:
+    runs-on: macos-14
+    defaults:
+      run:
+        working-directory: desktop_flutter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build macos --release
+      - name: Package app
+        run: |
+          mkdir -p dist
+          APP="$(find build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)"
+          test -n "$APP"
+          ditto -c -k --keepParent "$APP" dist/StrmAction-macOS.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StrmAction-macOS
+          path: desktop_flutter/dist/StrmAction-macOS.zip
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: desktop_flutter
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+      - name: Install NuGet
+        run: choco install nuget.commandline -y --no-progress
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build windows --release
+      - name: Package app
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item build/windows/x64/runner/Release dist/StrmAction-Windows -Recurse -Force
+          $old = "dist/StrmAction-Windows/strmaction_desktop.exe"
+          if (Test-Path $old) { Move-Item $old "dist/StrmAction-Windows/StrmAction.exe" }
+          Compress-Archive -Path dist/StrmAction-Windows -DestinationPath dist/StrmAction-Windows.zip -Force
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StrmAction-Windows
+          path: desktop_flutter/dist/StrmAction-Windows.zip
+          if-no-files-found: error
