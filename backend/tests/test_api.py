@@ -483,6 +483,54 @@ def test_dismiss_continue_watching():
         assert ep0["id"] in continue_ids3
 
 
+def test_continue_watching_grouped_by_playlist():
+    """同一播放列表（剧集/文件夹）在「继续观看」里只出一张卡，且是最后一次播放的那条。"""
+    app = create_app()
+    with TestClient(app) as client:
+        client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        libraries = client.get("/api/libraries").json()["libraries"]
+        tv = next(lib for lib in libraries if lib["type"] == "tv")
+        items = client.get("/api/items", params={"library_id": tv["id"]}).json()["items"]
+        series = next(i for i in items if i["title"] == "三体")
+        detail = client.get(f"/api/items/{series['id']}").json()
+        episodes = detail["seasons"][0]["episodes"]
+        assert len(episodes) >= 2
+        ep0, ep1 = episodes[0], episodes[1]
+        episode_ids = {ep0["id"], ep1["id"]}
+
+        # 1. 两集都产生进度（ep1 后写，是「最后一次播放」）
+        for episode in (ep0, ep1):
+            res = client.post(
+                f"/api/items/{episode['id']}/progress",
+                json={"position_ms": 30000, "duration_ms": 120000},
+            )
+            assert res.status_code == 200
+
+        # 2. 首页只出现一张卡，且指向最后一次播放的那集
+        home = client.get("/api/home").json()
+        shown = [
+            c for c in home["continue"] if c["continue_item_id"] in episode_ids
+        ]
+        assert len(shown) == 1
+        assert shown[0]["continue_item_id"] == ep1["id"]
+
+        # 3. 移除最新一集 → 整个播放列表消失（旧集不会顶上来）
+        assert client.delete(f"/api/items/{ep1['id']}/continue").status_code == 200
+        home2 = client.get("/api/home").json()
+        assert not [
+            c for c in home2["continue"] if c["continue_item_id"] in episode_ids
+        ]
+
+        # 4. 详情页里两集的进度依然保留
+        detail_after = client.get(f"/api/items/{series['id']}").json()
+        eps_after = detail_after["seasons"][0]["episodes"]
+        assert eps_after[0]["progress"]["position_ms"] == 30000
+        assert eps_after[1]["progress"]["position_ms"] == 30000
+
+
 def test_multiuser_and_permissions():
     """v0.9：多用户增删改查、媒体库授权隔离、播放进度隔离及管理权限拦截。"""
     app = create_app()
