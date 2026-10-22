@@ -211,8 +211,20 @@ class PlayerDrawer(QWidget):
         if self._current_tab == "episodes":
             self.title_label.setText(f"选集 ({len(self._playlist)})")
             for ep in self._playlist:
-                item_id = ep.get("item_id")
-                is_current = item_id == self._current_item_id
+                item_id = ep.get("item_id") if ep.get("item_id") is not None else ep.get("id")
+                try:
+                    item_id_int = int(item_id) if item_id is not None else None
+                except (ValueError, TypeError):
+                    item_id_int = None
+
+                try:
+                    curr_id_int = int(self._current_item_id) if self._current_item_id is not None else None
+                except (ValueError, TypeError):
+                    curr_id_int = None
+
+                is_current = bool(ep.get("current")) or (
+                    item_id_int is not None and curr_id_int is not None and item_id_int == curr_id_int
+                )
                 code = ep.get("code") or f"P{ep.get('episode_no', 0):02d}"
                 title = ep.get("title") or ""
                 watched = ep.get("watched", False)
@@ -224,6 +236,12 @@ class PlayerDrawer(QWidget):
                 # Layout inside episode card
                 h_card = QHBoxLayout(btn)
                 h_card.setContentsMargins(12, 6, 12, 6)
+                h_card.setSpacing(8)
+
+                if is_current:
+                    playing_icon = QLabel("▶", btn)
+                    playing_icon.setStyleSheet("font-size: 11px; color: #F0A94D; font-weight: bold;")
+                    h_card.addWidget(playing_icon)
 
                 code_lbl = QLabel(code, btn)
                 code_lbl.setStyleSheet(
@@ -237,7 +255,14 @@ class PlayerDrawer(QWidget):
                 )
                 h_card.addWidget(title_lbl, stretch=1)
 
-                if watched:
+                if is_current:
+                    now_playing_badge = QLabel("播放中", btn)
+                    now_playing_badge.setStyleSheet(
+                        "font-size: 10px; color: #17120B; background: #F0A94D; "
+                        "padding: 2px 6px; border-radius: 4px; font-weight: bold;"
+                    )
+                    h_card.addWidget(now_playing_badge)
+                elif watched:
                     w_badge = QLabel("已看", btn)
                     w_badge.setStyleSheet(
                         "font-size: 10px; color: #8E9297; background: rgba(255, 255, 255, 0.1); "
@@ -247,7 +272,7 @@ class PlayerDrawer(QWidget):
 
                 if is_current:
                     btn.setStyleSheet(
-                        "QPushButton { background: rgba(240, 169, 77, 0.15); "
+                        "QPushButton { background: rgba(240, 169, 77, 0.18); "
                         "border: 1.5px solid #F0A94D; border-radius: 8px; }"
                     )
                 else:
@@ -257,9 +282,10 @@ class PlayerDrawer(QWidget):
                         "QPushButton:hover { background: rgba(255, 255, 255, 0.12); border-color: rgba(255, 255, 255, 0.2); }"
                     )
 
-                if item_id is not None:
+                target_id = item_id_int if item_id_int is not None else item_id
+                if target_id is not None:
                     btn.clicked.connect(
-                        lambda _checked=False, i_id=item_id: self._select_episode(i_id)
+                        lambda _checked=False, i_id=target_id: self._select_episode(i_id)
                     )
                 self.content_vbox.addWidget(btn)
 

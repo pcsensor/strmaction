@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-import ssl
+import time
 from pathlib import Path
 from typing import Any
 
@@ -20,8 +20,8 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWidgets import QMainWindow, QStackedWidget, QWidget
 
 from .config import DesktopConfig, webview_storage_dir
-from .mpv import MpvError
-from .playback import PlaybackSession
+from .progress import ProgressReporter
+from .proxy import get_proxy
 from .player import PlayerView
 from .security import PlaybackPayload, config_error_message, parse_payload
 from .version import __version__
@@ -50,12 +50,11 @@ class WebChannelBridge(QObject):
             self._win.play_embedded(parsed)
             return json.dumps({"ok": True})
         except Exception as exc:
-            msg = str(exc) if isinstance(exc, MpvError) else config_error_message(exc)
-            return json.dumps({"ok": False, "error": msg})
+            return json.dumps({"ok": False, "error": config_error_message(exc)})
 
     @Slot(result=str)
     def stopPlayback(self) -> str:
-        self._win.app.stop_playback()
+        self._win.close_player_and_return_to_web()
         return json.dumps({"ok": True})
 
     @Slot(result=str)
@@ -69,10 +68,8 @@ class WebChannelBridge(QObject):
         return json.dumps({
             "ok": True,
             "server_url": cfg.server_url,
-            "mpv_path": cfg.mpv_path,
             "cache_limit_mb": cfg.cache_limit_mb,
             "allow_self_signed_https": cfg.allow_self_signed_https,
-            "detected_mpv": self._win.app.detected_mpv() or "",
             "version": __version__,
         })
 
@@ -87,8 +84,7 @@ class WebChannelBridge(QObject):
 
     @Slot(result=str)
     def choose_mpv(self) -> str:
-        path = self._win.app.choose_mpv()
-        return json.dumps({"ok": True, "path": path or ""})
+        return json.dumps({"ok": True, "path": ""})
 
     @Slot(result=str)
     def retryConnection(self) -> str:
@@ -112,6 +108,8 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("StrmAction")
         self.resize(self.app.config.window_width, self.app.config.window_height)
         self.setMinimumSize(900, 640)
+
+        self._active_stream_id: str | None = None
 
         # Main stacked layout: 0 = Web, 1 = Embedded Player
         self.stack = QStackedWidget(self)
@@ -177,29 +175,30 @@ class MainWindow(QMainWindow):
                         }});
                     }});
                 }};
-                window.pywebview = {{
-                    api: {{
-                        isDesktop: () => true,
-                        version: () => "{__version__}",
-                        playItem: (payload) => call('playItem', typeof payload === 'string' ? payload : JSON.stringify(payload)),
-                        stopPlayback: () => call('stopPlayback'),
-                        openSettings: () => call('openSettings'),
-                        get_settings: () => call('get_settings'),
-                        save_settings: (data) => call('save_settings', JSON.stringify(data)),
-                        choose_mpv: () => call('choose_mpv'),
-                        retryConnection: () => call('retryConnection'),
-                        getConnectionError: () => call('getConnectionError'),
-                        quit: () => call('quit'),
-                    }}
+                const apiObj = {{
+                    isDesktop: () => true,
+                    version: () => "{__version__}",
+                    playItem: (payload) => call('playItem', typeof payload === 'string' ? payload : JSON.stringify(payload)),
+                    stopPlayback: () => call('stopPlayback'),
+                    openSettings: () => call('openSettings'),
+                    get_settings: () => call('get_settings'),
+                    save_settings: (data) => call('save_settings', JSON.stringify(data)),
+                    choose_mpv: () => call('choose_mpv'),
+                    retryConnection: () => call('retryConnection'),
+                    getConnectionError: () => call('getConnectionError'),
+                    quit: () => call('quit'),
                 }};
+                window.pywebview = {{ api: apiObj }};
+                window._strmaction_api = apiObj;
                 window.StrmActionNative = {{
                     isDesktop: () => true,
                     version: () => "{__version__}",
-                    playItem: (payload) => window.pywebview.api.playItem(payload),
-                    stopPlayback: () => window.pywebview.api.stopPlayback(),
-                    openSettings: () => window.pywebview.api.openSettings(),
-                    quit: () => window.pywebview.api.quit(),
+                    playItem: (payload) => apiObj.playItem(payload),
+                    stopPlayback: () => apiObj.stopPlayback(),
+                    openSettings: () => apiObj.openSettings(),
+                    quit: () => apiObj.quit(),
                 }};
+                window.dispatchEvent(new Event('pywebviewready'));
                 window.dispatchEvent(new Event('strmaction:desktop-ready'));
             }});
         }})();
@@ -218,17 +217,26 @@ class MainWindow(QMainWindow):
         self.player_view.next_episode_requested.connect(self.request_play_item)
         self.stack.addWidget(self.player_view)
 
+    def load_url(self, url: str) -> None:
+        """Universal URL loader for server, local files or web pages."""
+        if not url:
+            return
+        if url.startswith("http://") or url.startswith("https://") or url.startswith("file://"):
+            self.web.setUrl(QUrl(url))
+        else:
+            self.web.setUrl(QUrl.fromLocalFile(url))
+
     def load_server_url(self) -> None:
         url = self.app.config.server_url
         if url:
-            self.web.setUrl(QUrl(url))
+            self.load_url(url)
         else:
             self.open_settings_page()
 
     def open_settings_page(self) -> None:
         assets_dir = Path(__file__).resolve().parent / "assets"
         settings_path = assets_dir / "settings.html"
-        self.web.setUrl(QUrl.fromLocalFile(str(settings_path)))
+        self.load_url(str(settings_path))
 
     def retry_connection(self) -> None:
         ok, msg = self.app.check_connection()
@@ -237,48 +245,43 @@ class MainWindow(QMainWindow):
         else:
             assets_dir = Path(__file__).resolve().parent / "assets"
             error_path = assets_dir / "error.html"
-            self.web.setUrl(QUrl.fromLocalFile(str(error_path)))
+            self.load_url(str(error_path))
 
     def play_embedded(self, payload: PlaybackPayload) -> None:
-        mpv = self.app.detected_mpv()
-        if not mpv:
-            raise MpvError("未找到 mpv。请安装 mpv，或在桌面端设置中选择 mpv 可执行文件。")
-
-        self.app.stop_playback()
+        self.close_player_and_return_to_web()
 
         # Switch to player page
         self.stack.setCurrentWidget(self.player_view)
-        wid = self.player_view.get_video_wid()
 
-        # Create session with callbacks
-        session = PlaybackSession(
-            payload,
-            mpv,
+        # Register stream with local loopback proxy
+        proxy = get_proxy()
+        stream_id = f"stream_{payload.item_id}_{int(time.time() * 1000)}"
+        self._active_stream_id = stream_id
+        local_url = proxy.register_stream(stream_id, payload.play_url, payload.headers)
+
+        # Create progress reporter
+        reporter = ProgressReporter(
             server_url=self.app.config.server_url,
-            cache_limit_mb=self.app.config.cache_limit_mb,
-            allow_self_signed_https=self.app.config.allow_self_signed_https,
+            item_id=payload.item_id,
+            play_token=payload.play_token,
+            interval_ms=payload.progress_interval_ms,
+            verify_ssl=not self.app.config.allow_self_signed_https,
             logger=self.app.logger,
             on_auth_error=self.app._on_progress_auth_error,
-            on_position=self.player_view.on_mpv_position,
-            on_duration=self.player_view.on_mpv_duration,
-            on_paused=self.player_view.on_mpv_paused,
-            on_speed=self.player_view.on_mpv_speed,
-            on_cache_state=self.player_view.on_mpv_cache_state,
-            on_tracks=self.player_view.on_mpv_tracks,
-            on_idle=self.player_view.on_mpv_idle,
-            on_exited=self._on_mpv_exited,
         )
+        reporter.start()
 
-        with self.app._play_lock:
-            self.app._session = session
-
-        self.player_view.bind_controller(session.controller, payload)
-        session.start(wid=wid)
+        # Load playback in PlayerView
+        self.player_view.load_playback(payload, local_url, reporter=reporter)
         if self.app.logger:
-            self.app.logger.info("内嵌播放开始 item=%s, wid=%s", payload.item_id, wid)
+            self.app.logger.info("内嵌原生播放开始 item=%s, url=%s", payload.item_id, local_url)
 
     def close_player_and_return_to_web(self) -> None:
-        self.app.stop_playback()
+        self.player_view.stop_playback()
+        if self._active_stream_id:
+            get_proxy().unregister_stream(self._active_stream_id)
+            self._active_stream_id = None
+
         if self.isFullScreen():
             self.showNormal()
         self.stack.setCurrentWidget(self.web)
@@ -293,11 +296,13 @@ class MainWindow(QMainWindow):
         """
         self.web.page().runJavaScript(js_code)
 
-    def _on_mpv_exited(self) -> None:
-        # Return to web page when mpv exits
-        if self.stack.currentWidget() == self.player_view:
-            self.close_player_and_return_to_web()
-
     def closeEvent(self, event) -> None:
-        self.app.stop_playback()
+        self.close_player_and_return_to_web()
+        cfg = self.app.config
+        cfg.window_width = self.width()
+        cfg.window_height = self.height()
+        try:
+            cfg.save()
+        except Exception:
+            pass
         super().closeEvent(event)

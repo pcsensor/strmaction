@@ -144,8 +144,14 @@ def parse_payload(raw: Any, server_url: str) -> PlaybackPayload:
     if isinstance(raw_playlist, list):
         for entry in raw_playlist[:200]:
             if isinstance(entry, Mapping):
+                ep_id = entry.get("item_id") if entry.get("item_id") is not None else entry.get("id")
+                try:
+                    ep_id = int(ep_id) if ep_id is not None else None
+                except (TypeError, ValueError):
+                    ep_id = None
                 playlist_clean.append({
-                    "item_id": entry.get("item_id"),
+                    "item_id": ep_id,
+                    "id": ep_id,
                     "title": str(entry.get("title") or ""),
                     "episode_no": entry.get("episode_no"),
                     "code": str(entry.get("code") or ""),

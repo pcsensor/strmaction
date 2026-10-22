@@ -1,29 +1,21 @@
-# 这里放打包用的 mpv（不提交二进制）
+# 播放器组件说明
 
-目录约定：
+> **重要更新**：
+> 从当前版本起，StrmAction 桌面端已全面升级为 **PySide6 原生硬件加速播放内核（`QMediaPlayer` + `QVideoWidget` + 内置轻量环回代理）**。
+> 桌面端运行与打包**完全不再依赖或需要外部 mpv 二进制文件**，用户亦无需手动配置 mpv 路径，开箱即用。
+> 
+> 本目录及旧版 `prepare_mpv.py` 仅作为历史参考与向后兼容保留。
+
+---
+
+### 历史目录约定（已废弃）
 
 ```text
 vendor/mpv/
 ├── windows-x64/
-│   ├── mpv.exe
-│   └── *.dll
-├── windows-arm64/
 │   └── mpv.exe
 ├── macos-arm64/
-│   └── mpv            # 或 mpv.app/Contents/MacOS/mpv
+│   └── mpv
 └── macos-x64/
     └── mpv
 ```
-
-`desktop/` 源码运行时也会优先查这里；没有时回退到用户已安装的 mpv。
-构建安装包前执行：
-
-```powershell
-uv run python scripts/prepare_mpv.py --source C:\tools\mpv
-```
-
-```bash
-uv run python scripts/prepare_mpv.py --source /Applications/mpv.app
-```
-
-注意：mpv 的许可证与再分发义务需要按你的发布方式确认；仓库默认不提交二进制。

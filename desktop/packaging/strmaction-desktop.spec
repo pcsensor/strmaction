@@ -27,6 +27,11 @@ hiddenimports = [
     module
     for module in collect_submodules("webview")
     if not module.endswith(".android")
+] + [
+    "PySide6.QtMultimedia",
+    "PySide6.QtMultimediaWidgets",
+    "PySide6.QtWebEngineWidgets",
+    "PySide6.QtWebChannel",
 ]
 
 a = Analysis(
