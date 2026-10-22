@@ -1,12 +1,13 @@
 # StrmAction Desktop（Windows / macOS）
 
-StrmAction 桌面端是 **WebView 外壳 + 本机 mpv 播放代理**：
+StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv 播放器 + 仿安卓伴侣 App 自制控件）**：
 
 - 网页、登录、媒体库、详情、设置全部复用服务端现有 Web UI；
-- Python 不保存账号密码，也不读取网页 Cookie；
-- 网页点播放后，把 `/api/play` 返回的播放数据交给 Python；
-- Python 启动**本机 mpv**（独立播放窗口），自动设置服务端下发的全部请求头；
-- 播放进度通过现有 `/api/items/{id}/progress` 接口上报，使用 item 级 `play_token`。
+- 点击播放后，直接在主窗口**无缝切换为内嵌播放器（零外部弹窗）**；
+- 播放控件 1:1 对齐安卓伴侣 App（三层缓冲进度条、40% 侧滑选集/倍速/音轨抽屉、长按倍速、中心反馈）；
+- 具备完整的**键鼠操作体系**（空格播放/暂停、方向键调进度、长按右方向键 2.0x 倍速、滚轮选集等）；
+- 自动设置服务端按库下发的全部请求头（`User-Agent` 与 `Referer`），302 跨域重定向全链路透传，绝不报 403；
+- 播放进度通过现有 `/api/items/{id}/progress` 接口以 5 秒心跳上报，使用 item 级 `play_token`。
 
 > 本机使用 `uv` 管理 Python 环境。下面命令默认都从 `desktop/` 目录执行。
 >
@@ -39,17 +40,17 @@ StrmAction 桌面端是 **WebView 外壳 + 本机 mpv 播放代理**：
 
 ### 是什么
 
-- 一个 Windows / macOS 桌面程序，名字和图标都是 **StrmAction**；
-- 用 WebView 打开你的 StrmAction 服务器网页；
-- 网页负责登录、选片、详情、搜索、设置；
-- Python 只负责“本机 mpv 播放”和“进度回传”。
+- 一个 Windows / macOS 原生桌面程序，名字和图标都是 **StrmAction**；
+- 浏览态使用 WebEngine 打开你的 StrmAction 服务器网页，负责登录、选片、详情、搜索；
+- 播放态直接在窗口内部呈现**内嵌播放器**，搭配仿伴侣 App 的自制交互控件与全套键盘快捷控制；
+- 底层调度本机 mpv 进行硬解渲染，并通过 IPC 严格透传防盗链请求头与 5 秒心跳进度上报。
 
 ### 不是什么
 
 - **不是** 另一套媒体库客户端。桌面端没有自己的媒体库页面，所有浏览都在网页里完成；
 - **不是** 视频下载器。播放 URL 直接交给本机 mpv，服务端不代理视频流；
-- **不是** 把 mpv 画面嵌进 StrmAction 主窗口。mpv 是独立播放窗口（这是当前方案的明确选择）；
-- **不是** `pip install mpv`。Python 的 `mpv` 包只是控制库；真正的播放器是 `mpv.exe` / `mpv` 可执行文件；
+- **不是** 粗糙的 mpv 独立悬浮弹窗。播放器与自制控件完全内嵌在桌面端主窗口；
+- **不是** `pip install mpv`。真正负责解码的是 `mpv.exe` / `mpv` 原生二进制；
 - **不是** 手机伴侣 App 的替代品。手机/电视仍用 `companion/` 里的 Android App。
 
 ---
@@ -57,27 +58,29 @@ StrmAction 桌面端是 **WebView 外壳 + 本机 mpv 播放代理**：
 ## 2. 工作原理
 
 ```text
-┌──────────────────────────────────────────────┐
-│ StrmAction.exe / StrmAction.app（Python）     │
-│                                              │
-│  WebView                                     │
-│    加载 https://你的服务器/                   │
-│    登录、媒体库、详情、设置都复用网页          │
-│         │                                    │
-│         │ window.StrmActionNative.playItem() │
-│         ▼                                    │
-│  Python 播放代理                             │
-│    - 校验 /api/play 返回的 payload            │
-│    - 查找本机 mpv                            │
-│    - 通过 IPC 设置 headers / 字幕 / 续播位置  │
-│    - 监听播放进度                             │
-│    - 用 play_token 上报进度                   │
-└──────────────┬───────────────────────────────┘
-               │ HTTPS
-               ▼
-        StrmAction 服务端
-        /api/play  mode=direct
-        /api/items/{id}/progress
+┌──────────────────────────────────────────────────────────────┐
+│ StrmAction 桌面端（PySide6 主窗口）                           │
+│ ┌──────────────────────────────────────────────────────────┐ │
+│ │ QStackedWidget                                           │ │
+│ │ ├─ Page 0: QWebEngineView (复用服务器完整 Web UI)        │ │
+│ │ │   - 网页浏览、媒体库、详情页、搜索与用户设置           │ │
+│ │ │   - 注入 QWebChannel 与 window.StrmActionNative 桥接   │ │
+│ │ │        │                                               │ │
+│ │ │        │ 用户点击播放 / window.StrmActionNative.playItem│ │
+│ │ │        ▼                                               │ │
+│ │ └─ Page 1: PlayerView (内嵌播放视图)                     │ │
+│ │     ├── VideoSurface (原生 QWidget，通过 --wid 挂载 mpv) │ │
+│ │     ├── ControlsOverlay (仿伴侣 App 顶栏、底栏、中心反馈)│ │
+│ │     │    ├── BufferedSeekBar (三层缓冲进度条)            │ │
+│ │     │    └── 3.5s 无操作自动隐藏控制栏与鼠标光标        │ │
+│ │     ├── PlayerDrawer (右侧 40% 毛玻璃抽屉: 选集/倍速/音轨)│ │
+│ │     └── KeyboardHandler (按键状态机: 空格/长按右键倍速等)│ │
+│ └──────────────┬───────────────────────────────────────────┘ │
+└────────────────┼─────────────────────────────────────────────┘
+                 │ 5秒心跳进度上报 (play_token)
+                 ▼
+          StrmAction 服务端
+          /api/items/{id}/progress
 ```
 
 一次点击播放的完整流程：
@@ -377,39 +380,63 @@ uv run strmaction-desktop --server https://media.example.com
 
 ---
 
-## 9. 播放、进度、字幕与多版本
+## 9. 播放、自制控件、键盘控制与进度
 
-### 请求头
+### 9.1 请求头与防盗链（重点）
 
 服务端下发的 `headers` 会**全量**设置给 mpv，不只 User-Agent：
 
-- `User-Agent`
-- `Referer`
-- `Cookie`（如果管理员配置了）
-- 其他网盘需要的字段
+- `User-Agent` 与 `Referer`
+- `Cookie` / `Authorization`（如果配置了网盘鉴权）
+- 底层通过 mpv IPC 注入 `user-agent` 与 `http-header-fields` 属性，直接作用于 FFmpeg 协议栈，**在 302 跨域重定向到百度网盘/Alist CDN 时全链路严格透传，绝不触发 403 Forbidden**；
+- 避免放在命令行参数中，防止敏感 Token/Cookie 泄露在系统进程列表。
 
-通过 mpv IPC 设置，不放在命令行参数里，避免被同机其他进程从进程列表看到。
+### 9.2 仿安卓伴侣 App 自制控件体系
 
-### 进度
+播放界面彻底告别独立弹窗，采用与安卓伴侣 App 1:1 对齐的现代自制 UI：
+
+1. **顶栏（TopBar）**：
+   - 渐变半透明黑遮罩；
+   - 包含返回媒体库按钮、剧集全称与集数标题。
+2. **三层缓冲进度条（BufferedSeekBar）**：
+   - 8px 高度全圆角白色底轨（`#3DFFFFFF`）；
+   - 金橙色已播放进度填充（`#F0A94D`）；
+   - 2.5px 白色高亮网络缓冲线置顶压层（`#E8FFFFFF`，分段展示命中磁盘的预读区间）；
+   - 3.5×16px 纯白竖胶囊播放滑块与鼠标悬停时间 Tooltip 预览。
+3. **40% 侧滑抽屉（PlayerDrawer）**：
+   - 点击底栏对应按钮或快捷键从右侧顺滑滑出，占据 40% 屏幕宽度（支持滚轮）；
+   - 采用深黑毛玻璃底色（`#13161F`）与左侧 16px 圆角；
+   - 包含 **“选集”**（网格列表、已看标识、当前剧集高亮）、**“倍速”**（0.5x~3.0x 多档选择）、**“音轨与字幕”**（多音轨选择与外挂/内嵌字幕切换及关闭）。
+4. **中央反馈与自动隐藏**：
+   - 屏幕中央提供大播放/暂停脉冲动画、`+5s` / `-5s` 快进退反馈徽标、`⚡ 2.0x 极速播放中` 倍速指示器；
+   - 播放过程中鼠标静止 3.5 秒自动隐藏顶底控制条与鼠标指针，鼠标微动或按键立即唤醒。
+
+### 9.3 全套键盘快捷键与“长按倍速”状态机
+
+桌面端实现了精准的按键去抖与状态机，完美解决系统级按键自动重复（Auto-Repeat）导致快进狂闪的难题：
+
+| 按键 | 功能 | 画面反馈动效 |
+|---|---|---|
+| **`Space`** | 播放 / 暂停切换 | 屏幕中央闪烁半透明大播放/暂停图标 |
+| **`Left`** | 快退 5 秒 | 屏幕中央显示 `⏪ -5s` 徽标 |
+| **`Right`（短按）** | 快进 5 秒 | 屏幕中央显示 `⏩ +5s` 徽标 |
+| **`Right`（长按 ≥250ms）** | **长按 2.0x 极速播放** | 屏幕中央显示 `⚡ 2.0x 极速播放中`，松开按键立即恢复原倍速 |
+| **`Up` / `Down`** | 音量调节（±5%） | 浮层提示当前音量百分比 |
+| **`M`** | 静音 / 取消静音 | 切换静音状态 |
+| **`F` / `F11`** | 切换全屏 / 退出全屏 | 画面贴合屏幕边缘（双击画面同理） |
+| **`Esc`** | 层级退出 | 先关抽屉 -> 再退全屏 -> 退出播放返回网页 |
+| **`[` / `]`** | 切换上一集 / 下一集 | 切换并展示下集标题 |
+| **`C` / `S`** | 循环切换字幕轨道 | 弹出当前字幕名称提示 |
+| **`A`** | 循环切换音轨 | 弹出当前音轨提示 |
+| **`E` / `Tab`** | 呼出 / 收起 40% 选集侧滑抽屉 | 右侧抽屉滑入/滑出动画 |
+
+### 9.4 进度与连播
 
 - 使用 `play_token` 作为 Bearer；
-- 默认按服务端 `progress_interval_ms`（一般 5 秒）上报；
+- 默认按服务端 `progress_interval_ms`（5 秒）心跳上报；
 - 暂停、seek、退出、播完立即补写；
-- 单飞上传，失败保留最新位置重试；
 - 90% 自动标记已看；
-- `play_token` 过期/401 时停止上报并写日志；重新从网页打开播放即可。
-
-### 字幕
-
-服务端返回的 `subtitles[].url` 会拼成绝对地址，通过 mpv `sub-add` 加载；第一个默认选中，其余 `auto`。
-
-### 多版本
-
-网页详情页选择版本后，`media_file_id` 会随 payload 传给服务端，`direct` 响应按该版本返回；桌面端不需要自己选版本。
-
-### 自动下一集
-
-暂未实现。服务端返回的 `next_item_id / playlist` 已保留，后续可扩展。
+- 播完当前集自动无缝连播下一集（如果列表存在下集）。
 
 ---
 
@@ -608,11 +635,9 @@ Get-NetTCPConnection -State Established |
 
 ## 14. 已知限制
 
-- 播放窗口是**独立 mpv 窗口**，暂不把视频画面嵌入 StrmAction 主窗口；
 - 不依赖用户安装 mpv 时，需要构建前自带 mpv；
 - 当前构建产物默认不带 mpv（仓库不提交二进制）；
 - `play_token` 默认 12 小时；超长暂停后可能需要重新从网页打开；
-- 暂不支持自动下一集/播放列表续播；
 - 托盘常驻、开机自启、自动更新暂未实现；
 - macOS 公证/Windows 代码签名需要发布者证书；
 - 目前只准备 Windows/macOS 打包，Linux 未验证。
@@ -625,21 +650,29 @@ Get-NetTCPConnection -State Established |
 desktop/
 ├── README.md
 ├── CHECKLIST.md                开发/验收清单
-├── pyproject.toml
+├── pyproject.toml              依赖声明（PySide6, pywebview, httpx）
 ├── requirements.txt
 ├── requirements-dev.txt
 ├── uv.lock
 ├── run_desktop.py              PyInstaller 入口
 ├── src/strmaction_desktop/
-│   ├── app.py                  WebView 窗口、桥注入、生命周期
-│   ├── bridge.py               window.pywebview.api
+│   ├── app.py                  桌面端入口与应用生命周期
+│   ├── qt_window.py            PySide6 主窗口（QStackedWidget: Web + Player）
+│   ├── bridge.py               JS Bridge 接口
 │   ├── config.py               配置目录/读写
-│   ├── mpv.py                  mpv 查找、启动、IPC
+│   ├── mpv.py                  mpv 查找、启动、IPC、请求头与事件监听
 │   ├── playback.py             播放会话（mpv + 进度）
-│   ├── progress.py             进度上报
+│   ├── progress.py             进度上报（5秒心跳）
 │   ├── security.py             payload 校验/脱敏
 │   ├── logging_setup.py
 │   ├── version.py
+│   ├── player/                 仿伴侣 App 自制播放控件
+│   │   ├── view.py             内嵌播放器视图（PlayerView）
+│   │   ├── overlay.py          顶底控制栏与中央反馈（ControlsOverlay）
+│   │   ├── seekbar.py          三层缓冲进度条（BufferedSeekBar）
+│   │   ├── drawer.py           40% 右侧侧滑抽屉（PlayerDrawer）
+│   │   ├── keyboard.py         按键快捷键与长按倍速状态机
+│   │   └── icons.py            SVG 矢量图标库
 │   └── assets/
 │       ├── settings.html
 │       ├── icon.svg / png / ico / icns
@@ -651,6 +684,8 @@ desktop/
 ├── packaging/
 │   └── strmaction-desktop.spec
 ├── tests/
+│   ├── test_player_ui.py       播放控件与键盘控制单元测试
+│   └── ...
 └── vendor/mpv/README.md        二进制目录约定（由构建机准备）
 ```
 
@@ -664,7 +699,7 @@ desktop/
 
 ### Q2：自带 mpv 是不是把视频画面嵌进 StrmAction 窗口？
 
-不是。当前方案是 **自带 mpv 二进制 + 独立播放窗口**。把画面嵌进主窗口需要 Qt/libmpv，属于另一个量级的改造。
+是的！当前已全面升级为 **PySide6 内嵌架构**：mpv 原生渲染表面直接挂载到主窗口内部的播放器视图（`--wid`），搭配 1:1 仿伴侣 App 自制现代化视频控件，播放时直接在主窗口无缝展示，不再弹出独立外部窗口。
 
 ### Q3：用户必须安装 mpv 吗？
 
@@ -687,9 +722,9 @@ desktop/
 
 源码理论上可运行，但当前只准备 Windows/macOS 的打包与验证；Linux 未测试。
 
-### Q8：能自动下一集吗？
+### Q8：能连播下一集吗？
 
-暂不支持。播放响应里的 `next_item_id / playlist` 已保留，后续可以扩展。
+支持。播完当前集自动连播下一集，也可通过快捷键 `[` / `]` 或 40% 选集侧滑抽屉随时选集切换。
 
 ### Q9：播放进度存在哪里？
 

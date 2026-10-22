@@ -81,6 +81,9 @@ class DesktopApp:
         return find_mpv(self.config.mpv_path, bundle_root())
 
     def play(self, payload: PlaybackPayload) -> None:
+        if self.window is not None and hasattr(self.window, "play_embedded"):
+            self.window.play_embedded(payload)
+            return
         mpv = self.detected_mpv()
         if not mpv:
             raise MpvError(
@@ -219,7 +222,10 @@ class DesktopApp:
     # -- settings ------------------------------------------------------
     def open_settings(self) -> None:
         if self.window is not None:
-            self.window.load_url(settings_uri())
+            if hasattr(self.window, "open_settings_page"):
+                self.window.open_settings_page()
+            elif hasattr(self.window, "load_url"):
+                self.window.load_url(settings_uri())
 
     def save_settings(self, data: dict) -> bool:
         server = normalize_server_url(str(data.get("server_url") or ""))
@@ -253,19 +259,32 @@ class DesktopApp:
         return restart_required
 
     def choose_mpv(self) -> str | None:
-        if self.window is None:
+        if self.window is not None and hasattr(self.window, "create_file_dialog"):
+            dialog_type = getattr(getattr(webview, "FileDialog", None), "OPEN", None)
+            if dialog_type is None:
+                dialog_type = webview.OPEN_DIALOG
+            result = self.window.create_file_dialog(dialog_type, allow_multiple=False)
+            if not result:
+                return None
+            path = result[0] if isinstance(result, (list, tuple)) else result
+            candidate = Path(str(path)).expanduser()
+            if candidate.is_file():
+                return str(candidate)
             return None
-        dialog_type = getattr(getattr(webview, "FileDialog", None), "OPEN", None)
-        if dialog_type is None:
-            dialog_type = webview.OPEN_DIALOG
-        result = self.window.create_file_dialog(dialog_type, allow_multiple=False)
-        if not result:
+        try:
+            from PySide6.QtWidgets import QFileDialog
+
+            filter_str = (
+                "mpv (*.exe);;All Files (*.*)"
+                if sys.platform.startswith("win")
+                else "mpv (*);;All Files (*.*)"
+            )
+            path, _ = QFileDialog.getOpenFileName(
+                None, "选择 mpv 可执行文件", "", filter_str
+            )
+            return path or None
+        except Exception:
             return None
-        path = result[0] if isinstance(result, (list, tuple)) else result
-        candidate = Path(str(path)).expanduser()
-        if candidate.is_file():
-            return str(candidate)
-        return None
 
     # -- lifecycle -----------------------------------------------------
     def shutdown(self) -> None:
@@ -340,6 +359,25 @@ class DesktopApp:
             self.logger.warning("注入桌面端桥接失败：%s", type(exc).__name__)
 
     def run(self, *, start_with_settings: bool, debug: bool = False) -> None:
+        try:
+            from PySide6.QtGui import QIcon
+            from PySide6.QtWidgets import QApplication
+
+            from .qt_window import MainWindow
+
+            has_pyside = True
+        except ImportError:
+            has_pyside = False
+
+        if has_pyside:
+            qt_app = QApplication.instance() or QApplication(sys.argv)
+            if icon_path().is_file():
+                qt_app.setWindowIcon(QIcon(str(icon_path())))
+            self.window = MainWindow(self, start_with_settings=start_with_settings)
+            self.window.show()
+            qt_app.exec()
+            return
+
         if webview is None:
             raise RuntimeError(
                 "缺少 pywebview。请先执行：pip install -r requirements.txt"

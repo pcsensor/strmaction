@@ -1,7 +1,7 @@
-# StrmAction 桌面端开发清单（方案 B / A 形态）
+# StrmAction 桌面端开发清单（方案 A 形态：内嵌播放 + 自制控件）
 
-> 目标：macOS / Windows 桌面壳，WebView 加载现有网页，Python 负责本机 mpv 播放与进度上报。
-> 形态：**自带 mpv 二进制，播放窗口独立**（不做视频画面嵌入主窗口）。
+> 目标：macOS / Windows 桌面端，PySide6 加载现有网页，内嵌 mpv 播放器，自制视频控件与键盘控制，5秒进度上报。
+> 形态：**PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv 播放器 + 仿伴侣 App 自制控件）**。
 > 代码位置：本目录 `desktop/`，不把桌面端源代码放到其他目录。
 > 本机环境：使用 **uv** 管理 Python 环境（`uv venv` / `uv pip install -e ".[dev]"` / `uv run ...`）。
 
@@ -135,9 +135,16 @@
 - [ ] 手工：有 mpv 时播放、headers、暂停/退出进度
 - [ ] 手工：macOS/Windows 各一次（本轮至少验证当前平台）
 
-## 12. 明确不在本轮范围
+## 12. 本轮已实现（方案 A 内嵌与控件改造）
 
-- [ ] 视频画面嵌入 StrmAction 主窗口（libmpv/Qt）
+- [x] 视频画面嵌入 StrmAction 主窗口（PySide6 / mpv wid / 无外部窗口）
+- [x] 仿伴侣 App 自制控件（BufferedSeekBar 三层缓冲条、ControlsOverlay 顶底栏、PlayerDrawer 40% 抽屉）
+- [x] 全功能键盘快捷键与“长按右方向键倍速”状态机
+- [x] 自动连播与选集切换
+- [x] 单元测试扩充：41 passed
+
+## 13. 明确不在本轮范围
+
 - [ ] 内置 mpv 二进制实际下载并提交到仓库（提供准备脚本/打包路径）
 - [ ] 托盘常驻、开机自启、自动更新
 - [ ] macOS 公证/Windows 代码签名（提供构建说明）

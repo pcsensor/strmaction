@@ -166,6 +166,11 @@ class MpvController:
         on_finished: Callable[[], None] | None = None,
         on_error: Callable[[str], None] | None = None,
         on_exited: Callable[[], None] | None = None,
+        on_speed: Callable[[float], None] | None = None,
+        on_volume: Callable[[int], None] | None = None,
+        on_cache_state: Callable[[dict], None] | None = None,
+        on_tracks: Callable[[list], None] | None = None,
+        on_idle: Callable[[bool], None] | None = None,
         logger=None,
     ):
         self.executable = executable
@@ -177,6 +182,11 @@ class MpvController:
         self._on_finished = on_finished
         self._on_error = on_error
         self._on_exited = on_exited
+        self._on_speed = on_speed
+        self._on_volume = on_volume
+        self._on_cache_state = on_cache_state
+        self._on_tracks = on_tracks
+        self._on_idle = on_idle
         self._logger = logger
         self._process: subprocess.Popen | None = None
         self._conn = None
@@ -189,13 +199,15 @@ class MpvController:
         self._finished_sent = False
         self.duration: float | None = None
         self.position: float = 0.0
+        self.speed: float = 1.0
+        self.volume: int = 100
 
     # -- lifecycle -----------------------------------------------------
-    def play(self, payload: PlaybackPayload) -> None:
+    def play(self, payload: PlaybackPayload, wid: int | None = None) -> None:
         if self._process is not None:
             raise MpvError("播放器已在运行")
         self._subtitles = payload.subtitles
-        self._start_process(payload)
+        self._start_process(payload, wid=wid)
         try:
             self._connect()
             self._reader = threading.Thread(
@@ -207,7 +219,7 @@ class MpvController:
             self.stop()
             raise
 
-    def _start_process(self, payload: PlaybackPayload) -> None:
+    def _start_process(self, payload: PlaybackPayload, wid: int | None = None) -> None:
         ipc_path = self._make_ipc_path()
         args = [
             self.executable,
@@ -219,6 +231,11 @@ class MpvController:
             "--title=StrmAction",
             f"--input-ipc-server={ipc_path}",
         ]
+        if wid is not None:
+            args.append(f"--wid={wid}")
+            args.append("--osc=no")
+            args.append("--osd-bar=no")
+            args.append("--input-default-bindings=no")
         if payload.resume_ms > 3000:
             args.append(f"--start={payload.resume_ms / 1000:.1f}")
         args.extend(tls_args(self.tls_verify))
@@ -271,11 +288,19 @@ class MpvController:
         headers = headers_to_mpv(payload.headers)
         if headers:
             self._command(["set_property", "http-header-fields", headers])
+        ua = payload.headers.get("User-Agent") or payload.headers.get("user-agent")
+        if ua:
+            self._command(["set_property", "user-agent", ua])
         for prop_id, name in (
             (1, "time-pos"),
             (2, "duration"),
             (3, "pause"),
             (4, "eof-reached"),
+            (5, "speed"),
+            (6, "volume"),
+            (7, "demuxer-cache-state"),
+            (8, "track-list"),
+            (9, "core-idle"),
         ):
             self._command(["observe_property", prop_id, name])
         if payload.resume_ms > 3000:
@@ -283,6 +308,32 @@ class MpvController:
                 ["set_property", "start", f"{payload.resume_ms / 1000:.1f}"]
             )
         self._command(["loadfile", payload.play_url])
+
+    # -- Controls ------------------------------------------------------
+    def seek(self, seconds: float, relative: bool = True) -> None:
+        mode = "relative" if relative else "absolute"
+        self._command(["seek", seconds, mode])
+
+    def set_pause(self, paused: bool) -> None:
+        self._command(["set_property", "pause", paused])
+
+    def set_speed(self, speed: float) -> None:
+        self._command(["set_property", "speed", speed])
+
+    def set_volume(self, volume: int) -> None:
+        self._command(["set_property", "volume", volume])
+
+    def set_sub(self, sid: Any) -> None:
+        self._command(["set_property", "sid", sid])
+
+    def set_audio(self, aid: Any) -> None:
+        self._command(["set_property", "aid", aid])
+
+    def cycle_sub(self) -> None:
+        self._command(["cycle", "sub"])
+
+    def cycle_audio(self) -> None:
+        self._command(["cycle", "audio"])
 
     # -- IPC -----------------------------------------------------------
     def _command(self, command: list) -> None:
@@ -352,6 +403,23 @@ class MpvController:
                     self._on_paused(bool(data))
             elif name == "eof-reached" and data:
                 self._mark_finished()
+            elif name == "speed" and data is not None:
+                self.speed = float(data)
+                if self._on_speed:
+                    self._on_speed(self.speed)
+            elif name == "volume" and data is not None:
+                self.volume = int(data)
+                if self._on_volume:
+                    self._on_volume(self.volume)
+            elif name == "demuxer-cache-state" and data is not None:
+                if self._on_cache_state and isinstance(data, dict):
+                    self._on_cache_state(data)
+            elif name == "track-list" and data is not None:
+                if self._on_tracks and isinstance(data, list):
+                    self._on_tracks(data)
+            elif name == "core-idle":
+                if self._on_idle:
+                    self._on_idle(bool(data))
         except (TypeError, ValueError):
             return
 
