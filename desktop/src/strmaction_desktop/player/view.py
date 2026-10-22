@@ -1,13 +1,15 @@
-"""Integrated embedded PlayerView combining video surface, overlay, drawer, and keyboard handler."""
+"""Integrated embedded PlayerView combining QVideoWidget, overlay, drawer, and keyboard handler."""
 
 from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import QWidget
 
 from ..security import PlaybackPayload
+from .controller import QtPlayerController
 from .drawer import PlayerDrawer
 from .keyboard import KeyboardHandler
 from .overlay import ControlsOverlay
@@ -23,8 +25,9 @@ class PlayerView(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMouseTracking(True)
 
-        self._controller = None  # MpvController
+        self._controller: QtPlayerController | Any = None
         self._payload: PlaybackPayload | None = None
+        self._reporter = None
         self._normal_speed: float = 1.0
         self._is_paused: bool = False
         self._duration: float = 0.0
@@ -33,10 +36,22 @@ class PlayerView(QWidget):
         self._init_keyboard()
 
     def _init_ui(self) -> None:
-        # 1. Native video surface widget (where mpv draws via --wid)
-        self.video_widget = QWidget(self)
-        self.video_widget.setAttribute(Qt.WidgetAttribute.WA_NativeWindow, True)
+        # 1. Native Qt video surface widget (uses OS GPU via Direct3D/Metal)
+        self.video_widget = QVideoWidget(self)
         self.video_widget.setStyleSheet("background-color: #000000;")
+
+        # Built-in Qt multimedia controller
+        self.controller = QtPlayerController(self)
+        self.controller.set_video_output(self.video_widget)
+        self._controller = self.controller
+
+        # Wire controller signals
+        self.controller.position_changed.connect(self._on_player_position)
+        self.controller.duration_changed.connect(self._on_player_duration)
+        self.controller.paused_changed.connect(self._on_player_paused)
+        self.controller.speed_changed.connect(self._on_player_speed)
+        self.controller.buffer_progress_changed.connect(self._on_player_buffer_progress)
+        self.controller.loading_changed.connect(self._on_player_loading)
 
         # 2. Controls Overlay
         self.overlay = ControlsOverlay(self)
@@ -76,9 +91,15 @@ class PlayerView(QWidget):
     def get_video_wid(self) -> int:
         return int(self.video_widget.winId())
 
-    def bind_controller(self, controller, payload: PlaybackPayload) -> None:
-        self._controller = controller
+    def load_playback(
+        self,
+        payload: PlaybackPayload,
+        stream_url: str,
+        reporter=None,
+    ) -> None:
+        """Start playing a stream URL with metadata and optional progress reporter."""
         self._payload = payload
+        self._reporter = reporter
         self._normal_speed = 1.0
         self._is_paused = False
         self._duration = (payload.duration_ms or 0) / 1000.0 if payload.duration_ms else 0.0
@@ -106,6 +127,48 @@ class PlayerView(QWidget):
         self.overlay.show_controls()
         self.overlay.restart_auto_hide_timer()
 
+        # Load media into Qt player
+        self.controller.load_media(stream_url)
+        if payload.resume_ms and payload.resume_ms > 0:
+            self.controller.seek(payload.resume_ms / 1000.0)
+
+    def stop_playback(self) -> None:
+        self.controller.stop()
+        if self._reporter:
+            try:
+                self._reporter.stop(flush=True)
+            except Exception:
+                pass
+            self._reporter = None
+
+    def bind_controller(self, controller, payload: PlaybackPayload) -> None:
+        """Support external or legacy controller binding."""
+        self._controller = controller
+        self._payload = payload
+        self._normal_speed = 1.0
+        self._is_paused = False
+        self._duration = (payload.duration_ms or 0) / 1000.0 if payload.duration_ms else 0.0
+
+        self.overlay.set_title(payload.title, payload.series_title)
+        self.overlay.set_duration(self._duration)
+        self.overlay.set_position((payload.resume_ms or 0) / 1000.0)
+        self.overlay.set_speed_text(1.0)
+        self.overlay.set_paused(False)
+
+        has_prev, has_next = self._check_nav_available(payload)
+        self.overlay.set_nav_buttons(has_prev, has_next)
+
+        self.drawer.set_data(
+            playlist=payload.playlist,
+            current_item_id=payload.item_id,
+            current_speed=1.0,
+            subtitles=[{"label": s.label, "url": s.url} for s in payload.subtitles],
+        )
+
+        self.setFocus()
+        self.overlay.show_controls()
+        self.overlay.restart_auto_hide_timer()
+
     def _check_nav_available(self, payload: PlaybackPayload) -> tuple[bool, bool]:
         if not payload.playlist or payload.current_index < 0:
             return False, payload.next_item_id is not None
@@ -113,28 +176,50 @@ class PlayerView(QWidget):
         has_next = payload.current_index + 1 < len(payload.playlist) or payload.next_item_id is not None
         return has_prev, has_next
 
-    # -- MPV Event Listeners --
-    def on_mpv_position(self, seconds: float) -> None:
+    # -- Player Internal Event Listeners --
+    def _on_player_position(self, seconds: float) -> None:
         self.overlay.set_position(seconds)
+        if self._reporter:
+            pos_ms = int(seconds * 1000)
+            dur_ms = int(self._duration * 1000) if self._duration else None
+            self._reporter.update(pos_ms, dur_ms)
 
-    def on_mpv_duration(self, seconds: float) -> None:
+    def _on_player_duration(self, seconds: float) -> None:
         self._duration = seconds
         self.overlay.set_duration(seconds)
 
-    def on_mpv_paused(self, paused: bool) -> None:
+    def _on_player_paused(self, paused: bool) -> None:
         self._is_paused = paused
         self.overlay.set_paused(paused)
 
-    def on_mpv_speed(self, speed: float) -> None:
+    def _on_player_speed(self, speed: float) -> None:
         if not self.keyboard._is_speed_boost_active:
             self._normal_speed = speed
         self.overlay.set_speed_text(speed)
         self.drawer.set_data(current_speed=speed)
 
+    def _on_player_buffer_progress(self, fraction: float) -> None:
+        self.overlay.seekbar.set_buffer_progress(fraction)
+
+    def _on_player_loading(self, is_loading: bool) -> None:
+        self.overlay.set_loading(is_loading)
+
+    # Legacy / MPV callback adapters for tests & backwards compatibility
+    def on_mpv_position(self, seconds: float) -> None:
+        self._on_player_position(seconds)
+
+    def on_mpv_duration(self, seconds: float) -> None:
+        self._on_player_duration(seconds)
+
+    def on_mpv_paused(self, paused: bool) -> None:
+        self._on_player_paused(paused)
+
+    def on_mpv_speed(self, speed: float) -> None:
+        self._on_player_speed(speed)
+
     def on_mpv_cache_state(self, cache_info: dict) -> None:
         if not isinstance(cache_info, dict):
             return
-        # Calculate forward buffered seconds
         cache_duration = cache_info.get("cache-duration", 0)
         if cache_duration and self.overlay._position >= 0:
             b_end = self.overlay._position + float(cache_duration)
@@ -199,18 +284,21 @@ class PlayerView(QWidget):
 
     def _on_volume_relative(self, delta: int) -> None:
         if self._controller:
-            cur_vol = getattr(self._controller, "volume", 100) or 100
-            new_vol = max(0, min(100, cur_vol + delta))
-            self._controller.set_volume(new_vol)
-            self.overlay.flash_seek_badge(f"音量 {new_vol}%")
+            if hasattr(self._controller, "set_volume_relative"):
+                self._controller.set_volume_relative(delta)
+            elif hasattr(self._controller, "set_volume"):
+                cur_vol = getattr(self._controller, "volume", 100) or 100
+                new_vol = max(0, min(100, cur_vol + delta))
+                self._controller.set_volume(new_vol)
+            self.overlay.flash_seek_badge(f"音量调整")
 
     def _cycle_subtitle(self) -> None:
-        if self._controller:
+        if self._controller and hasattr(self._controller, "cycle_sub"):
             self._controller.cycle_sub()
             self.overlay.flash_seek_badge("切换字幕")
 
     def _cycle_audio(self) -> None:
-        if self._controller:
+        if self._controller and hasattr(self._controller, "cycle_audio"):
             self._controller.cycle_audio()
             self.overlay.flash_seek_badge("切换音轨")
 
@@ -238,11 +326,11 @@ class PlayerView(QWidget):
             self._controller.set_speed(speed)
 
     def _on_subtitle_selected(self, sid: Any) -> None:
-        if self._controller:
+        if self._controller and hasattr(self._controller, "set_sub"):
             self._controller.set_sub(sid)
 
     def _on_audio_selected(self, aid: Any) -> None:
-        if self._controller:
+        if self._controller and hasattr(self._controller, "set_audio"):
             self._controller.set_audio(aid)
 
     def _play_prev_episode(self) -> None:
@@ -251,7 +339,7 @@ class PlayerView(QWidget):
         idx = self._payload.current_index
         if idx > 0:
             prev_ep = self._payload.playlist[idx - 1]
-            prev_id = prev_ep.get("item_id")
+            prev_id = prev_ep.get("item_id") or prev_ep.get("id")
             if prev_id:
                 self.next_episode_requested.emit(prev_id)
 
@@ -262,7 +350,7 @@ class PlayerView(QWidget):
             idx = self._payload.current_index
             if idx + 1 < len(self._payload.playlist):
                 next_ep = self._payload.playlist[idx + 1]
-                next_id = next_ep.get("item_id")
+                next_id = next_ep.get("item_id") or next_ep.get("id")
                 if next_id:
                     self.next_episode_requested.emit(next_id)
                     return
@@ -291,6 +379,7 @@ class PlayerView(QWidget):
 
     def _on_back_clicked(self) -> None:
         self.keyboard.cancel_boost()
+        self.stop_playback()
         self.exit_requested.emit()
 
     # -- Event propagation --

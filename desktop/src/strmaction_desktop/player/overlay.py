@@ -126,20 +126,28 @@ class ControlsOverlay(QWidget):
 
         layout.addWidget(self.top_bar)
 
+        # Top Badge Container (anchored near top, below top_bar)
+        self.top_badge_container = QWidget(self)
+        self.top_badge_container.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
+        top_badge_layout = QHBoxLayout(self.top_badge_container)
+        top_badge_layout.setContentsMargins(0, 10, 0, 0)
+        top_badge_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        # Speed Badge (e.g. "⚡ 2.0x 极速播放中") - placed near top with higher transparency
+        self.speed_badge = QLabel("⚡ 2.0x 极速播放中", self.top_badge_container)
+        self.speed_badge.setStyleSheet(
+            "background: rgba(0, 0, 0, 0.45); color: #F0A94D; font-size: 14px; font-weight: bold; "
+            "padding: 6px 16px; border-radius: 16px; border: 1px solid rgba(240, 169, 77, 0.35);"
+        )
+        self.speed_badge.setVisible(False)
+        top_badge_layout.addWidget(self.speed_badge)
+        layout.addWidget(self.top_badge_container)
+
         # 2. Center Area (Feedback Badges)
         self.center_area = QWidget(self)
         self.center_area.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground, True)
         center_layout = QVBoxLayout(self.center_area)
         center_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        # Speed Badge (e.g. "⚡ 2.0x 极速播放中")
-        self.speed_badge = QLabel("⚡ 2.0x 极速播放中", self.center_area)
-        self.speed_badge.setStyleSheet(
-            "background: rgba(0, 0, 0, 0.85); color: #F0A94D; font-size: 15px; font-weight: bold; "
-            "padding: 8px 18px; border-radius: 20px; border: 1px solid rgba(240, 169, 77, 0.6);"
-        )
-        self.speed_badge.setVisible(False)
-        center_layout.addWidget(self.speed_badge, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Center pulse icon (Play/Pause)
         self.center_icon = QLabel(self.center_area)
@@ -359,13 +367,19 @@ class ControlsOverlay(QWidget):
 
     # -- Auto hide logic --
     def mouseMoveEvent(self, _event: QMouseEvent) -> None:
-        self.show_controls()
+        # Throttle and guard cursor and visibility updates to prevent Win32 SetCursor lag
+        needs_show = not self.top_bar.isVisible() or self.cursor().shape() != Qt.CursorShape.ArrowCursor
+        if needs_show:
+            self.show_controls()
         self.restart_auto_hide_timer()
 
     def show_controls(self) -> None:
-        self.top_bar.setVisible(True)
-        self.bottom_bar.setVisible(True)
-        self.setCursor(Qt.CursorShape.ArrowCursor)
+        if not self.top_bar.isVisible():
+            self.top_bar.setVisible(True)
+        if not self.bottom_bar.isVisible():
+            self.bottom_bar.setVisible(True)
+        if self.cursor().shape() != Qt.CursorShape.ArrowCursor:
+            self.setCursor(Qt.CursorShape.ArrowCursor)
 
     def restart_auto_hide_timer(self) -> None:
         self._hide_timer.start()

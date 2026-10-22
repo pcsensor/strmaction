@@ -1,12 +1,12 @@
 # StrmAction Desktop（Windows / macOS）
 
-StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv 播放器 + 仿安卓伴侣 App 自制控件）**：
+StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 原生硬件加速内嵌播放器 + 仿安卓伴侣 App 自制控件）**：
 
 - 网页、登录、媒体库、详情、设置全部复用服务端现有 Web UI；
-- 点击播放后，直接在主窗口**无缝切换为内嵌播放器（零外部弹窗）**；
+- 点击播放后，直接在主窗口**无缝切换为内嵌播放器（零外部弹窗，无需安装或打包 mpv）**；
 - 播放控件 1:1 对齐安卓伴侣 App（三层缓冲进度条、40% 侧滑选集/倍速/音轨抽屉、长按倍速、中心反馈）；
 - 具备完整的**键鼠操作体系**（空格播放/暂停、方向键调进度、长按右方向键 2.0x 倍速、滚轮选集等）；
-- 自动设置服务端按库下发的全部请求头（`User-Agent` 与 `Referer`），302 跨域重定向全链路透传，绝不报 403；
+- 内置轻量环回流媒体代理，自动处理服务端下发的全部防盗链请求头（`User-Agent` 与 `Referer`），302 跨域重定向全链路透传，绝不报 403；
 - 播放进度通过现有 `/api/items/{id}/progress` 接口以 5 秒心跳上报，使用 item 级 `play_token`。
 
 > 本机使用 `uv` 管理 Python 环境。下面命令默认都从 `desktop/` 目录执行。
@@ -22,17 +22,16 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv �
 3. [环境要求](#3-环境要求)
 4. [快速开始（源码运行）](#4-快速开始源码运行)
 5. [第一次启动](#5-第一次启动)
-6. [mpv 配置（重点）](#6-mpv-配置重点)
-7. [配置与日志位置](#7-配置与日志位置)
-8. [命令行参数](#8-命令行参数)
-9. [播放、进度、字幕与多版本](#9-播放进度字幕与多版本)
-10. [构建安装包](#10-构建安装包)
-11. [安全说明](#11-安全说明)
-12. [测试](#12-测试)
-13. [故障排查](#13-故障排查)
-14. [已知限制](#14-已知限制)
-15. [目录结构](#15-目录结构)
-16. [FAQ](#16-faq)
+6. [配置与日志位置](#6-配置与日志位置)
+7. [命令行参数](#7-命令行参数)
+8. [播放、进度、字幕与多版本](#8-播放进度字幕与多版本)
+9. [构建安装包](#9-构建安装包)
+10. [安全说明](#10-安全说明)
+11. [测试](#11-测试)
+12. [故障排查](#12-故障排查)
+13. [已知限制](#13-已知限制)
+14. [目录结构](#14-目录结构)
+15. [FAQ](#15-faq)
 
 ---
 
@@ -43,14 +42,15 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv �
 - 一个 Windows / macOS 原生桌面程序，名字和图标都是 **StrmAction**；
 - 浏览态使用 WebEngine 打开你的 StrmAction 服务器网页，负责登录、选片、详情、搜索；
 - 播放态直接在窗口内部呈现**内嵌播放器**，搭配仿伴侣 App 的自制交互控件与全套键盘快捷控制；
-- 底层调度本机 mpv 进行硬解渲染，并通过 IPC 严格透传防盗链请求头与 5 秒心跳进度上报。
+- 底层调度操作系统原生硬件加速（Windows Direct3D / macOS Metal），并通过本地代理严格透传防盗链请求头与 5 秒心跳进度上报；
+- **完全开箱即用**：零外部播放器依赖，无需手动选择或配置任何播放器路径。
 
 ### 不是什么
 
 - **不是** 另一套媒体库客户端。桌面端没有自己的媒体库页面，所有浏览都在网页里完成；
-- **不是** 视频下载器。播放 URL 直接交给本机 mpv，服务端不代理视频流；
-- **不是** 粗糙的 mpv 独立悬浮弹窗。播放器与自制控件完全内嵌在桌面端主窗口；
-- **不是** `pip install mpv`。真正负责解码的是 `mpv.exe` / `mpv` 原生二进制；
+- **不是** 视频下载器。服务端不代理视频大流量；
+- **不是** 粗糙的独立悬浮弹窗。播放器与自制控件完全内嵌在桌面端主窗口；
+- **不是** 外挂第三方播放器。纯 PySide6 原生播放架构，免去外部二进制文件与路径配置；
 - **不是** 手机伴侣 App 的替代品。手机/电视仍用 `companion/` 里的 Android App。
 
 ---
@@ -68,12 +68,13 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv �
 │ │ │        │                                               │ │
 │ │ │        │ 用户点击播放 / window.StrmActionNative.playItem│ │
 │ │ │        ▼                                               │ │
-│ │ └─ Page 1: PlayerView (内嵌播放视图)                     │ │
-│ │     ├── VideoSurface (原生 QWidget，通过 --wid 挂载 mpv) │ │
-│ │     ├── ControlsOverlay (仿伴侣 App 顶栏、底栏、中心反馈)│ │
-│ │     │    ├── BufferedSeekBar (三层缓冲进度条)            │ │
+│ │ └─ Page 1: PlayerView (原生硬件加速内嵌播放视图)         │ │
+│ │     ├── QVideoWidget (原生视频渲染表面: Windows D3D/Metal)│ │
+│ │     ├── ControlsOverlay (仿伴侣 App 顶栏、底栏、反馈徽标) │ │
+│ │     │    ├── BufferedSeekBar (平滑三层缓冲进度条)        │ │
+│ │     │    ├── 半透明顶部倍速指示胶囊 (不遮挡主体画面)     │ │
 │ │     │    └── 3.5s 无操作自动隐藏控制栏与鼠标光标        │ │
-│ │     ├── PlayerDrawer (右侧 40% 毛玻璃抽屉: 选集/倍速/音轨)│ │
+│ │     ├── PlayerDrawer (右侧 40% 抽屉: 选集高亮/倍速/音轨) │ │
 │ │     └── KeyboardHandler (按键状态机: 空格/长按右键倍速等)│ │
 │ └──────────────┬───────────────────────────────────────────┘ │
 └────────────────┼─────────────────────────────────────────────┘
@@ -123,13 +124,12 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv �
    window.StrmActionNative.playItem(JSON.stringify(payload))
    ```
 
-7. Python 校验 payload，找到 mpv，启动进程；
-8. Python 通过 mpv JSON IPC：
-   - 设置完整 `http-header-fields`；
+7. Python 校验 payload，通过内置本地流媒体代理（`proxy.py`）注册临时回送地址；
+8. Python 将流媒体提供给原生硬件加速播放器（`QMediaPlayer` + `QVideoWidget`）：
+   - 本地代理保留 headers（User-Agent/Referer）并妥善处理 302 跨域重定向；
    - 从 `resume_ms` 续播；
-   - 加载字幕；
-9. Python 监听 `time-pos / duration / pause / eof-reached`；
-10. 按 `progress_interval_ms` 上报，暂停/seek/退出/播完立即补写。
+   - 调度系统 GPU 进行硬件解码渲染（Direct3D / Metal）；
+9. 监听播放位置与状态，按 `progress_interval_ms` 向服务端上报进度，暂停/seek/退出/播完立即补写。
 
 > Python 不需要自己登录，也不需要拿网页 Cookie。播放鉴权由网页完成，Python 只使用 payload 里的 `play_token` 上报进度。
 
@@ -141,10 +141,10 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 内嵌 mpv �
 |---|---|
 | Python | 3.10+ |
 | 包管理 | [uv](https://docs.astral.sh/uv/) |
-| Windows | Windows 10/11；需要 WebView2 Runtime（Win11 通常自带） |
-| macOS | macOS 11+；使用系统 WKWebView |
+| Windows | Windows 10/11；DirectX 11+（用于原生视频硬解） |
+| macOS | macOS 11+；Metal 硬件加速 |
+| 播放内核 | 内置 PySide6 原生多媒体组件，**无需外部播放器二进制文件** |
 | 服务端 | 必须支持 `direct` 播放模式（本仓库当前版本已包含） |
-| mpv | 可用系统已安装的 mpv；正式分发建议打包时自带 |
 
 服务端还需要：
 
@@ -175,12 +175,10 @@ uv run strmaction-desktop
 uv run python -m strmaction_desktop
 ```
 
-### 4.3 直接指定服务器 / mpv
+### 4.3 直接指定服务器地址
 
 ```bash
 uv run strmaction-desktop --server https://media.example.com
-uv run strmaction-desktop --mpv "C:\tools\mpv\mpv.exe"
-uv run strmaction-desktop --server http://192.168.1.10:8080 --mpv "/usr/local/bin/mpv"
 ```
 
 ### 4.4 只打开桌面端设置
@@ -206,137 +204,35 @@ uv run strmaction-desktop --debug
 1. 填服务器地址，例如 `https://media.example.com`；
    - 必须带 `http://` 或 `https://`；
    - 结尾的 `/` 可省略；
-2. 填 mpv 路径，或让它自动检测；
-   - 留空时按“配置 → 自带 → PATH → 常见安装路径”查找；
-3. 填「播放缓存上限（MB）」，默认 128；0 表示关闭本机 mpv 的预读缓存；
-4. 点「保存并打开」；
-5. 进入网页登录。
+2. 填「预读缓存上限（MB）」，默认 128；
+3. 点「保存并打开」；
+4. 进入网页登录。无需配置任何播放器路径，纯开箱即用。
 
-之后要改服务器地址 / mpv 路径 / 缓存上限：
+之后要改服务器地址 / 缓存上限：
 
 - 网页「设置 → 我的播放方式 → 打开桌面端设置」；
 - 或命令行 `uv run strmaction-desktop --settings`。
 
 ---
 
-## 6. mpv 配置（重点）
+## 6. 原生播放架构与流媒体代理（重点）
 
-### 6.1 三种使用方式
+### 6.1 纯原生硬件加速播放器
 
-| 方式 | 适合场景 | 用户是否需要装 mpv | 做法 |
-|---|---|---|---|
-| A. 使用系统已安装的 mpv | 开发、个人使用 | 是 | 装 mpv，留空配置让它自动找 |
-| B. 打包时自带 mpv | 正式分发给别人 | **否** | `scripts/prepare_mpv.py` + 重新构建 |
-| C. 手动指定 mpv 路径 | 自定义位置 | 是 | 设置页选择，或 `--mpv` |
+当前版本已全面升级为 **PySide6 原生播放架构**（`QMediaPlayer` + `QVideoWidget` + `QAudioOutput`）：
 
-### 6.1.1 播放缓存上限
+- **零外部二进制**：不需要安装、下载或打包任何 `mpv.exe` 或 `mpv` 可执行程序，安装包体积大幅缩减；
+- **原生硬件加速**：Windows 调度 Direct3D / Media Foundation，macOS 调度 Metal / AVFoundation 进行硬件解码渲染；
+- **同源图层无黑屏**：视频渲染直接发生在 Qt 窗口体系内，与浮层控制栏、右侧抽屉、顶部指示胶囊完美合成，杜绝黑屏问题。
 
-桌面端设置页的「播放缓存上限（MB）」会转成 mpv 参数，覆盖用户 `mpv.conf` 里的缓存设置：
+### 6.2 本地环回流媒体代理（LocalStreamingProxy）
 
-```text
---cache=yes
---demuxer-max-bytes=128MiB
---demuxer-max-back-bytes=32MiB
---cache-on-disk=no
-```
+百度网盘、Alist 与 CDN 直链通常严格要求 `User-Agent` 与 `Referer` 头，且存在 302 跨域重定向。由于操作系统底层解码器在重定向时容易丢失自定义请求头，桌面端内置了一个极轻量的流媒体代理（`proxy.py`，绑定在 `127.0.0.1:<可用随机端口>`）：
 
-- 默认 128MB；范围 0–2048；
-- `0` 会改为 `--cache=no`，网络片源可能更容易卡顿；
-- 这是**进程内缓存**，退出 mpv 即释放，不产生离线缓存文件；
-- mpv 是独立窗口，桌面端不显示缓冲进度条；缓冲进度只在伴侣 App 内置播放器里显示。
-
-### 6.2 “打包时自带 mpv”是什么意思
-
-这句话的意思是：
-
-> **在打 EXE / .app 之前，把一份 mpv 可执行文件放进 `desktop/vendor/mpv/<平台>/`，让 PyInstaller 一起打进安装包。这样用户拿到安装包后不需要自己安装 mpv。**
-
-`scripts/prepare_mpv.py` 只是一个“搬运工”，**不会联网下载 mpv**：
-
-```text
-你本机已有的 mpv 目录
-        ↓  prepare_mpv.py 复制
-desktop/vendor/mpv/windows-x64/
-        ↓  PyInstaller 打包
-desktop/dist/StrmAction/_internal/vendor/mpv/windows-x64/
-        ↓  运行时
-桌面端优先使用这个自带 mpv
-```
-
-Windows 示例：
-
-```powershell
-cd desktop
-uv run python scripts/prepare_mpv.py --source C:\tools\mpv
-.\scripts\build_windows.ps1
-```
-
-macOS 示例：
-
-```bash
-cd desktop
-uv run python scripts/prepare_mpv.py --source /Applications/mpv.app
-./scripts/build_macos.sh
-```
-
-`--source` 可以是：
-
-- Windows：包含 `mpv.exe` 和 DLL 的**目录**（推荐）；
-- macOS：`mpv.app`，或单个 `mpv` 可执行文件；
-- 已经是某个 mpv 可执行文件路径也可以，但 Windows 请用目录形式，避免漏 DLL。
-
-目录约定：
-
-```text
-desktop/vendor/mpv/
-├── windows-x64/
-│   ├── mpv.exe
-│   └── *.dll
-├── windows-arm64/
-│   └── mpv.exe
-├── macos-arm64/
-│   └── mpv            # 或 mpv.app/Contents/MacOS/mpv
-└── macos-x64/
-    └── mpv
-```
-
-不提交到仓库的原因：
-
-- 体积大；
-- mpv 通常使用 GPL 许可证，再分发需要确认许可证义务；
-- 不同平台/架构需要不同二进制。
-
-仓库只保留 `vendor/mpv/README.md` 和准备脚本；二进制由构建机准备。
-
-### 6.3 如何确认“自带 mpv”生效
-
-构建后检查：
-
-```text
-desktop/dist/StrmAction/_internal/vendor/mpv/windows-x64/mpv.exe
-```
-
-或启动桌面端，在设置页看「已找到：...」。
-
-注意：**配置里的 `mpv_path` 优先级高于自带 mpv**。如果你之前手动保存过 mpv 路径，想改用自带 mpv，请在设置页把 mpv 路径清空再保存。
-
-### 6.4 查找顺序
-
-1. 配置里的 `mpv_path`；
-2. 自带：`vendor/mpv/<platform>/mpv[.exe]`（macOS 也支持 `mpv.app`）；
-3. 系统 `PATH`；
-4. 常见安装路径：
-   - macOS：`/Applications/mpv.app/Contents/MacOS/mpv`、`/opt/homebrew/bin/mpv`、`/usr/local/bin/mpv`
-   - Windows：`C:\Program Files\mpv\mpv.exe`、`%LOCALAPPDATA%\Programs\mpv\mpv.exe`
-
-找不到时，播放会返回明确错误；可在设置页手动选择。
-
-### 6.5 常见误区
-
-- **“自带 mpv”不是把视频画面嵌进 StrmAction 主窗口**；仍然是独立 mpv 窗口。
-- **不是 `pip install mpv`**；Python 的 `mpv` 包只是控制/绑定库，不是播放器。
-- **当前 `desktop/dist/StrmAction` 里的 Windows exe 没有内置 mpv**，因为本机没有 mpv 二进制；它依赖系统已安装的 mpv。要自带，按 6.2 准备后重新构建。
-- 自带 mpv 仍然受 mpv 许可证约束；正式发布前请确认 GPL/第三方许可证义务。
+1. 网页点击播放时，桌面端接收 payload 并注册本地回送地址 `http://127.0.0.1:<port>/stream_id`；
+2. `QMediaPlayer` 仅需连接该本地地址；
+3. 本地代理在后台向远端云盘/CDN 发起流式转发，全链路妥善维持 `User-Agent`、`Referer`、`Range` 字节范围请求并处理 302 重定向；
+4. 用户 Seek、暂停或退出时，代理优雅处理管道断开，无任何冗余垃圾流。
 
 ---
 
@@ -351,8 +247,7 @@ desktop/dist/StrmAction/_internal/vendor/mpv/windows-x64/mpv.exe
 配置只保存：
 
 - `server_url`
-- `mpv_path`
-- `cache_limit_mb`（0 = 关闭预读；非 0 按 16–2048MB）
+- `cache_limit_mb`（0 = 系统默认；非 0 按 16–2048MB）
 - 窗口尺寸
 - 日志级别
 
@@ -364,7 +259,6 @@ desktop/dist/StrmAction/_internal/vendor/mpv/windows-x64/mpv.exe
 
 ```text
 --server URL     设置并保存服务器地址
---mpv PATH       设置并保存 mpv 路径
 --settings       启动后直接打开桌面端设置
 --debug          调试日志 + WebView 调试
 --version        输出版本号
@@ -384,11 +278,11 @@ uv run strmaction-desktop --server https://media.example.com
 
 ### 9.1 请求头与防盗链（重点）
 
-服务端下发的 `headers` 会**全量**设置给 mpv，不只 User-Agent：
+服务端下发的 `headers` 会由内置的本地环回代理全量透传，不只 User-Agent：
 
-- `User-Agent` 与 `Referer`
-- `Cookie` / `Authorization`（如果配置了网盘鉴权）
-- 底层通过 mpv IPC 注入 `user-agent` 与 `http-header-fields` 属性，直接作用于 FFmpeg 协议栈，**在 302 跨域重定向到百度网盘/Alist CDN 时全链路严格透传，绝不触发 403 Forbidden**；
+- `User-Agent` 与 `Referer`；
+- `Cookie` / `Authorization`（如果配置了网盘鉴权）；
+- 本地流媒体代理通过 Python 标准库透明转发并在重定向时完整保持 Headers，**在 302 跨域重定向到百度网盘/Alist CDN 时全链路严格透传，绝不触发 403 Forbidden**；
 - 避免放在命令行参数中，防止敏感 Token/Cookie 泄露在系统进程列表。
 
 ### 9.2 仿安卓伴侣 App 自制控件体系
@@ -402,14 +296,16 @@ uv run strmaction-desktop --server https://media.example.com
    - 8px 高度全圆角白色底轨（`#3DFFFFFF`）；
    - 金橙色已播放进度填充（`#F0A94D`）；
    - 2.5px 白色高亮网络缓冲线置顶压层（`#E8FFFFFF`，分段展示命中磁盘的预读区间）；
-   - 3.5×16px 纯白竖胶囊播放滑块与鼠标悬停时间 Tooltip 预览。
+   - 3.5×16px 纯白竖胶囊播放滑块与鼠标悬停时间 Tooltip 预览；
+   - 拖拽 Seek 期间保持平滑稳定，杜绝频繁闪烁。
 3. **40% 侧滑抽屉（PlayerDrawer）**：
    - 点击底栏对应按钮或快捷键从右侧顺滑滑出，占据 40% 屏幕宽度（支持滚轮）；
    - 采用深黑毛玻璃底色（`#13161F`）与左侧 16px 圆角；
-   - 包含 **“选集”**（网格列表、已看标识、当前剧集高亮）、**“倍速”**（0.5x~3.0x 多档选择）、**“音轨与字幕”**（多音轨选择与外挂/内嵌字幕切换及关闭）。
-4. **中央反馈与自动隐藏**：
-   - 屏幕中央提供大播放/暂停脉冲动画、`+5s` / `-5s` 快进退反馈徽标、`⚡ 2.0x 极速播放中` 倍速指示器；
-   - 播放过程中鼠标静止 3.5 秒自动隐藏顶底控制条与鼠标指针，鼠标微动或按键立即唤醒。
+   - 包含 **“选集”**（网格列表、已看标识、`▶ 播放中` 金色高亮与图标）、**“倍速”**（0.5x~3.0x 多档选择）、**“音轨与字幕”**（多音轨选择与外挂/内嵌字幕切换及关闭）。
+4. **反馈动效与自动隐藏**：
+   - **长按倍速指示胶囊**：位于窗口正上方顶栏下方（Y≈70px 水平居中），采用高透明磨砂胶囊风格（`rgba(0, 0, 0, 0.45)` 配金色文字），绝不遮挡视频中央人物画面与字幕；
+   - 屏幕中央提供大播放/暂停脉冲动画、`+5s` / `-5s` 快进退反馈徽标；
+   - 播放过程中鼠标静止 3.5 秒自动隐藏顶底控制条与鼠标指针，并内置光标状态防抖节流，杜绝鼠标漂移与卡顿。
 
 ### 9.3 全套键盘快捷键与“长按倍速”状态机
 
@@ -456,21 +352,11 @@ desktop\dist\StrmAction\StrmAction.exe
 desktop\dist\StrmAction\_internal\...
 ```
 
-脚本会：
-
-1. 用 uv 准备 `.venv`；
-2. 安装依赖；
-3. 生成图标；
-4. 检查对应平台的 `vendor\mpv\<platform>`（有就一起打包，没有会提示）；
-5. 调 PyInstaller。
-
-正式分发建议：
-
-- 先准备 `vendor/mpv/windows-x64/`；
-- 代码签名，减少 SmartScreen 提示；
-- 目标机器有 WebView2 Runtime（Win11 自带，Win10 可能需要安装）。
+脚本会自动用 uv 准备 `.venv`、安装依赖、生成各分辨率应用图标并调用 PyInstaller 完成一键打包。因为采用纯原生架构，**构建机与目标机均不需要额外下载或安装 mpv**。
 
 ### 10.2 macOS
+
+直接执行构建脚本：
 
 ```bash
 cd desktop
@@ -635,12 +521,10 @@ Get-NetTCPConnection -State Established |
 
 ## 14. 已知限制
 
-- 不依赖用户安装 mpv 时，需要构建前自带 mpv；
-- 当前构建产物默认不带 mpv（仓库不提交二进制）；
 - `play_token` 默认 12 小时；超长暂停后可能需要重新从网页打开；
 - 托盘常驻、开机自启、自动更新暂未实现；
 - macOS 公证/Windows 代码签名需要发布者证书；
-- 目前只准备 Windows/macOS 打包，Linux 未验证。
+- 目前只准备 Windows/macOS 打包，Linux 未测试。
 
 ---
 
@@ -659,77 +543,71 @@ desktop/
 │   ├── app.py                  桌面端入口与应用生命周期
 │   ├── qt_window.py            PySide6 主窗口（QStackedWidget: Web + Player）
 │   ├── bridge.py               JS Bridge 接口
-│   ├── config.py               配置目录/读写
-│   ├── mpv.py                  mpv 查找、启动、IPC、请求头与事件监听
-│   ├── playback.py             播放会话（mpv + 进度）
+│   ├── config.py               配置目录/读写（仅服务地址/缓存配置）
+│   ├── proxy.py                内置本地环回流媒体代理（处理请求头与302重定向）
 │   ├── progress.py             进度上报（5秒心跳）
 │   ├── security.py             payload 校验/脱敏
 │   ├── logging_setup.py
 │   ├── version.py
-│   ├── player/                 仿伴侣 App 自制播放控件
-│   │   ├── view.py             内嵌播放器视图（PlayerView）
-│   │   ├── overlay.py          顶底控制栏与中央反馈（ControlsOverlay）
-│   │   ├── seekbar.py          三层缓冲进度条（BufferedSeekBar）
-│   │   ├── drawer.py           40% 右侧侧滑抽屉（PlayerDrawer）
+│   ├── player/                 仿伴侣 App 自制播放控件与原生播放内核
+│   │   ├── controller.py       基于 QMediaPlayer + QAudioOutput 的播放控制器
+│   │   ├── view.py             内嵌原生视频表面（QVideoWidget）与主交互视图
+│   │   ├── overlay.py          顶底控制栏、顶部倍速指示与中央反馈（ControlsOverlay）
+│   │   ├── seekbar.py          平滑三层缓冲进度条（BufferedSeekBar）
+│   │   ├── drawer.py           40% 右侧侧滑抽屉（PlayerDrawer: 选集高亮/倍速/音轨）
 │   │   ├── keyboard.py         按键快捷键与长按倍速状态机
 │   │   └── icons.py            SVG 矢量图标库
 │   └── assets/
-│       ├── settings.html
+│       ├── settings.html       桌面端设置页（无 mpv 配置项，极简开箱即用）
 │       ├── icon.svg / png / ico / icns
 ├── scripts/
-│   ├── prepare_mpv.py          把 mpv 复制到 vendor/
 │   ├── make_icons.py
-│   ├── build_windows.ps1
-│   └── build_macos.sh
+│   ├── build_windows.ps1       Windows 一键打包脚本
+│   └── build_macos.sh          macOS 一键打包脚本
 ├── packaging/
-│   └── strmaction-desktop.spec
-├── tests/
-│   ├── test_player_ui.py       播放控件与键盘控制单元测试
-│   └── ...
-└── vendor/mpv/README.md        二进制目录约定（由构建机准备）
+│   └── strmaction-desktop.spec PyInstaller 打包规则（包含 Qt 多媒体与网页引擎）
+└── tests/
+    ├── test_player_ui.py       播放控件、选集高亮与键盘控制单元测试
+    ├── test_proxy.py           本地流媒体代理与重定向测试
+    └── ...
 ```
 
 ---
 
 ## 16. FAQ
 
-### Q1：“推荐打包时自带（`scripts/prepare_mpv.py`）”到底是什么意思？
+### Q1：现在还需要安装或下载 mpv 吗？
 
-意思是：**在构建 EXE/.app 之前，把 mpv 可执行文件复制到 `vendor/mpv/<平台>/`，让 PyInstaller 一起打包**。这样最终用户不需要自己安装 mpv。`prepare_mpv.py` 只复制，不下载。
+**完全不需要**。当前版本已全面升级为纯原生播放架构：基于 PySide6 的 `QMediaPlayer` 与 `QVideoWidget`，配合内置的本地环回流媒体代理 `proxy.py`，无需任何外部播放器二进制文件，不需要用户安装 mpv，也不需要构建时下载打包 mpv。
 
-### Q2：自带 mpv 是不是把视频画面嵌进 StrmAction 窗口？
+### Q2：为什么登录设置里没有 mpv 路径配置了？
 
-是的！当前已全面升级为 **PySide6 内嵌架构**：mpv 原生渲染表面直接挂载到主窗口内部的播放器视图（`--wid`），搭配 1:1 仿伴侣 App 自制现代化视频控件，播放时直接在主窗口无缝展示，不再弹出独立外部窗口。
+因为播放器已经完全内嵌并由系统底层原生硬解驱动，开箱即用，因此彻底移除了手动选择或填写 mpv 路径的繁琐步骤。
 
-### Q3：用户必须安装 mpv 吗？
+### Q3：百度网盘或 Alist 的防盗链直链如何播放？
 
-- 如果构建时自带了 mpv：不需要；
-- 如果没自带：需要系统已安装 mpv，或在设置页手动指定路径。
+桌面端随程序启动内置了一个轻量级本地环回代理（`127.0.0.1:<随机端口>`），它利用 Python 标准库流式转发视频数据，严格保留服务端下发的 `User-Agent` 与 `Referer` 头，并妥善处理 302 跨域重定向与分片 Range 寻道请求，绝不会报 403 Forbidden。
 
-### Q4：为什么仓库里没有 `mpv.exe`？
+### Q4：内嵌播放器使用硬件加速吗？
 
-体积大、平台/架构不同、许可证/再分发义务需要按发布方式确认。仓库只提供准备脚本和目录约定，二进制由构建机放入。
+是的。渲染表面直接采用 `QVideoWidget`，Windows 调度 Direct3D / Media Foundation，macOS 调度 Metal / AVFoundation，均为操作系统级硬件解码，CPU 占用极低且不会出现黑屏问题。
 
-### Q5：可以 `pip install mpv` 吗？
+### Q5：桌面端设置页里的“我的播放方式”对桌面端生效吗？
 
-不建议把它当成播放器。`mpv` PyPI 包只是控制库；真正播放仍需 `mpv` 可执行文件。本项目直接调 mpv 进程 + JSON IPC，所以不需要这个 Python 包。
+不生效。桌面端在网页层发现 `window.StrmActionNative.isDesktop()` 存在时，会自动使用 `direct` 模式交由桌面端内置原生播放器播放；该偏好只影响在普通浏览器或移动设备上访问。
 
-### Q6：桌面端设置页里的“我的播放方式”对桌面端生效吗？
+### Q6：支持 Linux 吗？
 
-不生效。桌面端固定走 `direct` + 本机 mpv；该偏好只影响网页和伴侣 App。设置页会显示“当前为桌面端”的提示。
+源码理论上可运行，但当前只准备 Windows/macOS 的打包与验证；Linux 未做官方验证。
 
-### Q7：支持 Linux 吗？
+### Q7：能连播下一集吗？
 
-源码理论上可运行，但当前只准备 Windows/macOS 的打包与验证；Linux 未测试。
+支持。播完当前集自动连播下一集，也可通过快捷键 `[` / `]` 或 40% 选集侧滑抽屉随时选集切换，当前播放的剧集在抽屉中会带有清晰的高亮与图标指示。
 
-### Q8：能连播下一集吗？
+### Q8：播放进度存在哪里？
 
-支持。播完当前集自动连播下一集，也可通过快捷键 `[` / `]` 或 40% 选集侧滑抽屉随时选集切换。
+服务端数据库的 `play_progress` 表，按用户隔离；桌面端以 5 秒心跳实时上报，不本地保存播放历史。
 
-### Q9：播放进度存在哪里？
+### Q9：桌面端会保存我的密码吗？
 
-服务端数据库的 `play_progress` 表，按用户隔离；桌面端只负责上报，不本地保存播放历史。
-
-### Q10：桌面端会保存我的密码吗？
-
-不会。登录在 WebView 内完成，Python 不接触密码，也不读取网页 Cookie。
+不会。登录在网页引擎内完成，Python 不接触密码，也不读取网页 Cookie。

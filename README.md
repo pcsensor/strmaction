@@ -41,7 +41,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | 元数据 | 17 项字段、季/集详情、剧照、演职员头像、预告片、合集、分级、别名 |
 | 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
 | 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
-| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定、**缓存上限与缓冲进度**）、桌面端内嵌 mpv + 仿伴侣端自制控件（三层缓冲条/40% 抽屉/全套键盘控制/长按 2.0x 倍速）、外部 mpv 兜底、浏览器 `intent://`、复制链接 |
+| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定、**缓存上限与缓冲进度**）、桌面端原生硬件加速内嵌播放器（QVideoWidget + 内置轻量流媒体代理，零外部二进制依赖与路径配置，三层缓冲条/40% 抽屉/全套键盘控制/顶部半透明长按 2.0x 倍速）、外部 mpv 兜底、浏览器 `intent://`、复制链接 |
 | 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发、支持从「继续观看」移除（保留进度与断点）、多用户隔离 |
 | 用户与权限 | 多用户体系（管理员 + 普通用户）、细粒度媒体库访问授权、播放进度与已看记录多用户完全隔离、个人播放偏好（设置页「我的播放方式」）、用户管理与密码重置后台（`/users`） |
 | 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看（支持快捷移除且保留媒体库进度）、分类横滑、详情、选集、搜索、用户管理、设置、任务、待修正列表、首次向导 |
@@ -283,7 +283,7 @@ cd frontend && npm run build
 | `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；桌面浏览器会明确提示并降级为 `copy` |
 | `browser_intent` | Android 浏览器 | 无 | 无伴侣 App 时的降级；桌面浏览器降级为 `copy` |
 | `desktop_mpv` | 桌面浏览器（后端同机，仅管理员） | 5 秒（JSON IPC） | 由服务端 spawn mpv；普通用户自动降级为 `copy`/`intent` |
-| `direct` | StrmAction 桌面端 | 由桌面端上报 | 服务端只返回 URL/headers/play_token，本机 mpv 播放 |
+| `direct` | StrmAction 桌面端 | 由桌面端上报 | 服务端只返回 URL/headers/play_token，桌面端内置原生播放器播放 |
 | `copy` | 任意 | 无 | 最终兜底 |
 
 > 桌面浏览器没有权限直接启动用户电脑上的程序：选 `builtin` / `external_mpv` 会收到明确的降级提示并复制播放地址。要真正在本机 mpv 打开，需要桌面伴侣或协议助手（后续能力）。
@@ -400,7 +400,7 @@ adb install -r companion/app/build/outputs/apk/release/app-release.apk
 
 源码与构建说明在 [`desktop/`](desktop/README.md)。
 
-- 基于 PySide6 + mpv 内嵌渲染（零外部窗口弹出）；
+- 基于 PySide6 原生硬件加速内嵌渲染（QVideoWidget，零外部依赖与配置，无外部窗口弹出）；
 - 仿安卓伴侣 App 自制视频控件：三层缓冲进度条、40% 侧滑选集/倍速/音轨抽屉、中心脉冲与反馈徽标；
 - 全键盘快捷键支持：空格播放/暂停、方向键快进退、长按右键 2.0x 极速播放、音量调节、连播下一集；
 - 严格透传 `User-Agent` 与防盗链 Headers，302 跨域重定向不报 403，5 秒心跳回传进度；
@@ -503,7 +503,7 @@ frontend/src/
 └─ hooks/                useStartPlayback useTVMode（空间导航）
 
 companion/               Android WebView 壳 + Media3 播放器（解耦 PlayerDrawer / 音轨 / 倍速）+ JS Bridge + mpv 兜底
-desktop/                 Windows/macOS 桌面端（pywebview + 本机 mpv + direct 播放/进度上报）
+desktop/                 Windows/macOS 桌面端（PySide6 + 原生 QVideoWidget 硬件加速 + 本地流媒体代理 + direct 播放/进度上报）
 scripts/                 make_samples.py / seed_demo.py
 docs/screenshots/        截图
 docs/deploy-cloud.md     云服务器（公网 + HTTPS）部署指南

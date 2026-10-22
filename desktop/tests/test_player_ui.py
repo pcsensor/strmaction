@@ -166,3 +166,84 @@ def test_player_drawer_tabs_and_selection():
     assert drawer._current_tab == "speed"
     drawer._select_speed(1.5)
     assert selected_speeds == [1.5]
+
+
+def test_player_drawer_backend_id_format():
+    _get_app()
+    drawer = PlayerDrawer()
+    selected_episodes = []
+    drawer.episode_selected.connect(lambda eid: selected_episodes.append(eid))
+
+    # Backend sends "id" rather than "item_id"
+    drawer.set_data(
+        playlist=[
+            {"id": 201, "code": "E01", "title": "Ep 1", "current": True},
+            {"id": 202, "code": "E02", "title": "Ep 2", "current": False},
+        ],
+        current_item_id=201,
+    )
+    assert drawer._current_tab == "episodes"
+    # 2 episode buttons + 1 trailing stretch
+    assert drawer.content_vbox.count() == 3
+
+    # Verify clicking episode button with "id" emits the ID
+    drawer._select_episode(202)
+    assert selected_episodes == [202]
+
+
+def test_overlay_speed_badge_placement_and_transparency():
+    _get_app()
+    from strmaction_desktop.player.overlay import ControlsOverlay
+
+    overlay = ControlsOverlay()
+    # speed_badge should be inside top_badge_container (anchored near top)
+    assert overlay.speed_badge.parent() == overlay.top_badge_container
+    # style should have 0.45 rgba transparency
+    style = overlay.speed_badge.styleSheet()
+    assert "rgba(0, 0, 0, 0.45)" in style
+    assert overlay.top_badge_container.parent() == overlay
+
+
+def test_overlay_mouse_move_throttling():
+    _get_app()
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtCore import QPointF
+    from strmaction_desktop.player.overlay import ControlsOverlay
+
+    overlay = ControlsOverlay()
+    overlay.show()
+    overlay.show_controls()
+    assert not overlay.top_bar.isHidden()
+
+    # Move mouse event while controls are already visible
+    event = QMouseEvent(
+        QMouseEvent.Type.MouseMove,
+        QPointF(100, 100),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+    overlay.mouseMoveEvent(event)
+    assert not overlay.top_bar.isHidden()
+    overlay.close()
+
+
+def test_seekbar_buffer_progress_and_stability():
+    _get_app()
+    bar = BufferedSeekBar()
+    bar.set_duration(100.0)
+
+    # Setting buffer progress
+    bar.set_buffer_progress(0.4)
+    assert len(bar._buffered_ranges) == 1
+    assert bar._buffered_ranges[0] == (0.0, 40.0)
+
+    # During dragging, seeking does not abruptly wipe out existing buffer
+    bar._is_dragging = True
+    bar.set_buffer_end(0.0)
+    assert bar._buffered_ranges[0] == (0.0, 40.0)
+
+    bar._is_dragging = False
+    bar.set_buffer_end(60.0)
+    assert bar._buffered_ranges[0] == (0.0, 60.0)
+

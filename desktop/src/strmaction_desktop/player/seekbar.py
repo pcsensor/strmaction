@@ -66,10 +66,21 @@ class BufferedSeekBar(QWidget):
         self._buffered_ranges = list(ranges)
         self.update()
 
+    def set_buffer_progress(self, progress: float) -> None:
+        """Set buffer progress as a fraction 0.0 - 1.0."""
+        if self._duration > 0:
+            target_end = max(0.0, min(1.0, progress)) * self._duration
+            self.set_buffer_end(target_end)
+
     def set_buffer_end(self, end_sec: float) -> None:
-        """Convenience method to set a single buffer range [0, end_sec]."""
-        self._buffered_ranges = [(0.0, max(0.0, end_sec))]
-        self.update()
+        """Convenience method to set forward buffer end. Preserves buffer stability during seek."""
+        target = max(0.0, end_sec)
+        # Avoid abrupt collapse to 0 while dragging or seeking
+        if self._is_dragging and target == 0 and self._buffered_ranges:
+            return
+        if not self._buffered_ranges or abs(self._buffered_ranges[0][1] - target) > 0.3:
+            self._buffered_ranges = [(0.0, target)]
+            self.update()
 
     def _sec_to_x(self, sec: float, left: float, right: float) -> float:
         if self._duration <= 0:

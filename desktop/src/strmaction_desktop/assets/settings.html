@@ -50,8 +50,6 @@
       outline: none;
     }
     input:focus { border-color: rgba(232,176,106,.65); box-shadow: 0 0 0 3px rgba(232,176,106,.12); }
-    .row { display: flex; gap: 8px; }
-    .row input { flex: 1; }
     button {
       border: 1px solid var(--line);
       background: rgba(255,255,255,.06);
@@ -99,7 +97,7 @@
       <img src="icon.png" alt="" onerror="this.style.display='none'">
       <div>
         <h1>StrmAction 桌面端</h1>
-        <p class="sub">WebView 浏览网页，本机 mpv 播放；播放进度自动回传。</p>
+        <p class="sub">原生硬件加速内嵌播放，进度自动双向同步。</p>
       </div>
     </div>
 
@@ -107,16 +105,9 @@
     <input id="server" type="url" placeholder="https://media.example.com" autocomplete="off" spellcheck="false">
     <p class="hint">必须带 http:// 或 https://；结尾的 / 可省略。</p>
 
-    <label for="mpv">mpv 路径</label>
-    <div class="row">
-      <input id="mpv" type="text" placeholder="留空则自动查找：自带 mpv → PATH → 常见安装路径" spellcheck="false">
-      <button id="pick" type="button">选择…</button>
-    </div>
-    <p class="hint" id="detected"></p>
-
-    <label for="cache">播放缓存上限（MB）</label>
+    <label for="cache">预读缓存上限（MB）</label>
     <input id="cache" type="number" min="0" max="2048" step="16" inputmode="numeric" placeholder="128">
-    <p class="hint">默认 128MB；0 表示关闭本机 mpv 的预读缓存，非 0 时按 16–2048MB 执行。仅影响本机 mpv，不改变服务器设置。</p>
+    <p class="hint">默认 128MB；0 表示使用系统默认缓冲，非 0 时按 16–2048MB 执行。</p>
 
     <label class="check" for="allowSelfSigned">
       <input id="allowSelfSigned" type="checkbox">
@@ -124,7 +115,7 @@
     </label>
     <p class="hint danger">
       开启后对 StrmAction、Alist、片源 CDN 等所有 HTTPS 连接跳过证书链和 hostname 校验。
-      存在中间人风险。桌面端使用 WebView2，该设置需要在重启 StrmAction 后生效。
+      存在中间人风险。该设置需要在重启 StrmAction 后生效。
     </p>
 
     <div class="actions">
@@ -141,49 +132,48 @@
   <script>
     const $ = (id) => document.getElementById(id)
     const server = $('server')
-    const mpv = $('mpv')
     const cache = $('cache')
     const allowSelfSigned = $('allowSelfSigned')
     const status = $('status')
-    let api = null
+
+    function getApi() {
+      return (window.pywebview && window.pywebview.api) || window._strmaction_api || null
+    }
 
     function setStatus(text, tone) {
       status.textContent = text || ''
       status.className = 'status' + (tone ? ' ' + tone : '')
     }
 
+    let isInitialized = false
+
     async function init() {
-      if (!window.pywebview || !window.pywebview.api) {
-        setStatus('桌面端桥接未就绪，请重启 StrmAction。', 'err')
+      const api = getApi()
+      if (!api) {
         return
       }
-      api = window.pywebview.api
+      if (isInitialized) return
+      isInitialized = true
+
       try {
         const data = await api.get_settings()
-        server.value = data.server_url || ''
-        mpv.value = data.mpv_path || ''
-        cache.value = data.cache_limit_mb ?? 128
-        allowSelfSigned.checked = !!data.allow_self_signed_https
-        $('version').textContent = 'v' + (data.version || '?')
-        $('detected').textContent = data.detected_mpv
-          ? '已找到：' + data.detected_mpv
-          : '未自动找到 mpv，请手动选择或先安装。'
+        if (data) {
+          server.value = data.server_url || ''
+          cache.value = data.cache_limit_mb ?? 128
+          allowSelfSigned.checked = !!data.allow_self_signed_https
+          $('version').textContent = 'v' + (data.version || '?')
+        }
       } catch (error) {
         setStatus('读取设置失败：' + (error && error.message ? error.message : error), 'err')
       }
     }
 
-    $('pick').addEventListener('click', async () => {
-      if (!api) return
-      const result = await api.choose_mpv()
-      if (result && result.path) {
-        mpv.value = result.path
-        setStatus('已选择 mpv，点击“保存并打开”生效。', 'ok')
-      }
-    })
-
     $('save').addEventListener('click', async () => {
-      if (!api) return
+      const api = getApi()
+      if (!api) {
+        setStatus('桌面端桥接连接中，请稍后重试…', 'err')
+        return
+      }
       const value = server.value.trim()
       if (!/^https?:\/\//i.test(value)) {
         setStatus('服务器地址必须以 http:// 或 https:// 开头。', 'err')
@@ -196,30 +186,41 @@
         return
       }
       setStatus('正在保存…')
-      const result = await api.save_settings({
-        server_url: value,
-        mpv_path: mpv.value.trim(),
-        cache_limit_mb: cacheValue,
-        allow_self_signed_https: allowSelfSigned.checked,
-      })
-      if (result && result.ok && result.restart_required) {
-        setStatus('已保存。需要重启 StrmAction 后生效。', 'ok')
-      } else if (result && result.ok) {
-        setStatus('已保存，正在打开网页…', 'ok')
-      } else {
-        setStatus((result && result.error) || '保存失败', 'err')
+      try {
+        const result = await api.save_settings({
+          server_url: value,
+          cache_limit_mb: cacheValue,
+          allow_self_signed_https: allowSelfSigned.checked,
+        })
+        if (result && result.ok && result.restart_required) {
+          setStatus('已保存。需要重启 StrmAction 后生效。', 'ok')
+        } else if (result && result.ok) {
+          setStatus('已保存，正在打开网页…', 'ok')
+        } else {
+          setStatus((result && result.error) || '保存失败', 'err')
+        }
+      } catch (err) {
+        setStatus('保存失败：' + (err && err.message ? err.message : err), 'err')
       }
     })
 
     $('quit').addEventListener('click', async () => {
-      if (api) await api.quit()
+      const api = getApi()
+      if (api && api.quit) await api.quit()
     })
 
+    window.addEventListener('strmaction:desktop-ready', init)
     window.addEventListener('pywebviewready', init)
     window.addEventListener('DOMContentLoaded', () => {
-      // pywebviewready may have fired before this script ran.
-      if (window.pywebview && window.pywebview.api) init()
+      setTimeout(init, 50)
     })
+    // Periodic fallback probe in case events fire out of order
+    const probe = setInterval(() => {
+      if (getApi()) {
+        init()
+        clearInterval(probe)
+      }
+    }, 150)
   </script>
 </body>
 </html>

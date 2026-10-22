@@ -790,7 +790,7 @@ POST /v4/login   { "apikey": "<key>", "pin": "<pin?>" }  →  { "data": { "token
 | `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；浏览器会降级 |
 | `browser_intent` | 浏览器（Chromium） | 无 | 无伴侣 App 时的降级 |
 | `desktop_mpv` | 服务端同机浏览器（仅管理员） | 实时 5s（IPC） | 由**服务端** spawn mpv；普通用户请求会降级为 `copy`/`intent` |
-| `direct` | StrmAction 桌面端 | 桌面端上报 | 服务端只下发 URL/headers/play_token，本机 mpv 播放 |
+| `direct` | StrmAction 桌面端 | 桌面端上报 | 服务端只下发 URL/headers/play_token，桌面端内置原生播放器播放 |
 | `copy` | 任意 | 无 | 最终兜底 |
 
 > `desktop_mpv` 会调用服务器上的 mpv，不是用户电脑上的播放器；普通用户不可选，个人偏好与全局默认都会在解析时被拦截。
