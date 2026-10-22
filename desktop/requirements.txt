@@ -1,2 +1,3 @@
 PySide6>=6.8
 httpx>=0.27
+python-mpv>=1.0.7

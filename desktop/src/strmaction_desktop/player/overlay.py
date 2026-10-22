@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import math
 from typing import Sequence
-from PySide6.QtCore import QPoint, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QMouseEvent, QPainter, QPaintEvent
+from PySide6.QtCore import QEvent, QPoint, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QCursor, QFont, QMouseEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import (
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -29,6 +30,21 @@ from .icons import (
     make_svg_pixmap,
 )
 from .seekbar import BufferedSeekBar, format_time
+
+
+def format_network_speed(bytes_per_sec: float) -> str:
+    """Format a bytes/second rate for the status row."""
+    try:
+        value = float(bytes_per_sec)
+    except (TypeError, ValueError):
+        return "--"
+    if not math.isfinite(value) or value < 0:
+        return "--"
+    if value >= 1024 * 1024:
+        return f"{value / (1024 * 1024):.1f} MB/s"
+    if value >= 1024:
+        return f"{value / 1024:.0f} KB/s"
+    return f"{value:.0f} B/s"
 
 
 class GradientBar(QWidget):
@@ -235,6 +251,15 @@ class ControlsOverlay(QWidget):
         self.time_label.setStyleSheet("color: #D1D5DB; font-size: 13px; font-weight: 500;")
         ctrl_row.addWidget(self.time_label)
 
+        # Network pull speed, directly to the right of the duration.
+        self.net_speed_label = QLabel("", self.bottom_bar)
+        self.net_speed_label.setToolTip("当前拉取速度")
+        self.net_speed_label.setStyleSheet(
+            "color: #9CA3AF; font-size: 12px; font-weight: 500;"
+        )
+        self.net_speed_label.setVisible(False)
+        ctrl_row.addWidget(self.net_speed_label)
+
         ctrl_row.addStretch()
 
         # Speed button (e.g. "1.0x")
@@ -286,6 +311,52 @@ class ControlsOverlay(QWidget):
         bottom_layout.addLayout(ctrl_row)
         layout.addWidget(self.bottom_bar)
 
+        self._make_decorative_children_transparent()
+        self._install_mouse_tracking()
+
+    def _make_decorative_children_transparent(self) -> None:
+        """Make non-interactive areas fall through to the overlay.
+
+        ``GradientBar`` is deliberately not made transparent: it is the parent
+        of the real buttons, and ``WA_TransparentForMouseEvents`` applies to the
+        whole subtree.  Moves over it are forwarded by the event filter below.
+        """
+        for widget in (self.center_area, self.top_badge_container):
+            widget.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+        for label in (
+            self.title_label,
+            self.speed_badge,
+            self.center_icon,
+            self.seek_badge,
+            self.loading_badge,
+            self.time_label,
+            self.net_speed_label,
+        ):
+            label.setAttribute(
+                Qt.WidgetAttribute.WA_TransparentForMouseEvents, True
+            )
+
+    def _install_mouse_tracking(self) -> None:
+        """Catch mouse moves anywhere in the controls tree.
+
+        Without this, a label or gradient widget under the cursor consumes the
+        move and the overlay never sees it, so hidden controls cannot come
+        back.  Returning ``False`` from the filter keeps normal button/seekbar
+        handling intact.
+        """
+        self.setMouseTracking(True)
+        for child in self.findChildren(QWidget):
+            child.setMouseTracking(True)
+            child.installEventFilter(self)
+
+    def eventFilter(self, watched, event) -> bool:  # noqa: N802 - Qt override
+        if event.type() == QEvent.Type.MouseMove:
+            self.show_controls()
+            self.restart_auto_hide_timer()
+        return super().eventFilter(watched, event)
+
     def set_title(self, title: str, series_title: str = "") -> None:
         full_title = f"{series_title} - {title}" if series_title and series_title != title else title
         self.title_label.setText(full_title)
@@ -302,6 +373,27 @@ class ControlsOverlay(QWidget):
 
     def set_buffered_ranges(self, ranges: Sequence[tuple[float, float]]) -> None:
         self.seekbar.set_buffered_ranges(ranges)
+
+    def set_network_speed(self, bytes_per_sec: float | None) -> None:
+        """Show the pull rate, or hide the label when it is unavailable."""
+        if bytes_per_sec is None:
+            self.net_speed_label.clear()
+            self.net_speed_label.setVisible(False)
+            return
+        try:
+            value = float(bytes_per_sec)
+        except (TypeError, ValueError):
+            value = -1.0
+        if value < 0 or not math.isfinite(value):
+            self.net_speed_label.clear()
+            self.net_speed_label.setVisible(False)
+            return
+        self.net_speed_label.setText(f"↓ {format_network_speed(value)}")
+        self.net_speed_label.setVisible(True)
+
+    def reset_buffer_stats(self) -> None:
+        self.seekbar.set_buffered_ranges([])
+        self.set_network_speed(None)
 
     def set_paused(self, paused: bool) -> None:
         self._is_paused = paused
@@ -384,8 +476,30 @@ class ControlsOverlay(QWidget):
     def restart_auto_hide_timer(self) -> None:
         self._hide_timer.start()
 
+    def _cursor_over_controls(self) -> bool:
+        """True while the mouse rests on either visible control bar."""
+        if not self.isVisible():
+            return False
+        pos = self.mapFromGlobal(QCursor.pos())
+        if not self.rect().contains(pos):
+            return False
+        return (
+            (self.top_bar.isVisible() and self.top_bar.geometry().contains(pos))
+            or (
+                self.bottom_bar.isVisible()
+                and self.bottom_bar.geometry().contains(pos)
+            )
+        )
+
     def _auto_hide(self) -> None:
-        if not self._is_paused and not self._is_seeking:
-            self.top_bar.setVisible(False)
-            self.bottom_bar.setVisible(False)
-            self.setCursor(Qt.CursorShape.BlankCursor)
+        if self._is_paused or self._is_seeking:
+            return
+        # Keep the controls open while the pointer is parked on them; a move
+        # event restarts the timer, but a stationary cursor would otherwise
+        # hide the bar underneath itself.
+        if self._cursor_over_controls():
+            self.restart_auto_hide_timer()
+            return
+        self.top_bar.setVisible(False)
+        self.bottom_bar.setVisible(False)
+        self.setCursor(Qt.CursorShape.BlankCursor)

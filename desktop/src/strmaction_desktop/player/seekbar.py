@@ -10,10 +10,15 @@ Features:
 
 from __future__ import annotations
 
+import math
 from typing import Sequence
 from PySide6.QtCore import QPoint, QRectF, Qt, Signal
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPaintEvent
 from PySide6.QtWidgets import QToolTip, QWidget
+
+# Gaps this small are invisible on screen; merging them avoids one-pixel
+# breaks between demuxer ranges that overlap almost exactly.
+_RANGE_MERGE_GAP = 0.1
 
 
 def format_time(seconds: float) -> str:
@@ -40,7 +45,7 @@ class BufferedSeekBar(QWidget):
 
         self._position: float = 0.0
         self._duration: float = 0.0
-        # List of (start_sec, end_sec) ranges
+        # Sorted, disjoint (start_sec, end_sec) ranges reported by the player.
         self._buffered_ranges: list[tuple[float, float]] = []
         self._is_dragging: bool = False
         self._drag_position: float = 0.0
@@ -58,29 +63,66 @@ class BufferedSeekBar(QWidget):
                 self.update()
 
     def set_duration(self, seconds: float) -> None:
-        if abs(self._duration - seconds) > 0.1:
-            self._duration = max(0.0, seconds)
+        duration = max(0.0, float(seconds))
+        if abs(self._duration - duration) > 0.1:
+            self._duration = duration
+            # Duration may grow from 0 after the first cache report, or shrink
+            # on live streams; re-clamp the stored ranges either way.
+            self._buffered_ranges = self._normalize_ranges(self._buffered_ranges)
             self.update()
 
     def set_buffered_ranges(self, ranges: Sequence[tuple[float, float]]) -> None:
-        self._buffered_ranges = list(ranges)
+        """Set the ranges that are actually buffered (absolute seconds).
+
+        ``demuxer-cache-state`` can return disjoint and out-of-order ranges;
+        normalize them before painting and never anchor the whole span at 0.
+        """
+        normalized = self._normalize_ranges(ranges)
+        if normalized == self._buffered_ranges:
+            return
+        self._buffered_ranges = normalized
         self.update()
 
-    def set_buffer_progress(self, progress: float) -> None:
-        """Set buffer progress as a fraction 0.0 - 1.0."""
-        if self._duration > 0:
-            target_end = max(0.0, min(1.0, progress)) * self._duration
-            self.set_buffer_end(target_end)
+    def _normalize_ranges(
+        self, ranges: Sequence[tuple[float, float]] | None
+    ) -> list[tuple[float, float]]:
+        if not ranges:
+            return []
 
-    def set_buffer_end(self, end_sec: float) -> None:
-        """Convenience method to set forward buffer end. Preserves buffer stability during seek."""
-        target = max(0.0, end_sec)
-        # Avoid abrupt collapse to 0 while dragging or seeking
-        if self._is_dragging and target == 0 and self._buffered_ranges:
-            return
-        if not self._buffered_ranges or abs(self._buffered_ranges[0][1] - target) > 0.3:
-            self._buffered_ranges = [(0.0, target)]
-            self.update()
+        limit = self._duration if self._duration > 0 else None
+        cleaned: list[tuple[float, float]] = []
+        for item in ranges:
+            try:
+                start, end = item
+                start = float(start)
+                end = float(end)
+            except (TypeError, ValueError):
+                continue
+            if not math.isfinite(start) or not math.isfinite(end):
+                continue
+            start = max(0.0, start)
+            end = max(0.0, end)
+            if limit is not None:
+                if start >= limit:
+                    continue
+                end = min(end, limit)
+            if end <= start:
+                continue
+            cleaned.append((start, end))
+
+        if not cleaned:
+            return []
+
+        cleaned.sort(key=lambda value: value[0])
+        merged: list[tuple[float, float]] = [cleaned[0]]
+        for start, end in cleaned[1:]:
+            last_start, last_end = merged[-1]
+            if start <= last_end + _RANGE_MERGE_GAP:
+                if end > last_end:
+                    merged[-1] = (last_start, end)
+            else:
+                merged.append((start, end))
+        return merged
 
     def _sec_to_x(self, sec: float, left: float, right: float) -> float:
         if self._duration <= 0:

@@ -228,24 +228,58 @@ def test_overlay_mouse_move_throttling():
     overlay.close()
 
 
-def test_seekbar_buffer_progress_and_stability():
+def test_seekbar_shows_absolute_buffered_ranges():
+    """The cache line must follow real ranges, not a 0..progress span."""
     _get_app()
     bar = BufferedSeekBar()
     bar.set_duration(100.0)
 
-    # Setting buffer progress
-    bar.set_buffer_progress(0.4)
-    assert len(bar._buffered_ranges) == 1
-    assert bar._buffered_ranges[0] == (0.0, 40.0)
+    bar.set_buffered_ranges([(75.0, 90.0), (20.0, 40.0), (35.0, 60.0)])
+    assert bar._buffered_ranges == [(20.0, 60.0), (75.0, 90.0)]
+    assert bar._buffered_ranges != [(0.0, 90.0)]
 
-    # During dragging, seeking does not abruptly wipe out existing buffer
-    bar._is_dragging = True
-    bar.set_buffer_end(0.0)
-    assert bar._buffered_ranges[0] == (0.0, 40.0)
+    # Out-of-duration and malformed ranges are ignored/clamped.
+    bar.set_buffered_ranges(
+        [(-5.0, 10.0), (50.0, 50.0), (95.0, 120.0), (float("nan"), 3.0)]
+    )
+    assert bar._buffered_ranges == [(0.0, 10.0), (95.0, 100.0)]
 
-    bar._is_dragging = False
-    bar.set_buffer_end(60.0)
-    assert bar._buffered_ranges[0] == (0.0, 60.0)
+    # A duration revision re-clamps the stored ranges.
+    bar.set_duration(50.0)
+    assert bar._buffered_ranges == [(0.0, 10.0)]
+
+    bar.set_buffered_ranges([])
+    assert bar._buffered_ranges == []
+
+
+def test_network_speed_formatting():
+    _get_app()
+    from strmaction_desktop.player.overlay import format_network_speed
+
+    assert format_network_speed(0) == "0 B/s"
+    assert format_network_speed(512) == "512 B/s"
+    assert format_network_speed(2048) == "2 KB/s"
+    assert format_network_speed(2.5 * 1024 * 1024) == "2.5 MB/s"
+    assert format_network_speed(-1) == "--"
+    assert format_network_speed(float("nan")) == "--"
+
+
+def test_overlay_network_speed_label_is_next_to_time():
+    _get_app()
+    from strmaction_desktop.player.overlay import ControlsOverlay
+
+    overlay = ControlsOverlay()
+    assert overlay.net_speed_label.parent() == overlay.bottom_bar
+    assert overlay.net_speed_label.isHidden()
+
+    overlay.set_network_speed(1536 * 1024)
+    assert overlay.net_speed_label.text() == "↓ 1.5 MB/s"
+    assert not overlay.net_speed_label.isHidden()
+
+    overlay.set_network_speed(-1.0)
+    assert overlay.net_speed_label.isHidden()
+    assert overlay.net_speed_label.text() == ""
+    overlay.close()
 
 
 
@@ -263,6 +297,17 @@ def test_resume_seek_is_not_clamped_to_zero_before_duration_known():
     controller.seek(600.0, relative=False)
     assert controller._pending_seek_ms == 600_000
     controller.stop()
+
+
+def test_qt_fallback_converts_media_time_range_to_seconds():
+    _get_app()
+    from PySide6.QtMultimedia import QMediaTimeRange
+    from strmaction_desktop.player.controller import _ranges_from_media_time_range
+
+    time_range = QMediaTimeRange(20_000, 40_000)
+    time_range.addInterval(50_500, 60_000)
+    assert _ranges_from_media_time_range(time_range) == [(20.0, 40.0), (50.5, 60.0)]
+    assert _ranges_from_media_time_range(QMediaTimeRange()) == []
 
 
 def test_end_card_counts_down_and_autoplays():
@@ -306,3 +351,78 @@ def test_drawer_subtitle_track_zero_is_selectable():
     assert buttons, "subtitle button should exist"
     buttons[0].click()
     assert selected == [0]
+
+
+def _mouse_move_event(x: float, y: float):
+    from PySide6.QtCore import QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    return QMouseEvent(
+        QMouseEvent.Type.MouseMove,
+        QPointF(x, y),
+        Qt.MouseButton.NoButton,
+        Qt.MouseButton.NoButton,
+        Qt.KeyboardModifier.NoModifier,
+    )
+
+
+def test_overlay_center_mouse_move_reveals_controls(monkeypatch):
+    """Auto-hide must not make the controls impossible to bring back."""
+    _get_app()
+    from strmaction_desktop.player.overlay import ControlsOverlay
+
+    overlay = ControlsOverlay()
+    overlay.resize(800, 600)
+    overlay.move(100, 100)
+    overlay.show()
+    overlay.show_controls()
+    monkeypatch.setattr(overlay, "_cursor_over_controls", lambda: False)
+    overlay._auto_hide()
+    assert overlay.top_bar.isHidden()
+    assert overlay.bottom_bar.isHidden()
+
+    # Decorative center/top-badge areas must be transparent to the mouse.
+    assert overlay.center_area.testAttribute(
+        Qt.WidgetAttribute.WA_TransparentForMouseEvents
+    )
+    assert overlay.top_badge_container.testAttribute(
+        Qt.WidgetAttribute.WA_TransparentForMouseEvents
+    )
+
+    QApplication.sendEvent(overlay, _mouse_move_event(400, 300))
+    assert not overlay.top_bar.isHidden()
+    assert not overlay.bottom_bar.isHidden()
+    overlay.close()
+
+
+def test_overlay_child_mouse_move_reveals_controls(monkeypatch):
+    """A decorative child must not swallow the mouse move that reveals UI."""
+    _get_app()
+    from strmaction_desktop.player.overlay import ControlsOverlay
+
+    overlay = ControlsOverlay()
+    overlay.resize(800, 600)
+    overlay.show()
+    overlay.show_controls()
+    monkeypatch.setattr(overlay, "_cursor_over_controls", lambda: False)
+    overlay._auto_hide()
+    assert overlay.top_bar.isHidden()
+
+    QApplication.sendEvent(overlay.center_area, _mouse_move_event(10, 10))
+    assert not overlay.top_bar.isHidden()
+    assert not overlay.bottom_bar.isHidden()
+    overlay.close()
+
+
+def test_overlay_does_not_hide_while_cursor_is_over_controls(monkeypatch):
+    _get_app()
+    from strmaction_desktop.player.overlay import ControlsOverlay
+
+    overlay = ControlsOverlay()
+    overlay.show()
+    overlay.show_controls()
+    monkeypatch.setattr(overlay, "_cursor_over_controls", lambda: True)
+    overlay._auto_hide()
+    assert not overlay.top_bar.isHidden()
+    assert not overlay.bottom_bar.isHidden()
+    overlay.close()

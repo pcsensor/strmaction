@@ -55,14 +55,18 @@
 - [x] 配置原子写入，避免半截文件
 - [x] 配置校验：只接受 http/https、去除尾部 `/`
 
-## 5. 原生播放与内置流媒体代理（已完全替代旧版 mpv）
+## 5. 内嵌 libmpv 播放内核（取代旧版 QMediaPlayer + 环回代理）
 
-- [x] 内置本地环回流媒体代理（`proxy.py`，绑定 `127.0.0.1:<可用随机端口>`）
-- [x] 代理全量透传服务端下发的所有 headers（`User-Agent` 与 `Referer`）
-- [x] 妥善处理 302/301 跨域重定向与请求头保持，彻底杜绝 403 Forbidden
-- [x] 支持 HTTP 206 Partial Content 与 Range 字节范围请求（保障拖拽 Seek 顺畅）
-- [x] 基于 PySide6 `QMediaPlayer` + `QVideoWidget` + `QAudioOutput` 进行系统 GPU 硬件加速渲染
-- [x] 播放结束/退出时优雅关闭代理会话与释放多媒体资源，无残留垃圾流
+- [x] 内嵌 `libmpv-2.dll`（`vendor/libmpv/windows-x64/`），随包分发，用户无需安装播放器
+- [x] `http-header-fields` 注入服务端下发的全部 headers（`User-Agent` / `Referer` / Cookie / Token）
+- [x] 302/301 跨域重定向后请求头依然保留（`scripts/mpv_ua_check.py` 实测两跳均携带）
+- [x] 删除 290 行本地环回代理 `proxy.py`，顺带消除 seek 重握手与零预读问题
+- [x] 画面经 `MpvRenderContext` 渲染进 `QOpenGLWidget` 的 FBO，控件不再被原生窗口遮挡（`raise_()` 三连已删）
+- [x] `hwdec=auto-safe` 硬件解码；`cache` / `demuxer-max-bytes` 跟随桌面端缓存设置
+- [x] MKV / HEVC / DTS / TrueHD / ASS 支持，外挂 `.srt/.ass` 可直接加载
+- [x] 位置更新改为 200ms 轮询，替代 QMediaPlayer 的 20 次/秒信号风暴
+- [x] 找不到 libmpv 时自动回退 Qt Multimedia，日志明确提示缺失
+- [x] 退出时释放 mpv 实例与渲染上下文，无残留
 
 ## 6. 请求头与字幕
 
@@ -182,3 +186,56 @@
 - [x] 播完/错误卡片、内嵌字幕与音轨切换、导航白名单、`settings.html` 移除。
 - [x] 打包剔除 `vendor/mpv`（124MB）与 `pywebview` 依赖。
 - [x] `desktop` 38 tests / `backend` 61 tests / 前端 `tsc + vite build` 全通过。
+
+## 15. v1.4 播放内核迁移（libmpv 替换 QMediaPlayer）
+
+- [x] 新增 `player/mpv_engine.py`：`MpvEngine`（与 `QtPlayerController` 同一套信号契约）
+      + `MpvVideoWidget(QOpenGLWidget)`，用 `MpvRenderContext` 渲染进 FBO。
+- [x] 新增 `player/mpv_loader.py`：libmpv 定位（`STRMACTION_LIBMPV` / `_DIR` / 包内 vendor /
+      用户数据目录）与 Windows `os.add_dll_directory` 注入；`STRMACTION_DISABLE_MPV=1` 可强制回退。
+- [x] 内置 `libmpv-2.dll`（shinchiro 2026-10-18 构建，121MB，含完整 FFmpeg 解码器）。
+- [x] 删除 `proxy.py`（290 行）与 `tests/test_proxy.py`；`qt_window.play_embedded` 直传 CDN 直链。
+- [x] `view.py`：视频表面切到 `MpvVideoWidget`，删除 `resizeEvent` 的 `raise_()` 三连；
+      外挂字幕随 payload 下发；无 libmpv 时回退 `QtPlayerController` + `QVideoWidget`。
+- [x] `qt_window.py` / `app.py`：移除代理接线，新增 `PlayerView.configure(cache_limit_mb, tls_verify)`
+      热生效；`closeEvent` 释放 mpv 资源；启动前 `configure_surface_format()` 申请 GL 3.2 core。
+
+### 迁移中踩到并修复的坑（供后续参考）
+
+1. **`player['x']` 是 option，不是 property**：python-mpv 会把 `player['time-pos']` 解析成
+   `options/time-pos` 并报 `property does not exist`。播放状态（`pause` / `speed` / `volume` /
+   `aid` / `sid` / `time_pos`）必须用属性访问；引擎选项（`cache` / `tls-verify` /
+   `http-header-fields`）才用 `[]`。这个错误会让暂停、音量、进度、音轨切换全部静默失效。
+2. **`opengl_init_params` 需要 CFUNCTYPE 实例**：直接传普通函数会抛
+   "expected CFunctionType instance, got function"，必须包一层
+   `mpv.MpvGlGetProcAddressFn(fn)`，并持有引用防止被 GC。
+3. **end-file 的 reason 常量**：`MpvEventEndFile.ERROR == 4`（不是 3，3 是 QUIT）；
+   `event.data` 是结构体实例，`event.data.error` 是错误码整数而非字符串。
+4. **渲染上下文必须先于 loadfile 建立**：`vo=libmpv` 时没有 render context，mpv 会报
+   `No render context set` 并直接 VO 初始化失败。真实应用里 `stack.setCurrentWidget()`
+   触发 `initializeGL`，顺序天然正确；脚本化验证需先 `grabFramebuffer()` 一次。
+5. **shutdown 顺序**：先 `stop` → 设 `vo=null` → free render context → `terminate`，
+   否则 mpv 会打一条假的 `VO_INIT_FAILED (-15)`。
+6. **不要用 `QSurfaceFormat.setDefaultFormat()`**：它是**全局**设置。强制 OpenGL 后
+   QtWebEngine 内部的 `QQuickWidget` 会报
+   `"OpenGL is not compatible with this QQuickWidget"` → `Failed to get a QRhi` →
+   **主界面整片黑屏**。正确做法是 `MpvVideoWidget` 自己 `setFormat()`，其余部件保持
+   Qt 默认图形 API。
+7. **`QWebEngineView` 与 `QOpenGLWidget` 不能同时可见于同一窗口**：同时可见时
+   `QOpenGLWidget.context()` 返回 `None`，mpv 拿不到渲染上下文（`--disable-gpu` /
+   `--use-angle=swiftshader` 等 Chromium 开关均无法绕过）。本项目用 `QStackedWidget`
+   切换，播放时 web 页已隐藏，因此不受影响——实测 GL context 正常、渲染成功。
+   若将来改成同屏并排显示，视频必须放进独立窗口。
+
+### 验证结果（Windows 本机实测）
+
+- `scripts/mpv_spike.py`：渲染上下文建立 ✓；控件区平均 RGB (203,38,51) 明显偏红 →
+  控件叠在视频之上可见 ✓；视频区非黑 → Qt 成功合成 FBO ✓；position 正常递增 ✓。
+- `scripts/mpv_ua_check.py`：直连与 302 跳转后两次请求均携带
+  `User-Agent: pan.baidu.com` 与 `Referer: https://pan.baidu.com/` ✓。
+- `pytest`：56 passed（原 38 减去 4 个 proxy 测试，新增 22 个 mpv 相关）。
+- 打包实测（Windows）：`dist/StrmAction/StrmAction.exe`，libmpv 落在
+  `_internal/strmaction_desktop/vendor/libmpv/windows-x64/libmpv-2.dll`，
+  总体积 726 MB（旧包 610 MB，+116 MB）。
+- 打包态路径解析：模拟 `__file__` 缺失 + `sys._MEIPASS` 指向 `_internal`，
+  `find_library()` 仍能命中包内 libmpv（loader 已加 `_MEIPASS` 兜底）。

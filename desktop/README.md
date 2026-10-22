@@ -6,7 +6,7 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 原生硬件
 - 点击播放后，直接在主窗口**无缝切换为内嵌播放器（零外部弹窗，无需安装或打包任何播放器）**；
 - 播放控件 1:1 对齐安卓伴侣 App（三层缓冲进度条、40% 侧滑选集/倍速/音轨抽屉、长按倍速、中心反馈）；
 - 具备完整的**键鼠操作体系**（空格播放/暂停、方向键调进度、长按右方向键 2.0x 倍速、滚轮选集等）；
-- 内置轻量环回流媒体代理，自动处理服务端下发的全部防盗链请求头（`User-Agent` 与 `Referer`），302 跨域重定向全链路透传，绝不报 403；
+- 内嵌 libmpv 内核，把服务端下发的防盗链请求头（`User-Agent` 与 `Referer`）注入到每个 HTTP 请求，302 跨域重定向后依旧保持，绝不报 403；
 - 播放进度通过现有 `/api/items/{id}/progress` 接口以 5 秒心跳上报，使用 item 级 `play_token`。
 
 > 本机使用 `uv` 管理 Python 环境。下面命令默认都从 `desktop/` 目录执行。
@@ -69,7 +69,7 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 原生硬件
 │ │ │        │ 用户点击播放 / window.StrmActionNative.playItem│ │
 │ │ │        ▼                                               │ │
 │ │ └─ Page 1: PlayerView (原生硬件加速内嵌播放视图)         │ │
-│ │     ├── QVideoWidget (原生视频渲染表面: Windows D3D/Metal)│ │
+│ │     ├── MpvVideoWidget (OpenGL FBO 渲染, 由 Qt 合成)      │ │
 │ │     ├── ControlsOverlay (仿伴侣 App 顶栏、底栏、反馈徽标) │ │
 │ │     │    ├── BufferedSeekBar (平滑三层缓冲进度条)        │ │
 │ │     │    ├── 半透明顶部倍速指示胶囊 (不遮挡主体画面)     │ │
@@ -124,11 +124,11 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 原生硬件
    window.StrmActionNative.playItem(JSON.stringify(payload))
    ```
 
-7. Python 校验 payload，通过内置本地流媒体代理（`proxy.py`）注册临时回送地址；
-8. Python 将流媒体提供给原生硬件加速播放器（`QMediaPlayer` + `QVideoWidget`）：
-   - 本地代理保留 headers（User-Agent/Referer）并妥善处理 302 跨域重定向；
-   - 从 `resume_ms` 续播；
-   - 调度系统 GPU 进行硬件解码渲染（Direct3D / Metal）；
+7. Python 校验 payload，把 CDN 直链与 headers 直接交给内嵌的 libmpv 播放内核；
+8. libmpv 负责解码与渲染：
+   - `http-header-fields` 让每个 HTTP 请求（含 302 跳转后、HLS 分片、Range 请求）都携带服务端下发的 `User-Agent` / `Referer`，无需本地代理；
+   - `loadfile` 原生支持 `resume_ms` 起播位置；
+   - 硬解走 `hwdec=auto-safe`（Windows D3D11VA / macOS VideoToolbox），画面经 `MpvRenderContext` 渲染进 `QOpenGLWidget` 的 FBO；
 9. 监听播放位置与状态，按 `progress_interval_ms` 向服务端上报进度，暂停/seek/退出/播完立即补写。
 
 > Python 不需要自己登录，也不需要拿网页 Cookie。播放鉴权由网页完成，Python 只使用 payload 里的 `play_token` 上报进度。
@@ -143,7 +143,7 @@ StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 原生硬件
 | 包管理 | [uv](https://docs.astral.sh/uv/) |
 | Windows | Windows 10/11；DirectX 11+（用于原生视频硬解） |
 | macOS | macOS 11+；Metal 硬件加速 |
-| 播放内核 | 内置 PySide6 原生多媒体组件，**无需外部播放器二进制文件** |
+| 播放内核 | 内置 libmpv（`libmpv-2.dll`），随包分发，**用户无需安装任何播放器** |
 | 服务端 | 必须支持 `direct` 播放模式（本仓库当前版本已包含） |
 
 服务端还需要：
@@ -162,6 +162,14 @@ cd desktop
 uv venv
 uv pip install -e ".[dev]"
 ```
+
+`libmpv-2.dll`（121 MB）不入库，首次需要拉取一次：
+
+```bash
+uv run python scripts/fetch_libmpv.py
+```
+
+没有它应用仍能启动，但会回退到 Qt Multimedia：请求头注入、外挂字幕、MKV 完整格式支持都会丢失，日志里会写明「未找到 libmpv」。
 
 ### 4.2 启动
 
@@ -215,24 +223,29 @@ uv run strmaction-desktop --debug
 
 ---
 
-## 6. 原生播放架构与流媒体代理（重点）
+## 6. 播放架构与请求头注入（重点）
 
-### 6.1 纯原生硬件加速播放器
+### 6.1 libmpv 播放内核 + OpenGL 渲染
 
-当前版本已全面升级为 **PySide6 原生播放架构**（`QMediaPlayer` + `QVideoWidget` + `QAudioOutput`）：
+当前版本使用 **PySide6 外壳 + 内嵌 libmpv**（`player/mpv_engine.py`）：
 
-- **零外部二进制**：不需要安装、下载或打包任何外部播放器，安装包体积大幅缩减（已移除 124MB 的 mpv）；
-- **原生硬件加速**：Windows 调度 Direct3D / Media Foundation，macOS 调度 Metal / AVFoundation 进行硬件解码渲染；
-- **同源图层无黑屏**：视频渲染直接发生在 Qt 窗口体系内，与浮层控制栏、右侧抽屉、顶部指示胶囊完美合成，杜绝黑屏问题。
+- **内核随包分发**：`libmpv-2.dll` 打包在 `src/strmaction_desktop/vendor/libmpv/`，用户无需安装播放器、无需配置路径；
+- **格式完整**：libmpv 用 FFmpeg 解复用，MKV / HEVC / DTS / TrueHD / ASS 特效与外挂字幕全部支持——这些正是 Qt Multimedia 覆盖不到的部分；
+- **原生硬件加速**：`hwdec=auto-safe`，Windows 走 D3D11VA、macOS 走 VideoToolbox；
+- **同源图层无黑屏**：画面经 `MpvRenderContext` 渲染进 `QOpenGLWidget` 的 FBO，由 Qt 自身合成，浮层控制栏 / 右侧抽屉 / 顶部胶囊按普通子控件绘制在视频之上——不是"修好了层级"，而是层级问题不复存在。
 
-### 6.2 本地环回流媒体代理（LocalStreamingProxy）
+### 6.2 HTTP 请求头注入（不再需要本地代理）
 
-百度网盘、Alist 与 CDN 直链通常严格要求 `User-Agent` 与 `Referer` 头，且存在 302 跨域重定向。由于操作系统底层解码器在重定向时容易丢失自定义请求头，桌面端内置了一个极轻量的流媒体代理（`proxy.py`，绑定在 `127.0.0.1:<可用随机端口>`）：
+百度网盘、Alist 与 CDN 直链通常严格要求 `User-Agent` 与 `Referer`，且普遍存在 302 跨域重定向。libmpv 用 `http-header-fields` 直接解决：
 
-1. 网页点击播放时，桌面端接收 payload 并注册本地回送地址 `http://127.0.0.1:<port>/stream_id`；
-2. `QMediaPlayer` 仅需连接该本地地址；
-3. 本地代理在后台向远端云盘/CDN 发起流式转发，全链路妥善维持 `User-Agent`、`Referer`、`Range` 字节范围请求并处理 302 重定向；
-4. 用户 Seek、暂停或退出时，代理优雅处理管道断开，无任何冗余垃圾流。
+1. 网页点击播放时，桌面端接收 payload，把 `headers` 逐条写入 mpv 的 `http-header-fields`；
+2. mpv 的 HTTP 层对**每一个**请求附加这些头：首个请求、302 之后的新 host、Range 重连、HLS 分片全部覆盖；
+3. `Range` / `If-Range` 由 demuxer 原生管理，seek 直接发字节范围请求，没有重连握手的额外延迟；
+4. 证书策略跟随桌面端「允许自签名 HTTPS」开关（`tls-verify`）。
+
+> 早期版本这里是一个 290 行的 Python 环回代理（`proxy.py`）。它存在的唯一原因写在文件头注释里——"Qt Multimedia cannot attach per-request headers to a media source"。换内核后该子系统已整体删除。
+
+验证方式：`scripts/mpv_ua_check.py` 会起一个本地服务器并返回 302，记录 mpv 在**直连与跳转后**两个请求上实际发出的请求头。
 
 ---
 
@@ -278,12 +291,12 @@ uv run strmaction-desktop --server https://media.example.com
 
 ### 9.1 请求头与防盗链（重点）
 
-服务端下发的 `headers` 会由内置的本地环回代理全量透传，不只 User-Agent：
+服务端下发的 `headers` 会全部写入 mpv 的 `http-header-fields`，不只 User-Agent：
 
 - `User-Agent` 与 `Referer`；
 - `Cookie` / `Authorization`（如果配置了网盘鉴权）；
-- 本地流媒体代理通过 Python 标准库透明转发并在重定向时完整保持 Headers，**在 302 跨域重定向到百度网盘/Alist CDN 时全链路严格透传，绝不触发 403 Forbidden**；
-- 避免放在命令行参数中，防止敏感 Token/Cookie 泄露在系统进程列表。
+- mpv 的 HTTP 层对每个请求附加这些头，**在 302 跨域重定向到百度网盘/Alist CDN 时，新 host 的请求同样携带**，绝不触发 403 Forbidden（可用 `scripts/mpv_ua_check.py` 复现验证）；
+- 通过 libmpv 的属性接口设置，不经过命令行参数，不会出现在系统进程列表里。
 
 ### 9.2 仿安卓伴侣 App 自制控件体系
 
@@ -338,6 +351,21 @@ uv run strmaction-desktop --server https://media.example.com
 
 ## 10. 构建安装包
 
+### 10.0 打包前必做：拉取 libmpv
+
+`libmpv-2.dll`（Windows 121 MB）**不进 Git**，已在 `.gitignore` 中忽略。克隆仓库后必须先拉取，否则打包产物里没有播放内核，运行时会静默回退到 Qt Multimedia（MKV 播不了、控件被盖等症状全部复现）：
+
+```bash
+cd desktop
+uv run python scripts/fetch_libmpv.py
+```
+
+脚本会自动识别当前平台并下载到 `src/strmaction_desktop/vendor/libmpv/<platform>-<arch>/`。**只需执行一次**，后续构建会直接复用。确认已就位：
+
+```bash
+ls src/strmaction_desktop/vendor/libmpv/windows-x64/libmpv-2.dll
+```
+
 ### 10.1 Windows
 
 ```powershell
@@ -352,7 +380,13 @@ desktop\dist\StrmAction\StrmAction.exe
 desktop\dist\StrmAction\_internal\...
 ```
 
-脚本会自动用 uv 准备 `.venv`、安装依赖、生成各分辨率应用图标并调用 PyInstaller 完成一键打包。因为采用纯原生架构，**构建机与目标机均不需要额外下载或安装任何播放器**。
+脚本会自动用 uv 准备 `.venv`、安装依赖、生成各分辨率应用图标并调用 PyInstaller 完成一键打包。构建机与目标机均不需要额外安装播放器。
+
+> 只想重新打包、跳过依赖安装时，可直接调用 PyInstaller：
+> ```powershell
+> .venv\Scripts\pyinstaller.exe packaging\strmaction-desktop.spec --noconfirm
+> ```
+> 加 `--clean` 可清空缓存（慢但干净，改过 spec 或 vendor 后建议加）。
 
 ### 10.2 macOS
 
@@ -411,7 +445,7 @@ uv run python scripts/make_icons.py
   - 不写日志；
   - 不落盘；
   - 不放进命令行参数；
-- headers 只注入到本地环回代理（127.0.0.1 随机端口），对片源请求生效；
+- headers 只写入播放器的 `http-header-fields`，作用域限定在当前播放条目，不影响其他请求；
 - WebView 只允许加载配置的服务器地址（外链交给系统浏览器）；
 - JS Bridge 只接受合法 payload，不执行任意命令；
 - 生产环境请使用 HTTPS；自签名证书需要显式信任（后续可加指纹信任）；
@@ -430,11 +464,18 @@ uv run pytest -q
 
 - 配置校验/窗口尺寸；
 - payload 校验与脱敏；
-- 代理 TLS 策略（自签名证书）/Content-Type 兜底；
+- libmpv 库定位、`http-header-fields` 格式化、mpv 错误码映射、`STRMACTION_DISABLE_MPV` 回退开关；
 - 进度上报：payload、90% 已看、401、500 重试、client_key；
 - JS Bridge 错误处理；
 - WebView 导航 origin 限制；
 - 桌面桥注入脚本。
+
+需要真实 mpv 的两项验证是独立脚本（不入 pytest，因为要 GPU 上下文与解码线程）：
+
+```bash
+uv run python scripts/mpv_spike.py      # 渲染 / 控件叠加 / Qt 合成
+uv run python scripts/mpv_ua_check.py   # UA 与 Referer 是否真的发出去（含 302 跳转）
+```
 
 服务端测试：
 
@@ -459,8 +500,13 @@ npm run build
 | `ModuleNotFoundError: PySide6` | `uv pip install -r requirements.txt` 或 `uv pip install -e ".[dev]"` |
 | 启动白屏 / 页面空白 | 检查服务器地址；确认服务器可访问；自签名证书需在设置里勾选「允许自签名 HTTPS」 |
 | 播放黑屏并提示「播放失败」 | 多为片源证书/防盗链问题：勾选允许自签名；或检查服务端库级 `headers` |
+| **启动后整个主界面黑屏**，日志有 `Failed to get a QRhi` / `OpenGL is not compatible with this QQuickWidget` | 有代码调用了全局 `QSurfaceFormat.setDefaultFormat()` 强制 OpenGL，QtWebEngine 的 `QQuickWidget` 因此拿不到 QRhi。GL 格式只能设在 `MpvVideoWidget` 自己身上，**不要**设为全局默认值 |
+| 视频区域全黑但界面正常 | 一般是 `QWebEngineView` 与 `QOpenGLWidget` 在同一窗口里**同时可见**（此时 `context()` 为 `None`）。本项目用 `QStackedWidget` 切换不会触发；若改成同屏布局，视频需放独立窗口 |
 | 每次启动都要重新登录 | 确认 `%APPDATA%\StrmAction\webview` 可写（持久化 profile） |
-| 拖拽进度后回到开头 | 已修复：起播定位改为媒体加载完成后再 seek |
+| 拖拽进度后回到开头 | 已修复：mpv 用 `loadfile start=` 原生起播定位 |
+| 日志出现「播放后端：Qt Multimedia（未找到 libmpv）」 | `libmpv-2.dll` 缺失或路径不对；运行 `uv run python scripts/fetch_libmpv.py`，或用 `STRMACTION_LIBMPV` 指定 |
+| 日志出现「mpv 渲染上下文创建失败」 | 显卡驱动 / OpenGL 不可用；先在 `scripts/mpv_spike.py` 里复现，确认 `GL 初始化后渲染上下文: True` |
+| 想临时回到旧内核排查 | 设 `STRMACTION_DISABLE_MPV=1` 启动，即用 Qt Multimedia 回退路径 |
 | 进度不更新 | 看 `desktop.log`；`play_token` 可能过期；重新从网页打开播放 |
 | macOS 打不开 | 未公证会被 Gatekeeper 拦截；开发期右键打开，正式分发做公证 |
 | 打包后找不到 assets | 必须在 `desktop/` 目录执行 `packaging/strmaction-desktop.spec` |
@@ -543,14 +589,15 @@ desktop/
 │   ├── qt_window.py            PySide6 主窗口（QStackedWidget: Web + Player）
 │   ├── bridge.py               JS Bridge 接口
 │   ├── config.py               配置目录/读写（仅服务地址/缓存配置）
-│   ├── proxy.py                内置本地环回流媒体代理（处理请求头与302重定向）
 │   ├── progress.py             进度上报（5秒心跳）
 │   ├── security.py             payload 校验/脱敏
 │   ├── logging_setup.py
 │   ├── version.py
-│   ├── player/                 仿伴侣 App 自制播放控件与原生播放内核
-│   │   ├── controller.py       基于 QMediaPlayer + QAudioOutput 的播放控制器
-│   │   ├── view.py             内嵌原生视频表面（QVideoWidget）与主交互视图
+│   ├── player/                 仿伴侣 App 自制播放控件与 libmpv 播放内核
+│   │   ├── mpv_engine.py       libmpv 引擎封装 + MpvVideoWidget（OpenGL FBO 渲染）
+│   │   ├── mpv_loader.py       libmpv 定位与加载（多路径查找 / DLL 目录注入）
+│   │   ├── controller.py       Qt Multimedia 回退控制器（仅在无 libmpv 时使用）
+│   │   ├── view.py             播放主视图（视频表面 + 控件叠加 + 抽屉）
 │   │   ├── overlay.py          顶底控制栏、顶部倍速指示与中央反馈（ControlsOverlay）
 │   │   ├── seekbar.py          平滑三层缓冲进度条（BufferedSeekBar）
 │   │   ├── drawer.py           40% 右侧侧滑抽屉（PlayerDrawer: 选集高亮/倍速/音轨）
@@ -567,7 +614,7 @@ desktop/
 │   └── strmaction-desktop.spec PyInstaller 打包规则（包含 Qt 多媒体与网页引擎）
 └── tests/
     ├── test_player_ui.py       播放控件、选集高亮与键盘控制单元测试
-    ├── test_proxy.py           本地流媒体代理与重定向测试
+    ├── test_mpv_engine.py      libmpv 库查找 / 请求头格式化 / 错误映射测试
     └── ...
 ```
 
@@ -577,7 +624,16 @@ desktop/
 
 ### Q1：现在还需要安装或下载 mpv 吗？
 
-**完全不需要**。桌面端使用 PySide6 的 `QMediaPlayer` + `QVideoWidget`（FFmpeg 后端随 PySide6 打包），配合内置的本地环回代理 `proxy.py`；安装包里也不再包含 mpv 二进制。
+**用户不需要做任何事**。安装包已内置 `libmpv-2.dll`（`src/strmaction_desktop/vendor/libmpv/windows-x64/`），随应用一起分发，无需配置任何播放器路径。
+
+如果想换成自己编译的精简版 libmpv，把库放到以下任一位置即可，查找优先级依次为：
+
+1. 环境变量 `STRMACTION_LIBMPV`（直接指向库文件）
+2. 环境变量 `STRMACTION_LIBMPV_DIR`（指向所在目录）
+3. 包内 `vendor/libmpv/<平台-架构>/`
+4. 用户数据目录 `%APPDATA%\StrmAction\libmpv\`
+
+找不到 libmpv 时，桌面端会回退到 Qt Multimedia，但会失去请求头注入、外挂字幕、MKV 完整格式支持和流缓冲——不推荐。
 
 ### Q2：为什么设置里没有播放器路径配置了？
 
@@ -585,11 +641,11 @@ desktop/
 
 ### Q3：百度网盘或 Alist 的防盗链直链如何播放？
 
-桌面端随程序启动内置了一个轻量级本地环回代理（`127.0.0.1:<随机端口>`），它利用 Python 标准库流式转发视频数据，严格保留服务端下发的 `User-Agent` 与 `Referer` 头，并妥善处理 302 跨域重定向与分片 Range 寻道请求，绝不会报 403 Forbidden。
+内嵌的 libmpv 会把服务端下发的 `User-Agent` 与 `Referer` 注入到每个 HTTP 请求，302 跳转到 CDN 之后依然生效；Range 寻道由 demuxer 直接发字节范围请求，不会报 403 Forbidden。
 
 ### Q4：内嵌播放器使用硬件加速吗？
 
-是的。渲染表面直接采用 `QVideoWidget`，Windows 调度 Direct3D / Media Foundation，macOS 调度 Metal / AVFoundation，均为操作系统级硬件解码，CPU 占用极低且不会出现黑屏问题。
+是的。解码走 libmpv 的 `hwdec=auto-safe`（Windows D3D11VA / macOS VideoToolbox），画面经 `MpvRenderContext` 渲染进 `QOpenGLWidget` 的 FBO，再由 Qt 合成——所以控件不会被视频盖住，也不存在合成层黑屏问题。
 
 ### Q5：桌面端设置页里的“我的播放方式”对桌面端生效吗？
 
