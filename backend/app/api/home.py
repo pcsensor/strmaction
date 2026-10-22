@@ -17,6 +17,7 @@ from ..serializers import (
     item_summary,
     library_payload,
     parse_json,
+    playlist_key,
     ready_item_ids,
     series_of,
 )
@@ -110,8 +111,9 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
         )
         hero = [_hero(i) for i in hero_candidates[:6]]
 
-        # 继续观看：按 user_id 过滤
+        # 继续观看：按 user_id 过滤；同一个播放列表只保留最后一次播放的那一条。
         continue_rows: list[dict[str, Any]] = []
+        # 分组后可能只剩少数几个播放列表，所以原始行要多取一些再截断。
         progress_rows = session.exec(
             select(PlayProgress)
             .where(
@@ -120,18 +122,24 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
                 PlayProgress.position_ms > 0,
                 PlayProgress.dismissed == False,  # noqa: E712
             )
-            .order_by(PlayProgress.updated_at.desc())
-            .limit(24)
+            # updated_at 只精确到秒，同秒时用自增 id 兜底，保证「最后播放」稳定。
+            .order_by(PlayProgress.updated_at.desc(), PlayProgress.id.desc())
+            .limit(200)
         ).all()
         progress_map = {row.item_id: row for row in progress_rows}
         progress_items = session.exec(
             select(Item).where(Item.id.in_(list(progress_map)))
         ).all() if progress_map else []
         item_map = {i.id: i for i in progress_items}
+        # 已按时间倒序，同组只收第一条 = 该播放列表最后一次播放的条目。
+        grouped: dict[int, tuple[PlayProgress, Item]] = {}
         for row in progress_rows:
             item = item_map.get(row.item_id)
             if item is None or item.id not in ready:
                 continue
+            grouped.setdefault(playlist_key(session, item), (row, item))
+        # 插入顺序即「组内最新一条」的时间倒序，也就是组间的展示顺序。
+        for row, item in grouped.values():
             series = series_of(session, item)
             display = series if series and series.kind == "series" else item
             ratio = (

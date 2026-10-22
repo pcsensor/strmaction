@@ -198,6 +198,36 @@ def series_of(session: Session, item: Item) -> Item | None:
     return current
 
 
+def playlist_root(session: Session, item: Item) -> Item | None:
+    """
+    返回条目所属的「播放列表」根节点：最顶层的 series / season / folder。
+
+    「继续观看」按它分组，保证同一部剧（或同一个课程文件夹）只出现一张卡。
+    没有集合型祖先时返回 None，调用方按条目自身分组（电影、散装视频）。
+    """
+    chain: list[Item] = []
+    current: Item | None = item
+    guard = 0
+    while current is not None:
+        chain.append(current)
+        if current.parent_id is None:
+            break
+        current = session.get(Item, current.parent_id)
+        guard += 1
+        if guard > 8:
+            break
+    for node in reversed(chain):
+        if node.kind in {"series", "season", "folder"}:
+            return node
+    return None
+
+
+def playlist_key(session: Session, item: Item) -> int:
+    """分组键：播放列表根节点 id；没有根节点时用条目自身 id。"""
+    root = playlist_root(session, item)
+    return root.id if root is not None and root.id is not None else item.id
+
+
 def ancestors(session: Session, item: Item) -> dict[str, Item | None]:
     parent = session.get(Item, item.parent_id) if item.parent_id else None
     season = parent if parent and parent.kind == "season" else (

@@ -34,6 +34,7 @@ from ..serializers import (
     library_payload,
     media_labels,
     parse_json,
+    playlist_key,
     progress_payload,
     ready_item_ids,
     series_of,
@@ -942,7 +943,11 @@ def dismiss_continue(
     user: CurrentUser = Depends(get_current_user),
     engine=Depends(get_engine),
 ):
-    """v0.9: 从「继续观看」移除该条目（保留其播放进度与已看记录），按 user_id 隔离。"""
+    """v0.9: 从「继续观看」移除该条目（保留其播放进度与已看记录），按 user_id 隔离。
+
+    首页「继续观看」按播放列表聚合（同剧/同文件夹只出一张卡），所以这里也整组移除：
+    否则移掉最新一集后，旧集会顶上来，卡片看起来只是换了个集号。
+    """
     with Session(engine) as session:
         item = _get_item(session, item_id)
 
@@ -951,27 +956,27 @@ def dismiss_continue(
         if accessible_ids is not None and item.library_id not in accessible_ids:
             raise APIError(403, "FORBIDDEN", "无权访问该条目")
 
-        if item.kind == "series":
-            sequence = _episode_sequence(session, item)
-            seq_ids = [ep.id for ep in sequence]
-            if seq_ids:
-                rows = session.exec(
-                    select(PlayProgress).where(
-                        PlayProgress.user_id == user.id,
-                        PlayProgress.item_id.in_(seq_ids)
-                    )
-                ).all()
-                for row in rows:
-                    row.dismissed = True
-                    session.add(row)
-        else:
-            row = session.exec(
-                select(PlayProgress).where(
-                    PlayProgress.user_id == user.id,
-                    PlayProgress.item_id == item_id
-                )
-            ).first()
-            if row is not None:
+        target_key = playlist_key(session, item)
+
+        # 只处理该用户已有的进度行，按同样的分组规则筛出同一播放列表的条目。
+        rows = session.exec(
+            select(PlayProgress).where(
+                PlayProgress.user_id == user.id,
+                PlayProgress.dismissed == False,  # noqa: E712
+            )
+        ).all()
+        item_ids = sorted({row.item_id for row in rows} | {item_id})
+        candidates = session.exec(
+            select(Item).where(Item.id.in_(item_ids))
+        ).all() if item_ids else []
+        member_ids = {
+            cand.id
+            for cand in candidates
+            if playlist_key(session, cand) == target_key
+        }
+
+        for row in rows:
+            if row.item_id in member_ids:
                 row.dismissed = True
                 session.add(row)
         session.commit()
