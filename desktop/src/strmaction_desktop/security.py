@@ -42,6 +42,12 @@ class PlaybackPayload:
     progress_interval_ms: int
     subtitles: tuple[Subtitle, ...]
     title: str = ""
+    series_title: str = ""
+    playlist: tuple[dict, ...] = ()
+    next_item_id: int | None = None
+    next_title: str = ""
+    current_index: int = -1
+    duration_ms: int | None = None
 
 
 def _require_int(value: Any, name: str, *, minimum: int = 0) -> int:
@@ -126,6 +132,34 @@ def parse_payload(raw: Any, server_url: str) -> PlaybackPayload:
     interval = max(2000, min(interval, 60_000))
     subtitles = _clean_subtitles(raw.get("subtitles"), server)
     title = str(raw.get("title") or "").strip()[:512]
+    series_title = str(raw.get("series_title") or "").strip()[:512]
+    duration_ms = raw.get("duration_ms")
+    if duration_ms is not None and isinstance(duration_ms, int) and duration_ms > 0:
+        duration_ms_val: int | None = duration_ms
+    else:
+        duration_ms_val = None
+
+    raw_playlist = raw.get("playlist")
+    playlist_clean: list[dict] = []
+    if isinstance(raw_playlist, list):
+        for entry in raw_playlist[:200]:
+            if isinstance(entry, Mapping):
+                playlist_clean.append({
+                    "item_id": entry.get("item_id"),
+                    "title": str(entry.get("title") or ""),
+                    "episode_no": entry.get("episode_no"),
+                    "code": str(entry.get("code") or ""),
+                    "watched": bool(entry.get("watched")),
+                    "current": bool(entry.get("current")),
+                })
+
+    next_item_id = raw.get("next_item_id")
+    if not isinstance(next_item_id, int) or next_item_id <= 0:
+        next_item_id = None
+    next_title = str(raw.get("next_title") or "").strip()[:256]
+    current_index = raw.get("current_index")
+    current_index_val = current_index if isinstance(current_index, int) else -1
+
     return PlaybackPayload(
         item_id=item_id,
         play_url=play_url,
@@ -135,6 +169,12 @@ def parse_payload(raw: Any, server_url: str) -> PlaybackPayload:
         progress_interval_ms=interval,
         subtitles=subtitles,
         title=title,
+        series_title=series_title,
+        playlist=tuple(playlist_clean),
+        next_item_id=next_item_id,
+        next_title=next_title,
+        current_index=current_index_val,
+        duration_ms=duration_ms_val,
     )
 
 

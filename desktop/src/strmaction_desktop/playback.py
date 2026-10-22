@@ -21,6 +21,16 @@ class PlaybackSession:
         allow_self_signed_https: bool = False,
         logger=None,
         on_auth_error=None,
+        on_position=None,
+        on_duration=None,
+        on_paused=None,
+        on_finished=None,
+        on_exited=None,
+        on_speed=None,
+        on_volume=None,
+        on_cache_state=None,
+        on_tracks=None,
+        on_idle=None,
     ):
         self.payload = payload
         self._logger = logger
@@ -29,6 +39,11 @@ class PlaybackSession:
         self._last_position_ms = 0
         self._last_flush_position_ms = 0
         self._stopped = False
+        self._extra_on_position = on_position
+        self._extra_on_duration = on_duration
+        self._extra_on_paused = on_paused
+        self._extra_on_finished = on_finished
+        self._extra_on_exited = on_exited
         self.reporter = ProgressReporter(
             server_url=server_url,
             item_id=payload.item_id,
@@ -47,13 +62,18 @@ class PlaybackSession:
             on_paused=self._on_paused,
             on_finished=self._on_finished,
             on_exited=self._on_exited,
+            on_speed=on_speed,
+            on_volume=on_volume,
+            on_cache_state=on_cache_state,
+            on_tracks=on_tracks,
+            on_idle=on_idle,
             logger=logger,
         )
 
-    def start(self) -> None:
+    def start(self, wid: int | None = None) -> None:
         self.reporter.start()
         try:
-            self.controller.play(self.payload)
+            self.controller.play(self.payload, wid=wid)
         except Exception:
             self.reporter.stop(flush=False)
             raise
@@ -77,6 +97,8 @@ class PlaybackSession:
         if abs(position_ms - self._last_flush_position_ms) >= 5000:
             self._last_flush_position_ms = position_ms
             self.reporter.request_flush()
+        if self._extra_on_position:
+            self._extra_on_position(seconds)
 
     def _on_duration(self, seconds: float | None) -> None:
         if seconds is None:
@@ -86,14 +108,20 @@ class PlaybackSession:
             position = self._last_position_ms
             duration = self._duration_ms
         self.reporter.update(position, duration)
+        if self._extra_on_duration:
+            self._extra_on_duration(seconds)
 
     def _on_paused(self, paused: bool) -> None:
         if paused:
             self.reporter.request_flush()
+        if self._extra_on_paused:
+            self._extra_on_paused(paused)
 
     def _on_finished(self) -> None:
         self.reporter.finish()
         self.reporter.request_flush()
+        if self._extra_on_finished:
+            self._extra_on_finished()
 
     def _on_exited(self) -> None:
         with self._lock:
@@ -103,3 +131,5 @@ class PlaybackSession:
         if self._logger:
             self._logger.info("mpv 已退出")
         self.reporter.stop(flush=True)
+        if self._extra_on_exited:
+            self._extra_on_exited()
