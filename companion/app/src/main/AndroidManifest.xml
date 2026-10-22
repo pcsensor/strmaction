@@ -8,9 +8,8 @@
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
 
-    <!-- Android 11+ 包可见性：不声明的话查不到 mpv（必须是 manifest 直接子节点） -->
+    <!-- Android 11+ 包可见性：外链与 intent:// 需要能解析系统浏览器/播放器（必须是 manifest 直接子节点） -->
     <queries>
-        <package android:name="is.xyz.mpv" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:scheme="https" />

@@ -1,4 +1,4 @@
-"""Progress reporting for local mpv playback.
+"""Progress reporting for embedded desktop playback.
 
 The desktop client uses the same progress endpoint as the web/companion apps,
 with the item-scoped play_token as a Bearer credential.  Uploads are
@@ -84,7 +84,7 @@ class ProgressReporter:
             if duration_ms is not None:
                 self._duration_ms = max(0, int(duration_ms))
             self._dirty = True
-        # Deliberately do not wake the loop here. mpv emits time-pos many times
+        # Deliberately do not wake the loop here. The player emits time-pos many times
         # per second; waking on every tick would turn the configured interval
         # into an unthrottled upload loop. Pause/seek/exit call request_flush().
 

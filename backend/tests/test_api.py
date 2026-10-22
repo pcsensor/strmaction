@@ -599,24 +599,26 @@ def test_multiuser_and_permissions():
             pref = user_client.get("/api/me/player")
             assert pref.status_code == 200
             assert pref.json()["overrides"] == {"mode": None, "fallback_on_error": None}
-            assert "desktop_mpv" not in pref.json()["allowed_modes"]
-            assert "builtin" in pref.json()["allowed_modes"]
+            # v1.3：服务端 mpv / 外部 mpv 已下线，所有人可选模式一致
+            assert pref.json()["allowed_modes"] == [
+                "auto", "builtin", "browser_intent", "copy"
+            ]
             assert pref.json()["client"]["is_browser"] is True
             assert pref.json()["available_modes"] == ["auto", "copy"]
             assert pref.json()["resolved_mode"] == "copy"  # 桌面浏览器默认 builtin → copy
             admin_pref = admin_client.get("/api/me/player").json()
-            assert "desktop_mpv" in admin_pref["allowed_modes"]
-            assert "desktop_mpv" in admin_pref["available_modes"]
+            assert admin_pref["allowed_modes"] == pref.json()["allowed_modes"]
+            assert admin_pref["available_modes"] == ["auto", "copy"]
 
             patched = user_client.patch(
                 "/api/me/player",
-                json={"mode": "external_mpv", "fallback_on_error": False},
+                json={"mode": "builtin", "fallback_on_error": False},
             )
             assert patched.status_code == 200, patched.text
-            assert patched.json()["effective"]["mode"] == "external_mpv"
+            assert patched.json()["effective"]["mode"] == "builtin"
             assert patched.json()["effective"]["fallback_on_error"] is False
-            assert patched.json()["resolved_mode"] == "copy"  # 桌面浏览器不支持外部播放器
-            # 白名单之外的字段 / 非法 mode / 服务器 mpv 必须拒绝
+            assert patched.json()["resolved_mode"] == "copy"  # 桌面浏览器没有原生播放器
+            # 白名单之外的字段 / 已下线的 mpv 相关字段必须拒绝
             assert user_client.patch(
                 "/api/me/player", json={"mode": "nope"}
             ).status_code == 422
@@ -625,7 +627,7 @@ def test_multiuser_and_permissions():
             ).status_code == 422
             assert user_client.patch(
                 "/api/me/player", json={"mode": "desktop_mpv"}
-            ).status_code == 403
+            ).status_code == 422
 
             # 5. 普通用户不能访问剧集库的条目
             tv_items = admin_client.get("/api/items", params={"library_id": tv_lib["id"]}).json()["items"]
@@ -657,11 +659,11 @@ def test_multiuser_and_permissions():
             assert direct_play.json()["play_token"]
             assert direct_play.json()["downgraded"] is False
 
-            # 6.2 外部播放器在桌面浏览器明确降级为 copy，并带降级原因
+            # 6.2 内置播放器在桌面浏览器明确降级为 copy，并带降级原因
             external_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
             assert external_play.status_code == 200, external_play.text
             assert external_play.json()["mode"] == "copy"
-            assert external_play.json()["requested_mode"] == "external_mpv"
+            assert external_play.json()["requested_mode"] == "builtin"
             assert external_play.json()["downgraded"] is True
             assert external_play.json()["downgrade_reason"] == "requires_companion"
             assert external_play.json()["fallback_on_error"] is False
@@ -694,19 +696,21 @@ def test_multiuser_and_permissions():
             assert cleared.json()["effective"]["mode"] == "builtin"
             assert cleared.json()["resolved_mode"] == "copy"
 
-            # 6.3 全局默认是服务器 mpv 时，普通用户也必须降级，绝不在服务端起进程
-            admin_client.patch(
+            # 6.3 已下线的 mpv 模式不能再写进全局默认
+            rejected = admin_client.patch(
                 "/api/settings", json={"player": {"mode": "desktop_mpv"}}
             )
-            degraded = user_client.get("/api/me/player").json()
-            assert degraded["effective"]["mode"] == "auto"
-            assert degraded["resolved_mode"] == "copy"
-            degraded_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
-            assert degraded_play.status_code == 200, degraded_play.text
-            assert degraded_play.json()["mode"] == "copy"
+            assert rejected.status_code == 400, rejected.text
+            assert admin_client.get("/api/settings").json()["settings"]["player"]["mode"] == "builtin"
+            # 旧客户端写回 mpv 字段也会被丢弃
             admin_client.patch(
-                "/api/settings", json={"player": {"mode": "builtin"}}
+                "/api/settings", json={"player": {"mpv_path": "/usr/bin/mpv"}}
             )
+            player_cfg = admin_client.get("/api/settings").json()["settings"]["player"]
+            assert "mpv_path" not in player_cfg
+            assert "mpv_extra_args" not in player_cfg
+            assert "mpv_package" not in player_cfg
+            assert "enable_progress" not in player_cfg
 
             # 普通用户上报进度 50000ms
             p_res = user_client.post(

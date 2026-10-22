@@ -14,14 +14,7 @@ object PlayApi {
             ?.trimEnd('/')
             ?: ""
 
-    fun mpvPackage(context: Context): String =
-        context.getSharedPreferences(MainActivity.PREFS, Context.MODE_PRIVATE)
-            .getString(MainActivity.KEY_MPV_PACKAGE, "is.xyz.mpv")
-            ?.trim()
-            ?.ifBlank { "is.xyz.mpv" }
-            ?: "is.xyz.mpv"
-
-    fun fetch(context: Context, itemId: Int, mode: String?): PlayInfo {
+    fun fetch(context: Context, itemId: Int): PlayInfo {
         val base = serverUrl(context)
         if (base.isBlank()) throw PlayApiException(0, "尚未配置服务器地址")
         val conn = TlsPolicy.openConnection(context, "$base/api/play/$itemId").apply {
@@ -41,10 +34,8 @@ object PlayApi {
         val cookie = runCatching { CookieManager.getInstance().getCookie(base) }.getOrNull()
         if (!cookie.isNullOrBlank()) conn.setRequestProperty("Cookie", cookie)
 
-        val payload = JSONObject().apply {
-            if (!mode.isNullOrBlank()) put("mode", mode)
-        }.toString()
-        conn.outputStream.use { it.write(payload.toByteArray(Charsets.UTF_8)) }
+        // 服务端按「个人偏好 > 全局默认 > 设备能力」决定 mode，客户端不再显式指定。
+        conn.outputStream.use { it.write("{}".toByteArray(Charsets.UTF_8)) }
 
         val status = conn.responseCode
         val stream = if (status in 200..299) conn.inputStream else conn.errorStream
@@ -125,7 +116,6 @@ object PlayApi {
                 json.optInt("cache_limit_mb", PlaybackCache.DEFAULT_LIMIT_MB),
             ),
             fallbackOnError = json.optBoolean("fallback_on_error", true),
-            mpvPackage = json.optString("mpv_package").ifBlank { mpvPackage(context) },
             subtitles = subtitles,
             mode = json.optString("mode").ifBlank { "builtin" },
             seriesTitle = json.optString("series_title").takeIf { it.isNotBlank() },

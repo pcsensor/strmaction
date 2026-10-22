@@ -99,3 +99,36 @@ def test_qt_player_controller():
     ctrl.seek(10.0)
     ctrl.set_volume_relative(-10)
     ctrl.stop()
+
+
+def test_proxy_tls_policy_follows_allow_self_signed():
+    """The loopback proxy must honour allow_self_signed_https (black screen root cause)."""
+    import ssl
+
+    from strmaction_desktop.proxy import LocalStreamingProxy, configure_proxy_tls, get_proxy
+
+    proxy = LocalStreamingProxy(tls_verify=True)
+    assert proxy._ssl_context() is None  # urllib default: verification on
+
+    proxy.set_tls_verify(False)
+    context = proxy._ssl_context()
+    assert isinstance(context, ssl.SSLContext)
+    assert context.verify_mode == ssl.CERT_NONE
+    assert context.check_hostname is False
+
+    # The live singleton is updated without a restart.
+    live = get_proxy()
+    configure_proxy_tls(True)
+    assert live.tls_verify is True
+    configure_proxy_tls(False)
+    assert live.tls_verify is False
+    configure_proxy_tls(True)
+
+
+def test_proxy_fills_generic_content_type():
+    from strmaction_desktop.proxy import guess_content_type
+
+    assert guess_content_type("https://x.test/a/b.mkv", "video/x-matroska") == "video/x-matroska"
+    assert guess_content_type("https://x.test/a/b.mkv", "application/octet-stream") == "video/x-matroska"
+    assert guess_content_type("https://x.test/a/b.mkv", None) == "video/x-matroska"
+    assert guess_content_type("https://x.test/noext", None) == "application/octet-stream"

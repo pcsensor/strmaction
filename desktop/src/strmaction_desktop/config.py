@@ -1,8 +1,8 @@
 """Configuration for the StrmAction desktop shell.
 
-Only non-secret preferences live here: server address, mpv path, playback
-cache budget and window geometry. Account credentials and web session cookies
-stay in the WebView.
+Only non-secret preferences live here: server address, playback cache budget
+and window geometry. Account credentials and web session cookies stay in the
+WebView storage directory.
 """
 
 from __future__ import annotations
@@ -51,6 +51,10 @@ def webview_storage_dir() -> Path:
     return app_data_dir() / "webview"
 
 
+def webview_cache_dir() -> Path:
+    return app_data_dir() / "webview-cache"
+
+
 def normalize_server_url(raw: str) -> str:
     """Validate and normalize the server base URL."""
     value = (raw or "").strip().rstrip("/")
@@ -86,7 +90,6 @@ def normalize_cache_limit(value: int) -> int:
 @dataclass
 class DesktopConfig:
     server_url: str = ""
-    mpv_path: str = ""
     cache_limit_mb: int = DEFAULT_CACHE_LIMIT_MB
     allow_self_signed_https: bool = False
     window_width: int = DEFAULT_WIDTH
@@ -100,7 +103,6 @@ class DesktopConfig:
         server = normalize_server_url(self.server_url) if self.server_url else ""
         return DesktopConfig(
             server_url=server,
-            mpv_path=(self.mpv_path or "").strip(),
             cache_limit_mb=normalize_cache_limit(self.cache_limit_mb),
             allow_self_signed_https=bool(self.allow_self_signed_https),
             window_width=_clamp(self.window_width, MIN_WIDTH, 3840, DEFAULT_WIDTH),
@@ -121,7 +123,6 @@ class DesktopConfig:
             raise ConfigError("配置文件格式不正确")
         return cls(
             server_url=str(raw.get("server_url") or ""),
-            mpv_path=str(raw.get("mpv_path") or ""),
             cache_limit_mb=raw.get("cache_limit_mb", DEFAULT_CACHE_LIMIT_MB),
             allow_self_signed_https=bool(raw.get("allow_self_signed_https", False)),
             window_width=raw.get("window_width", DEFAULT_WIDTH),

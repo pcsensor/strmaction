@@ -72,12 +72,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "cache_limit_mb": 128,
         "fallback_on_error": True,
         "play_headers": {},
-        "mpv_package": "is.xyz.mpv",
-        "mpv_path": "/usr/bin/mpv",
-        "mpv_extra_args": [
-            "--http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/",
-        ],
-        "enable_progress": True,
     },
     "ui": {
         "default_language": "zh-CN",
@@ -86,6 +80,22 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 SECRET_KEYS = {"api_key", "pin", "password_hash", "token", "secret"}
+
+# v1.3 移除了服务端 mpv（desktop_mpv）与外部 mpv（external_mpv）能力。
+# 旧配置里残留的字段与模式在这里被丢弃，避免继续出现在设置接口里。
+OBSOLETE_PLAYER_KEYS = {"mpv_path", "mpv_extra_args", "mpv_package", "enable_progress"}
+OBSOLETE_PLAYER_MODES = {"external_mpv", "desktop_mpv"}
+
+
+def sanitize_settings(config: dict[str, Any]) -> dict[str, Any]:
+    """丢弃已下线的播放器配置，保证对外配置结构与前端一致。"""
+    player = config.get("player")
+    if isinstance(player, dict):
+        for key in OBSOLETE_PLAYER_KEYS:
+            player.pop(key, None)
+        if player.get("mode") in OBSOLETE_PLAYER_MODES:
+            player["mode"] = "auto"
+    return config
 
 
 # ---------------------------------------------------------------------------
@@ -247,7 +257,9 @@ class ConfigManager:
                 self._effective_cache is None
                 or self._cache_revision != self._revision
             ):
-                self._effective_cache = deep_merge(self.base_config, self._db_override)
+                self._effective_cache = sanitize_settings(
+                    deep_merge(self.base_config, self._db_override)
+                )
                 self._cache_revision = self._revision
             return copy.deepcopy(self._effective_cache)
 

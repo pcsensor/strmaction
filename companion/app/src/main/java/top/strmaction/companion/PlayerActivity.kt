@@ -34,7 +34,6 @@ import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
 import androidx.annotation.DrawableRes
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import top.strmaction.companion.player.BufferedSeekBar
@@ -75,7 +74,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Protocol
 
 /**
- * v0.8 内置播放器：Media3 解码 + 5 秒心跳 + 无缝连播 + mpv 兜底。
+ * v0.8 内置播放器：Media3 解码 + 5 秒心跳 + 无缝连播（v1.3 起不再有外部播放器兜底）。
  *
  * v0.9 播放控件：全部收拢到屏幕下方（选集 / 倍速 / 全屏），
  * 右侧中间提供锁定按钮；锁定后隐藏其它控件，只保留解锁入口。
@@ -85,7 +84,6 @@ class PlayerActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_ITEM_ID = "item_id"
-        const val EXTRA_MODE = "mode"
         private const val TAG = "StrmActionPlayer"
         private const val SEEK_MAX = 1000
         /** 落盘按 5MB 分片，减少小文件数量与写放大。 */
@@ -148,7 +146,6 @@ class PlayerActivity : AppCompatActivity() {
     private var playbackAttempt = 0
     private var wasPlaying = false
     private var playingSince = 0L
-    private var nextTicker: Runnable? = null
 
     private var controlsVisible = true
     private var locked = false
@@ -161,12 +158,6 @@ class PlayerActivity : AppCompatActivity() {
     private val main = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "strmaction-player").apply { isDaemon = true }
-    }
-
-    private val mpvLauncher = registerForActivityResult(
-        ActivityResultContracts.StartActivityForResult(),
-    ) { result ->
-        onMpvResult(result.resultCode, result.data)
     }
 
     private val heartbeat = object : Runnable {
@@ -334,7 +325,7 @@ class PlayerActivity : AppCompatActivity() {
         prefetcher.start()
         NetworkSpeedMeter.reset()
         main.post(progressTicker)
-        load(itemId, intent.getStringExtra(EXTRA_MODE))
+        load(itemId)
     }
 
     // ------------------------------------------------------------------
@@ -1141,11 +1132,6 @@ class PlayerActivity : AppCompatActivity() {
                 })
             }
 
-            layout.addView(drawerActionRow("📺 " + getString(R.string.player_menu_mpv), null) {
-                closeDrawer()
-                info?.let { openMpv(it) }
-            })
-
             addScrollableDrawerContent(container, layout)
         }
     }
@@ -1328,23 +1314,16 @@ class PlayerActivity : AppCompatActivity() {
     // 加载与播放
     // ------------------------------------------------------------------
 
-    private fun load(itemId: Int, mode: String?) {
+    private fun load(itemId: Int) {
         showLoading(getString(R.string.player_loading))
         executor.execute {
-            val result = runCatching { PlayApi.fetch(this, itemId, mode) }
+            val result = runCatching { PlayApi.fetch(this, itemId) }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 result.onSuccess { playInfo ->
                     currentItemId = playInfo.itemId
                     info = playInfo
-                    // 设置页把默认播放器改成“外部 mpv”时，服务端会下发 external_mpv
-                    val external = mode == "external_mpv" ||
-                        (mode == null && playInfo.mode == "external_mpv")
-                    if (external) {
-                        openMpv(playInfo)
-                    } else {
-                        playItem(playInfo, playInfo.resumeMs)
-                    }
+                    playItem(playInfo, playInfo.resumeMs)
                 }.onFailure { error ->
                     showLoadError(error)
                 }
@@ -1671,7 +1650,7 @@ class PlayerActivity : AppCompatActivity() {
         advancing = true
         showLoading(getString(R.string.player_loading))
         executor.execute {
-            val result = runCatching { PlayApi.fetch(this, nextId, "builtin") }
+            val result = runCatching { PlayApi.fetch(this, nextId) }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 result.onSuccess { next -> playItem(next, 0L) }
@@ -1705,7 +1684,7 @@ class PlayerActivity : AppCompatActivity() {
         showLoading(getString(R.string.player_loading))
         setControlsVisible(false)
         executor.execute {
-            val result = runCatching { PlayApi.fetch(this, itemId, "builtin") }
+            val result = runCatching { PlayApi.fetch(this, itemId) }
             runOnUiThread {
                 if (isFinishing || isDestroyed) return@runOnUiThread
                 result.onSuccess { next -> playItem(next, 0L) }
@@ -1930,7 +1909,7 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     // ------------------------------------------------------------------
-    // 错误与 mpv 兜底
+    // 错误处理
     // ------------------------------------------------------------------
 
     private fun showLoadError(error: Throwable) {
@@ -1947,140 +1926,39 @@ class PlayerActivity : AppCompatActivity() {
                 .setTitle(R.string.player_error_title)
                 .setMessage(message)
                 .setPositiveButton(R.string.player_error_retry) { _, _ ->
-                    load(currentItemId, intent.getStringExtra(EXTRA_MODE))
+                    load(currentItemId)
                 }
                 .setNegativeButton(R.string.player_error_close) { _, _ -> finish() }
                 .setCancelable(false)
                 .show()
         } else {
-            showPlaybackFallback(message)
+            showPlaybackError(message)
         }
     }
 
     private fun onPlaybackFailed(error: PlaybackException) {
         val message = error.errorCodeName + (error.cause?.message?.let { "：$it" } ?: "")
-        showPlaybackFallback(message)
+        showPlaybackError(message)
     }
 
-    private fun showPlaybackFallback(message: String) {
+    /** 内置播放器失败：给出原因，并提供「重试 / 返回」（v1.3 起不再有外部播放器兜底）。 */
+    private fun showPlaybackError(message: String) {
         stopHeartbeat()
         AlertDialog.Builder(this)
             .setTitle(R.string.player_fallback_title)
-            .setMessage(
-                getString(R.string.player_fallback_message) +
-                    "\n\n" + message,
-            )
-            .setPositiveButton(R.string.player_fallback_positive) { _, _ ->
-                info?.let { openMpv(it) } ?: finish()
+            .setMessage(message)
+            .setPositiveButton(R.string.player_error_retry) { _, _ ->
+                val current = info
+                if (current == null) {
+                    finish()
+                } else {
+                    val resume = player?.currentPosition?.takeIf { it > 0 } ?: current.resumeMs
+                    playItem(current, resume)
+                }
             }
-            .setNegativeButton(R.string.player_fallback_negative) { _, _ -> finish() }
+            .setNegativeButton(R.string.player_error_close) { _, _ -> finishWithResult() }
             .setCancelable(false)
             .show()
-    }
-
-    private fun openMpv(playInfo: PlayInfo) {
-        if (!MpvFallback.isInstalled(this, playInfo.mpvPackage)) {
-            toast(getString(R.string.player_mpv_missing))
-            if (info == null || player == null) finish()
-            return
-        }
-        runCatching { mpvLauncher.launch(MpvFallback.buildIntent(playInfo)) }
-            .onFailure {
-                toast(getString(R.string.player_mpv_missing))
-                if (player == null) finish()
-            }
-    }
-
-    private fun onMpvResult(resultCode: Int, data: Intent?) {
-        if (resultCode != RESULT_OK) {
-            finishWithResult()
-            return
-        }
-        val playInfo = info
-        if (playInfo == null || currentItemId <= 0) {
-            finishWithResult()
-            return
-        }
-        val finished = data?.hasExtra("position") != true
-        val rawPosition = data?.getIntExtra("position", -1) ?: -1
-        val rawDuration = data?.getIntExtra("duration", -1) ?: -1
-        val duration = rawDuration.takeIf { it > 0 }
-        val position = when {
-            finished -> 0
-            duration != null -> rawPosition.coerceIn(0, duration)
-            else -> rawPosition.coerceAtLeast(0)
-        }
-        ProgressReporter.post(
-            this,
-            ProgressReporter.Report(
-                serverUrl = playInfo.serverUrl,
-                token = playInfo.playToken,
-                itemId = currentItemId,
-                positionMs = position.toLong(),
-                durationMs = duration?.toLong(),
-                finished = finished,
-            ),
-        )
-        toast(getString(R.string.progress_saved))
-        if (finished && playInfo.nextItemId != null) {
-            showExternalNextDialog(playInfo.nextItemId)
-            return
-        }
-        finishWithResult()
-    }
-
-    /** 外部 mpv 的连播：5 秒可取消（§12.10）。 */
-    private fun showExternalNextDialog(nextId: Int) {
-        val label = info?.nextTitle.orEmpty()
-        var remaining = 5
-        val dialog = AlertDialog.Builder(this)
-            .setTitle(R.string.player_auto_next)
-            .setMessage(
-                getString(R.string.player_auto_next_message, remaining, label),
-            )
-            .setPositiveButton(R.string.player_play_now) { _, _ -> launchExternal(nextId) }
-            .setNegativeButton(android.R.string.cancel) { _, _ -> finishWithResult() }
-            .setCancelable(false)
-            .create()
-        dialog.setOnDismissListener {
-            nextTicker?.let { main.removeCallbacks(it) }
-            nextTicker = null
-        }
-        dialog.show()
-        val ticker = object : Runnable {
-            override fun run() {
-                remaining -= 1
-                if (remaining <= 0) {
-                    nextTicker = null
-                    dialog.dismiss()
-                    launchExternal(nextId)
-                } else {
-                    dialog.setMessage(
-                        getString(R.string.player_auto_next_message, remaining, label),
-                    )
-                    main.postDelayed(this, 1000)
-                }
-            }
-        }
-        nextTicker = ticker
-        main.postDelayed(ticker, 1000)
-    }
-
-    private fun launchExternal(nextId: Int) {
-        showLoading(getString(R.string.player_loading))
-        executor.execute {
-            val result = runCatching { PlayApi.fetch(this, nextId, "external_mpv") }
-            runOnUiThread {
-                if (isFinishing || isDestroyed) return@runOnUiThread
-                result.onSuccess { next ->
-                    currentItemId = next.itemId
-                    info = next
-                    openMpv(next)
-                }.onFailure {
-                    finishWithResult()
-                }
-            }
-        }
     }
 
     // ------------------------------------------------------------------

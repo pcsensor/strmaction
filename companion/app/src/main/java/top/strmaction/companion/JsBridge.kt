@@ -22,9 +22,6 @@ class JsBridge(
     fun play(itemId: Int) = onUiThread { activity.openPlayer(itemId) }
 
     @JavascriptInterface
-    fun playExternal(itemId: Int) = onUiThread { activity.openExternal(itemId) }
-
-    @JavascriptInterface
     fun openSettings() = onUiThread { activity.openSetup() }
 
     @JavascriptInterface

@@ -9,9 +9,7 @@ import { Field, Section } from './common'
 const MODE_OPTIONS: Array<{ value: PlayMode | 'auto'; label: string }> = [
   { value: 'auto', label: t('settings.player.auto') },
   { value: 'builtin', label: t('settings.player.builtin') },
-  { value: 'external_mpv', label: t('settings.player.externalMpv') },
   { value: 'browser_intent', label: t('settings.player.browserIntent') },
-  { value: 'desktop_mpv', label: t('settings.player.desktopMpv') },
   { value: 'copy', label: t('settings.player.copy') },
 ]
 
@@ -48,13 +46,11 @@ export function PlayerPreferenceSection() {
       ? t('settings.player.clientAndroid')
       : t('settings.player.clientDesktop')
   const degradeHint =
-    chosenMode === 'builtin' || chosenMode === 'external_mpv'
+    chosenMode === 'builtin'
       ? t('settings.player.needCompanion')
       : chosenMode === 'browser_intent'
         ? t('settings.player.needAndroid')
-        : chosenMode === 'desktop_mpv'
-          ? t('settings.player.needServerMpv')
-          : null
+        : null
   const companion = typeof window !== 'undefined' ? window.StrmActionNative : undefined
   const [isDesktop, setIsDesktop] = useState(
     () => typeof window !== 'undefined' && Boolean(window.StrmActionNative?.isDesktop?.()),

@@ -195,25 +195,13 @@ export interface PlaySubtitle {
   url: string
 }
 
-export type PlayMode =
-  | 'builtin'
-  | 'external_mpv'
-  | 'browser_intent'
-  | 'desktop_mpv'
-  | 'copy'
+export type PlayMode = 'builtin' | 'browser_intent' | 'copy'
 
 export interface PlayResponse {
   mode: PlayMode | 'direct'
   requested_mode: PlayMode | 'auto' | 'direct'
   downgraded: boolean
-  downgrade_reason:
-    | 'requires_companion'
-    | 'requires_android'
-    | 'admin_only'
-    | 'mpv_unavailable'
-    | 'requires_desktop'
-    | 'launch_failed'
-    | null
+  downgrade_reason: 'requires_companion' | 'requires_android' | null
   target: string
   action: string | null
   fallback_url: string | null
@@ -234,7 +222,6 @@ export interface PlayResponse {
   progress_interval_ms: number
   cache_limit_mb: number
   fallback_on_error: boolean
-  mpv_package: string
   subtitles: PlaySubtitle[]
   media_file_id: number
   progress_updated_at: string | null
@@ -334,10 +321,6 @@ export interface AppSettings {
     cache_limit_mb: number
     fallback_on_error: boolean
     play_headers: Record<string, string>
-    mpv_path: string
-    mpv_extra_args: string[]
-    mpv_package: string
-    enable_progress: boolean
   }
   ui: { default_language: string; hero_rotate_ms: number }
 }
@@ -363,7 +346,7 @@ export interface MyPlayerResponse {
   overrides: PlayerPreference
   defaults: PlayerPreferenceSummary
   effective: PlayerPreferenceSummary
-  /** 当前角色可选的播放方式；普通用户不含 desktop_mpv。 */
+  /** 当前账号可选的播放方式。 */
   allowed_modes: Array<PlayMode | 'auto'>
   /** 当前客户端实际能执行的播放方式。 */
   available_modes: Array<PlayMode | 'auto'>

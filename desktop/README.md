@@ -3,7 +3,7 @@
 StrmAction 桌面端是 **PySide6 现代桌面应用（Web 浏览 + 原生硬件加速内嵌播放器 + 仿安卓伴侣 App 自制控件）**：
 
 - 网页、登录、媒体库、详情、设置全部复用服务端现有 Web UI；
-- 点击播放后，直接在主窗口**无缝切换为内嵌播放器（零外部弹窗，无需安装或打包 mpv）**；
+- 点击播放后，直接在主窗口**无缝切换为内嵌播放器（零外部弹窗，无需安装或打包任何播放器）**；
 - 播放控件 1:1 对齐安卓伴侣 App（三层缓冲进度条、40% 侧滑选集/倍速/音轨抽屉、长按倍速、中心反馈）；
 - 具备完整的**键鼠操作体系**（空格播放/暂停、方向键调进度、长按右方向键 2.0x 倍速、滚轮选集等）；
 - 内置轻量环回流媒体代理，自动处理服务端下发的全部防盗链请求头（`User-Agent` 与 `Referer`），302 跨域重定向全链路透传，绝不报 403；
@@ -221,7 +221,7 @@ uv run strmaction-desktop --debug
 
 当前版本已全面升级为 **PySide6 原生播放架构**（`QMediaPlayer` + `QVideoWidget` + `QAudioOutput`）：
 
-- **零外部二进制**：不需要安装、下载或打包任何 `mpv.exe` 或 `mpv` 可执行程序，安装包体积大幅缩减；
+- **零外部二进制**：不需要安装、下载或打包任何外部播放器，安装包体积大幅缩减（已移除 124MB 的 mpv）；
 - **原生硬件加速**：Windows 调度 Direct3D / Media Foundation，macOS 调度 Metal / AVFoundation 进行硬件解码渲染；
 - **同源图层无黑屏**：视频渲染直接发生在 Qt 窗口体系内，与浮层控制栏、右侧抽屉、顶部指示胶囊完美合成，杜绝黑屏问题。
 
@@ -352,7 +352,7 @@ desktop\dist\StrmAction\StrmAction.exe
 desktop\dist\StrmAction\_internal\...
 ```
 
-脚本会自动用 uv 准备 `.venv`、安装依赖、生成各分辨率应用图标并调用 PyInstaller 完成一键打包。因为采用纯原生架构，**构建机与目标机均不需要额外下载或安装 mpv**。
+脚本会自动用 uv 准备 `.venv`、安装依赖、生成各分辨率应用图标并调用 PyInstaller 完成一键打包。因为采用纯原生架构，**构建机与目标机均不需要额外下载或安装任何播放器**。
 
 ### 10.2 macOS
 
@@ -373,7 +373,7 @@ desktop/dist/StrmAction.app
 
 - Apple Developer ID；
 - `codesign` + `notarytool` 公证；
-- 如打包 mpv，确认 GPL/第三方许可证合规。
+- 打包产物内不再包含第三方播放器二进制，Qt/PySide6 的 LGPL 义务请按官方说明处理。
 
 示例：
 
@@ -411,9 +411,8 @@ uv run python scripts/make_icons.py
   - 不写日志；
   - 不落盘；
   - 不放进命令行参数；
-- headers 通过 mpv IPC 设置；
-- IPC 使用随机命名管道（Windows）或权限 0700 的 Unix socket（macOS）；
-- WebView 只允许加载配置的服务器地址和本地设置页；
+- headers 只注入到本地环回代理（127.0.0.1 随机端口），对片源请求生效；
+- WebView 只允许加载配置的服务器地址（外链交给系统浏览器）；
 - JS Bridge 只接受合法 payload，不执行任意命令；
 - 生产环境请使用 HTTPS；自签名证书需要显式信任（后续可加指纹信任）；
 - 日志中的 URL 会脱敏。
@@ -431,7 +430,7 @@ uv run pytest -q
 
 - 配置校验/窗口尺寸；
 - payload 校验与脱敏；
-- mpv 查找顺序/header 格式化；
+- 代理 TLS 策略（自签名证书）/Content-Type 兜底；
 - 进度上报：payload、90% 已看、401、500 重试、client_key；
 - JS Bridge 错误处理；
 - WebView 导航 origin 限制；
@@ -457,11 +456,11 @@ npm run build
 
 | 现象 | 原因/处理 |
 |---|---|
-| `ModuleNotFoundError: pywebview` | `uv pip install -r requirements.txt` 或 `uv pip install -e ".[dev]"` |
-| 启动白屏 / 页面空白 | 检查服务器地址；Windows 安装 WebView2 Runtime；确认服务器可访问 |
-| `未找到 mpv` | 设置页选择 mpv；或运行 `scripts/prepare_mpv.py`；或安装 mpv |
-| 自带 mpv 没生效 | 配置里的 `mpv_path` 优先；清空它再保存 |
-| 播放黑屏 / 403 | 检查服务端 `headers` 是否正确；确认网盘 URL 未过期 |
+| `ModuleNotFoundError: PySide6` | `uv pip install -r requirements.txt` 或 `uv pip install -e ".[dev]"` |
+| 启动白屏 / 页面空白 | 检查服务器地址；确认服务器可访问；自签名证书需在设置里勾选「允许自签名 HTTPS」 |
+| 播放黑屏并提示「播放失败」 | 多为片源证书/防盗链问题：勾选允许自签名；或检查服务端库级 `headers` |
+| 每次启动都要重新登录 | 确认 `%APPDATA%\StrmAction\webview` 可写（持久化 profile） |
+| 拖拽进度后回到开头 | 已修复：起播定位改为媒体加载完成后再 seek |
 | 进度不更新 | 看 `desktop.log`；`play_token` 可能过期；重新从网页打开播放 |
 | macOS 打不开 | 未公证会被 Gatekeeper 拦截；开发期右键打开，正式分发做公证 |
 | 打包后找不到 assets | 必须在 `desktop/` 目录执行 `packaging/strmaction-desktop.spec` |
@@ -476,7 +475,7 @@ npm run build
 - StrmAction 桌面端在播放时的**唯一主动上传**是进度上报；
 - 单次 payload 只有约 **100–300 字节**，默认每 **5 秒**一次；
 - 实测模拟 20Hz 播放位置更新 7 秒，只有 **4 次请求、约 1.25KB**，折合 **0.0014 Mbps**；
-- mpv 只接收媒体，不上传视频；
+- 内嵌播放器只接收媒体，不上传视频；
 - 所以 **11 Mbps 的上传不可能是正常的进度上报**，需要按进程排查。
 
 本次也修了一个相关 bug：`ProgressReporter` 之前会被每个 `time-pos` 事件唤醒，导致上报频率可能高于 `progress_interval_ms`；现在已改为严格按间隔上报，暂停/seek/退出/播完才立即 flush。旧构建需要重新构建桌面端。
@@ -484,7 +483,7 @@ npm run build
 排查顺序：
 
 1. **按进程看流量**
-   - Windows：`resmon` →「网络」→ 按「发送/接收」排序，看是 `mpv`、`python`、`msedgewebview2` 还是其他程序；
+   - Windows：`resmon` →「网络」→ 按「发送/接收」排序，看是 `python`、`QtWebEngineProcess` 还是其他程序；
    - macOS：活动监视器 →「网络」；或 `nettop -P`。
 2. **暂停播放 / 退出桌面端**
    - 上传立刻下降 → 与播放链路有关；
@@ -558,7 +557,7 @@ desktop/
 │   │   ├── keyboard.py         按键快捷键与长按倍速状态机
 │   │   └── icons.py            SVG 矢量图标库
 │   └── assets/
-│       ├── settings.html       桌面端设置页（无 mpv 配置项，极简开箱即用）
+│       ├── error.html          连接失败页（重试 / 打开设置）
 │       ├── icon.svg / png / ico / icns
 ├── scripts/
 │   ├── make_icons.py
@@ -578,11 +577,11 @@ desktop/
 
 ### Q1：现在还需要安装或下载 mpv 吗？
 
-**完全不需要**。当前版本已全面升级为纯原生播放架构：基于 PySide6 的 `QMediaPlayer` 与 `QVideoWidget`，配合内置的本地环回流媒体代理 `proxy.py`，无需任何外部播放器二进制文件，不需要用户安装 mpv，也不需要构建时下载打包 mpv。
+**完全不需要**。桌面端使用 PySide6 的 `QMediaPlayer` + `QVideoWidget`（FFmpeg 后端随 PySide6 打包），配合内置的本地环回代理 `proxy.py`；安装包里也不再包含 mpv 二进制。
 
-### Q2：为什么登录设置里没有 mpv 路径配置了？
+### Q2：为什么设置里没有播放器路径配置了？
 
-因为播放器已经完全内嵌并由系统底层原生硬解驱动，开箱即用，因此彻底移除了手动选择或填写 mpv 路径的繁琐步骤。
+播放器完全内嵌、开箱即用，因此不再提供任何外部播放器路径配置。桌面端设置只有三项：服务器地址、预读缓存上限、允许自签名 HTTPS 证书。
 
 ### Q3：百度网盘或 Alist 的防盗链直链如何播放？
 

@@ -1,4 +1,4 @@
-import { Component, useEffect, type ReactNode } from 'react'
+import { Component, useEffect, useRef, type ReactNode } from 'react'
 import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-router-dom'
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2 } from 'lucide-react'
@@ -9,6 +9,7 @@ import { ToastViewport } from './components/ToastViewport'
 import { AutoNextOverlay } from './components/AutoNextOverlay'
 import type { ItemDetailResponse } from './api/types'
 import { useSpatialNavigation, useTVMode } from './hooks/useTVMode'
+import { useStartPlayback } from './hooks/useStartPlayback'
 import { useUIStore } from './store/ui'
 import { HomePage } from './pages/HomePage'
 import { LibrariesPage } from './pages/LibrariesPage'
@@ -122,7 +123,22 @@ class ErrorBoundary extends Component<{ children: ReactNode }, { error: Error | 
 export default function App() {
   const auth = useAuthState()
   const queryClient = useQueryClient()
+  const startPlayback = useStartPlayback()
+  const startPlaybackRef = useRef(startPlayback)
+  startPlaybackRef.current = startPlayback
   useTVMode()
+
+  // 桌面端内嵌播放器的“上一集/下一集/选集/自动连播”通过该事件请求网页发起播放。
+  useEffect(() => {
+    const onRequestPlay = (event: Event) => {
+      const detail = (event as CustomEvent<{ itemId?: number }>).detail
+      const itemId = Number(detail?.itemId)
+      if (!Number.isFinite(itemId) || itemId <= 0) return
+      void startPlaybackRef.current(itemId)
+    }
+    window.addEventListener('strmaction:request-play', onRequestPlay)
+    return () => window.removeEventListener('strmaction:request-play', onRequestPlay)
+  }, [])
 
   useEffect(() => {
     const onUnauthorized = () => {

@@ -11,7 +11,7 @@
 |---|---|
 | **媒体与元数据架构** | **完全自建元数据体系（彻底舍弃 Jellyfin）**：StrmAction 成为唯一的媒体库与元数据来源，元数据刮削、图片缓存、剧集组织、播放进度与观看状态全自研，杜绝第三方媒体服务器依赖。 |
 | **元数据刮削源** | **TMDB + TVDB 双源刮削与开放 Provider 插件中心**：结合 TMDB 与 TVDB（v4 API）覆盖电影、电视剧与动漫；支持优先级配置、打分匹配、跨源字段补空；采用 `@register_provider` 开放扩展机制。 |
-| **播放分发与凭证** | **内置 Media3 播放内核 + 外部 mpv 兜底**：伴侣 App 默认使用内置 Media3（OkHttp 数据源跟随重定向），支持 5 秒实时心跳上报；通过轻量级 item 级 `play_token` 隔离权限，播放器无需接触会话 Cookie。 |
+| **播放分发与凭证** | **双端内置播放**：StrmAction 桌面端内嵌 Qt 播放器（`direct` 模式），伴侣 App 使用内置 Media3（OkHttp 数据源跟随重定向）；两端均支持 5 秒实时心跳上报，通过轻量级 item 级 `play_token` 隔离权限，播放器无需接触会话 Cookie。v1.3 起 mpv 相关能力已全部下线。 |
 | **交互与控件设计** | **现代主流播放器交互与模块化设置**：播放器集成中心悬浮播放、双击快进退、长按极速播放；选集、倍速与设置采用 40% 右侧平滑滑出抽屉；Web 设置页采用独立领域组件拆分。 |
 | **继续观看生命周期** | **按播放列表聚合 + 灵活管理**：同一剧集/文件夹只显示最后一次播放的那一集；支持从首页整组移除，同时在媒体库与条目详情中完整保留播放进度与断点；再次播放自动激活重现首页。 |
 
@@ -19,11 +19,21 @@
 
 ## 0. 一句话定义
 
-**StrmAction 是一个面向 `.strm` 媒体库的「刮削 + 展示 + 播放分发」Web 应用**：它扫描 SmartStrm 生成的 `.strm` 目录，用 TMDB + TVDB 刮削元数据，提供一个 VidHub/SenPlayer 级别的浏览界面，并在用户点播放时，把该集对应的 `.strm` 里的 URL **交给播放器（伴侣 App 原生 Media3 默认，外部 mpv 兜底，桌面 IPC 或剪贴板复制）**。
+**StrmAction 是一个面向 `.strm` 媒体库的「刮削 + 展示 + 播放分发」Web 应用**：它扫描 SmartStrm 生成的 `.strm` 目录，用 TMDB + TVDB 刮削元数据，提供一个 VidHub/SenPlayer 级别的浏览界面，并在用户点播放时，把该集对应的 `.strm` 里的 URL **交给播放器（桌面端内嵌 Qt 播放器，伴侣 App 内置 Media3，浏览器 intent:// 或剪贴板复制）**。
 
 它**不转码、不代理视频流、不碰网盘鉴权**——这三件事分别由播放器、SmartStrm、Alist 负责。
 
 ---
+
+### v1.3 变更（重要）
+
+- **移除全部 mpv 能力**：服务端 `desktop_mpv` / 伴侣 `external_mpv`、`mpv_path` /
+  `mpv_extra_args` / `mpv_package` / `enable_progress`、`players/mpv_ipc.py`、
+  伴侣 `MpvFallback.kt` 与 `playExternal` 桥、Manifest 的 `is.xyz.mpv` 可见性声明均已删除。
+- **桌面端**改用内嵌 Qt 播放器（`direct` 模式），修复自签名片源黑屏、重启掉登录、
+  设置页打断网页三个问题。
+- 文档中凡出现「mpv 兜底 / 用 mpv 打开 / spawn mpv」的段落均为历史设计记录，
+  以 §12.1 的模式表与本节为准。
 
 ## 1. 背景：为什么需要它
 
@@ -48,13 +58,13 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 用户在 Web 界面浏览（伴侣 App / 手机 / 桌面 / TV 浏览器）
         │  点击播放
         ▼
-伴侣 App 内置 Media3（默认） / mpv（兜底）──(302)──► Alist ──(302)──► 百度 CDN
+桌面端内嵌播放器 / 伴侣 App 内置 Media3 ──(302)──► Alist ──(302)──► 百度 CDN
         │
         └─ 全程不经过 StrmAction，服务端零中转、零带宽、零转码
 ```
 
 这样：
-- **请求头由服务端下发**：伴侣 App 内置播放器（OkHttp）与外部 mpv 均携带对应网盘的 UA/Referer
+- **请求头由服务端下发**：桌面端（本地代理注入）与伴侣 App 内置播放器（OkHttp）均携带对应网盘的 UA/Referer
 - **零中转**、**零服务器带宽**、**零转码**
 - 元数据、封面、剧集组织全部由 StrmAction 自己掌握
 
@@ -84,7 +94,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 3. 调用 TMDB + TVDB 刮削元数据（标题、简介、年份、评分、类型、演职员、海报、背景图、预告片）。
 4. 提供**手动匹配修正**：自动匹配失败或匹配错误时，管理员可搜索并重新绑定。
 5. 提供优雅的浏览界面：轮播首页、详情页、选集、搜索、继续观看（按播放列表聚合，支持快速移除且保留断点）。
-6. 点播放 → 把 `.strm` 内容的 URL 交给播放器：**伴侣 App 内用内置 Media3 播放**（默认），失败或用户选择时降级到外部 mpv；桌面用进程/IPC；最终兜底为复制链接。
+6. 点播放 → 把 `.strm` 内容的 URL 交给播放器：**桌面端用内嵌 Qt 播放器（direct）**、**伴侣 App 用内置 Media3**；Android 浏览器可跳转系统播放器，最终兜底为复制链接。
 7. **多用户体系与权限隔离**：提供管理员与普通用户角色划分；管理员统一管理媒体库与系统配置，普通用户按分配的媒体库浏览与播放；个人播放进度、断点与已看状态多用户完全隔离；全站鉴权与会话管理。
 8. **独立完整**：不依赖 Jellyfin / Emby / Plex 等任何媒体服务器，单容器即可提供完整媒体库体验。
 9. **元数据可维护**：支持重新刮削、单条刷新、手动编辑字段、手动绑定，保证库可以长期演进。
@@ -96,7 +106,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 - ❌ 不做视频转码
 - ❌ 不做视频流中转/反代/缓存
   - 例外：客户端播放器允许配置**本地缓存上限**：伴侣 App 的磁盘缓存（客户端设置，
-    默认 2048MB，退出播放即清空）与固定 64MB 内存缓冲；桌面 mpv 走 `player.cache_limit_mb`。
+    默认 2048MB，退出播放即清空）与固定 64MB 内存缓冲；桌面端同样读取 `player.cache_limit_mb`。
     两者都属于客户端本地缓存，不属于服务端视频缓存。
 - ❌ 不实现网盘登录、不做 Alist 的替代
 - ❌ **不依赖、不读取、不迁移任何 Jellyfin / Emby / Plex 的数据**（本项目是替代品，不是外挂）
@@ -131,8 +141,8 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
                ▼                              ▼
 ┌──────────────────────────────┐   ┌────────────────────────────┐
 │  StrmAction 后端（FastAPI）   │   │  无伴侣 App 时的降级通道      │
-│  ├─ API 层                   │   │  ├─ 浏览器 intent:// → mpv   │
-│  ├─ 扫描器 Scanner           │   │  └─ 桌面 mpv（spawn + IPC）  │
+│  ├─ API 层                   │   │  ├─ 浏览器 intent://         │
+│  ├─ 扫描器 Scanner           │   │  └─ 复制播放地址              │
 │  ├─ 解析器 Parser            │   └────────────────────────────┘
 │  ├─ 刮削器 Scraper (双源)     │
 │  ├─ 播放分发 PlayerDispatcher│
@@ -154,7 +164,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB 刮削 → 入库
 │         ▲                              │                        │
 │         │                              ├─ 5s 心跳 → /progress    │
 │         └──────── 返回后刷新 ───────────┘                        │
-│                 PlayerActivity ──失败/手动──► 外部 mpv（兜底）     │
+│                 PlayerActivity ──失败──► 弹窗（重试 / 返回）        │
 └───────────────────────────────────────────────────────────────┘
 ```
 
@@ -226,7 +236,7 @@ strmaction/
 │  │  ├─ players/
 │  │  │  ├─ base.py
 │  │  │  ├─ web_intent.py
-│  │  │  ├─ mpv_ipc.py
+│  │  │  ├─ web_intent（intent:// 与剪贴板）
 │  │  │  └─ clipboard.py
 │  │  └─ jobs.py                 # APScheduler 任务
 │  └─ pyproject.toml
@@ -254,7 +264,7 @@ strmaction/
 │     │  ├─ PlayerSpeedHelper.kt # 播放倍速与长按倍速菜单
 │     │  └─ PlayerUiHelper.kt    # 样式与时间格式化
 │     ├─ ProgressReporter.kt     # play_token 进度上报
-│     └─ MpvFallback.kt          # 外部 mpv 兜底
+│     └─ PlaybackPrefetcher.kt    # 磁盘预取
 ├─ Dockerfile
 └─ config.example.yaml
 ```
@@ -760,7 +770,7 @@ POST /v4/login   { "apikey": "<key>", "pin": "<pin?>" }  →  { "data": { "token
 
 ## 12. 播放（核心）
 
-> **播放架构设计**：默认播放路径为**伴侣 App 内置 Media3 播放器**；外部 mpv 降级为兜底方案。
+> **播放架构设计**：播放路径为**桌面端内嵌 Qt 播放器（`direct`）** 与 **伴侣 App 内置 Media3**；浏览器 intent:// 与复制链接为兜底。
 
 ### 12.0 为什么内置 Media3
 
@@ -778,7 +788,7 @@ POST /v4/login   { "apikey": "<key>", "pin": "<pin?>" }  →  { "data": { "token
 - 杜比视界 P5 在非 DV 设备上会绿屏/发紫，不会 tone map。
 - 部分冷门封装/编码解不了。
 
-→ 因此**必须保留外部 mpv 兜底**（§12.3），并在播放器错误时主动引导切换。
+→ 因此桌面端内置了本地环回代理（注入 UA/Referer 并跟随 302），并在播放器错误时给出明确原因与「重试 / 复制链接」。
 
 ### 12.1 播放后端抽象
 
@@ -787,13 +797,13 @@ POST /v4/login   { "apikey": "<key>", "pin": "<pin?>" }  →  { "data": { "token
 | mode | 使用方 | 进度 | 说明 |
 |---|---|---|---|
 | `builtin` | 伴侣 App | **实时 5s** | 默认 |
-| `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；浏览器会降级 |
-| `browser_intent` | 浏览器（Chromium） | 无 | 无伴侣 App 时的降级 |
-| `desktop_mpv` | 服务端同机浏览器（仅管理员） | 实时 5s（IPC） | 由**服务端** spawn mpv；普通用户请求会降级为 `copy`/`intent` |
-| `direct` | StrmAction 桌面端 | 桌面端上报 | 服务端只下发 URL/headers/play_token，桌面端内置原生播放器播放 |
+| `browser_intent` | 浏览器（Chromium，Android） | 无 | 无伴侣 App 时的降级，拉起系统播放器 |
+| `direct` | StrmAction 桌面端 | 桌面端上报 | 服务端只下发 URL/headers/play_token，桌面端内嵌播放器播放 |
 | `copy` | 任意 | 无 | 最终兜底 |
 
-> `desktop_mpv` 会调用服务器上的 mpv，不是用户电脑上的播放器；普通用户不可选，个人偏好与全局默认都会在解析时被拦截。
+> v1.3 起 `external_mpv`（伴侣 App 外部 mpv）与 `desktop_mpv`（服务端 spawn mpv）已下线：
+> `VALID_MODES` / `ALL_PLAYER_MODES` / 设置接口均不再接受这两个值，旧配置读取时会被归一到 `auto`，
+> `mpv_path` / `mpv_extra_args` / `mpv_package` / `enable_progress` 会被 `sanitize_settings()` 丢弃。
 
 **`POST /api/play/{item_id}` 响应**
 
@@ -880,48 +890,37 @@ player.prepare()
 
 - 内封字幕：Media3 自动识别轨道，UI 提供切换与延迟调节（±0.5s 步进）。
 - 外挂字幕：读取同目录 `.srt/.ass`（若 SmartStrm 已复制），以 `SubtitleConfiguration` 附加。
-- **复杂 ASS 特效不还原**：UI 上给一句提示，并提供「用 mpv 打开」。
+- **复杂 ASS 特效不还原**：UI 上给一句提示，并提示可改用桌面端或网页端观看。
 
-### 12.3 外部 mpv 兜底（伴侣 App 内）
+### 12.3 播放失败处理（伴侣 App 内）
 
-触发时机：
-1. 用户在播放器菜单里主动选「用 mpv 打开」；
-2. 内置播放器 `onPlayerError` 后用户确认切换。
+v1.3 已移除「外部 mpv 兜底」，内置播放器失败时改为：
 
-实现沿用官方 intent 规范（细节见附录 E.5）：
+1. 展示失败原因（`onPlayerError` 的错误码与可读文案）；
+2. 提供「重试」与「复制链接」两个动作；
+3. 若配置了 `fallback_on_error: true`，提示可从设置页把播放方式切到 `copy`。
 
-```kotlin
-Intent(Intent.ACTION_VIEW).apply {
-    setDataAndType(Uri.parse(playUrl), "video/any")   // 无扩展名 URL 必须用 video/any
-    setPackage("is.xyz.mpv")
-    putExtra("title", title)
-    putExtra("position", resumeMs.toInt())
-}
-```
-
-- 进度只能拿到**退出时**的 result intent（`position`/`duration`）。
-- 兜底路径的进度粒度在 UI 上要标注（「来自外部播放器，退出时保存」）。
-
-### 12.4 浏览器：`intent://` 拉起 mpv（降级）
+### 12.4 浏览器：`intent://` 拉起系统播放器（降级）
 
 无伴侣 App 且使用 Chromium 内核浏览器时可用。约束与实现见附录 E.5 的坑位表。
 
 - 仅 Chromium 支持 `intent://`；Android TV 自带浏览器基本不支持。
 - **拿不到任何进度**，UI 必须提供「标记已看」。
 
-### 12.5 桌面：spawn mpv + IPC
+### 12.5 桌面端：内嵌 Qt 播放器（`direct`）
 
-```bash
-mpv --no-terminal --force-window --start=<秒> \
-    --http-header-fields="User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/" \
-    --input-ipc-server=/tmp/strmaction-mpv.sock "<play_url>"
-```
+网页以 `mode=direct` 调 `/api/play`，拿到 `play_url / headers / play_token` 后通过
+QWebChannel 桥交给 Python：
 
-通过 JSON IPC 订阅 `time-pos`，每 5s 回写进度。仅在服务端与播放器同机时启用。
+1. `LocalStreamingProxy`（`127.0.0.1:<随机端口>`）注册该 URL，注入 `headers`，透传 `Range/If-Range`，
+   并按 `allow_self_signed_https` 决定是否校验上游证书（自签名 Alist 必需）；
+2. `QMediaPlayer` + `QVideoWidget` 播放 `http://127.0.0.1:<port>/<stream_id>`；
+3. `ProgressReporter` 每 `progress_interval_ms` 用 `Bearer play_token` 回写，暂停/退出/播完立即 flush；
+4. 播完显示结束卡片，有下一集则 5 秒倒计时后通过 `strmaction:request-play` 让网页发起下一集。
 
 ### 12.6 兜底：复制链接
 
-任何环境都提供，并提示需在 mpv 侧配置 UA。
+任何环境都提供；剪贴板链接仍需对应播放器自行配置 UA/Referer（服务端无法代传）。
 
 ### 12.7 播放会话与进度回传
 
@@ -966,7 +965,7 @@ JsBridge.play(itemId)
 PlayerActivity（原生）
    ├─ Media3 播放
    ├─ 每 5s → POST /progress（Bearer play_token）
-   └─ 菜单：字幕 / 音轨 / 倍速 / 用 mpv 打开
+   └─ 菜单：字幕 / 音轨 / 倍速 / 下一集
    │  返回
    ▼
 WebView 刷新「继续观看」
@@ -977,7 +976,7 @@ WebView 刷新「继续观看」
 ```ts
 interface StrmActionNative {
   play(itemId: number): void          // 原生播放器
-  playExternal(itemId: number): void  // 直接交给 mpv
+  openSettings(): void               // 打开伴侣 App 设置
   version(): string
 }
 ```
@@ -990,14 +989,13 @@ interface StrmActionNative {
 | 端 | 来源 | 粒度 | 断点续播 |
 |---|---|---|---|
 | 伴侣 App · 内置 Media3 | 5s 心跳 + 事件驱动 | **准实时** | ✅ |
-| 伴侣 App · 外部 mpv | 退出时 result intent | 每次退出一次 | ✅（可能丢最后一段） |
-| 桌面 · mpv IPC | `time-pos` 订阅 | 准实时 | ✅ |
+| StrmAction 桌面端 | `positionChanged` + 暂停/退出/播完 | 准实时 | ✅ |
 | 浏览器 · intent:// | 无 | — | ❌ 仅手动标记 |
 
 ### 12.10 自动连播
 
 - **内置播放器**：`STATE_ENDED` 直接用 `next_item_id` 起下一集，播放器不销毁，**无黑屏无跳转**。
-- **外部 mpv**：退出后回到 App 再起下一集，顶部 toast 给 5 秒取消窗口。
+- **内置播放器**：`STATE_ENDED` 用 `next_item_id` 直接连播，无需外部播放器。
 - 两种路径都要遵守：下一集若已标记已看，则继续往后找，直到找到未看的一集或到剧终。
 
 ### 12.11 从「继续观看」移除（保留进度）
@@ -1057,7 +1055,7 @@ interface StrmActionNative {
 | GET | `/settings` | （仅管理员）读取全局配置（脱敏：`api_key` 返回 `sk-****`） |
 | PATCH | `/settings` | （仅管理员）修改全局配置（TMDB/TVDB Key、源优先级、语言、季集类型、全局播放器、模板） |
 | GET | `/me/player` | 当前用户播放偏好：`overrides`、`defaults`、`effective`、`allowed_modes`、`available_modes`、`client`、`resolved_mode`（当前设备实际模式） |
-| PATCH | `/me/player` | 修改自己的播放偏好（仅允许 `mode` / `fallback_on_error`；显式 null 清除覆盖；普通用户传 `desktop_mpv` 返回 403） |
+| PATCH | `/me/player` | 修改自己的播放偏好（仅允许 `mode` / `fallback_on_error`；显式 null 清除覆盖；`mode` 仅接受 `auto/builtin/browser_intent/copy`，其它值 422） |
 | GET | `/about` | 应用信息：`version` / `api_docs` / `data_dir`（`data_dir` 仅管理员返回） |
 | POST | `/settings/provider-test` | `{provider}` → 测试连通性与凭证，返回 `ok` / `401` / `network` |
 | GET | `/export` | （仅管理员）导出库配置、条目、进度（含 `user_id`）与设置（不含 `.strm` URL） |
@@ -1106,7 +1104,7 @@ interface StrmActionNative {
 - **卡片**：2:3 海报，圆角 12px，悬停上浮 4px + 阴影加深 + 300ms 缓动；缺图时显示主色渐变占位。
 - **转场**：`framer-motion` 的 `layoutId` 做「海报 → 详情页背景」的共享元素过渡。
 - **骨架屏**：所有异步区域必须有 skeleton，禁止白屏。
-- **播放反馈**：点击播放后按钮进入 loading；伴侣 App 内直接进内置播放器（无 toast）；浏览器降级时 toast「已交给 mpv」；失败给出原因与「复制链接」。
+- **播放反馈**：点击播放后按钮进入 loading；伴侣 App 内直接进内置播放器（无 toast）；桌面端进内嵌播放器；浏览器降级时 toast「复制链接」；失败给出原因与「复制链接」。
 - **滚动**：横向行使用 `scroll-snap` + 隐藏滚动条；支持触控板横向手势。
 - **无障碍**：所有可交互元素可聚焦，`:focus-visible` 有 2px 高对比描边。
 
@@ -1210,15 +1208,13 @@ scanner:
   max_depth: 6
 
 player:
-  mode: builtin                           # builtin | external | auto
+  mode: builtin                           # builtin | browser_intent | copy | auto
                                           # builtin 仅在伴侣 App 内生效；浏览器自动降级
   progress_interval_ms: 5000              # 内置播放器心跳间隔
   play_token_ttl_hours: 12
-  cache_limit_mb: 128                     # 外部 mpv 缓存上限；0=关闭（伴侣 App 内置播放器已改为本地磁盘缓存设置）
-  fallback_on_error: true                 # 内置播放失败时提示切 mpv
-  mpv_path: /usr/bin/mpv                  # 桌面模式
-  mpv_extra_args:
-    - "--http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/"
+  cache_limit_mb: 128                     # 客户端预读上限；0=客户端默认
+  fallback_on_error: true                 # 播放失败时给出提示
+  play_headers: {}                        # 全局播放请求头（库级可覆盖）
 
 ui:
   default_language: zh-CN
@@ -1285,7 +1281,7 @@ ui:
 - [ ] `play_token` 签发与校验（item 级、12h、只能写该条目进度）
 - [ ] 进度接口同时接受 Cookie 与 Bearer 两种鉴权
 - [ ] 库级请求头（`play_headers`）可配置并正确下发
-- [ ] 桌面模式能 spawn mpv 并回写进度
+- [x] 桌面端内嵌播放器能播放自签名片源并回写进度（v1.3）
 - [ ] 浏览器 `intent://` 降级 + 「复制链接」兜底可用
 - [ ] 播放 URL 不出现在任何日志明文里
 
@@ -1300,7 +1296,7 @@ ui:
 - [ ] 起播使用 `resume_ms` 续播（误差 < 3 秒）
 - [ ] **5 秒心跳**写入 `play_progress`；暂停 / 退后台各补一次；强杀最多丢 5 秒
 - [ ] `play_token` 鉴权可用，且 token 过期时给出明确提示
-- [ ] 播放器错误 → 弹窗 → 一键切外部 mpv 播放成功
+- [x] 播放器错误 → 弹窗给出原因 → 重试/返回
 - [ ] 内封字幕切换、外挂 `.srt` 加载
 - [ ] 播完自动连播下一集，**无黑屏无跳转**
 - [ ] 断电/强杀场景：进度允许丢失，但不得写坏数据（`position_ms` 不得为负/大于时长）
@@ -1346,7 +1342,7 @@ ui:
 | 超长标题（>100 字） | UI 截断 + tooltip，不撑破布局 |
 | 动漫库用 TVDB 优先 | 季集数量与发布组一致；切回 TMDB 后不产生重复条目 |
 | 双源都有该片 | 记录 `winning_provider`，季集只来自胜出源，不混用 |
-| 内置播放器遇到不支持的编码 | 弹「用 mpv 打开？」不崩溃；确认后 mpv 能播 |
+| 内置播放器遇到不支持的编码 | 弹窗给出原因与「重试/返回」，不崩溃、不静默 |
 | 直链 302 从 https 跳到 http | 内置播放器正常播放（`allowCrossProtocolRedirects`） |
 | 播放中网络中断 | 播放器显示缓冲/错误，进度心跳不覆盖已有值 |
 | `play_token` 过期后心跳 | 返回 401，UI 提示「请重新播放」，不静默失败 |
@@ -1372,13 +1368,13 @@ ui:
 | R7 | TMDB 对冷门/国产老片中文数据缺失 | 详情页信息稀疏 | TVDB 可补部分数据；仍缺则手动编辑 + 支持本地 `.nfo`；README 说明可配合 tinyMediaManager |
 | R8 | 用户按 Jellyfin 习惯期待「转码/字幕搜索/多端同步」 | 认知落差 | README 明确非目标；字幕由 mpv 自动加载同名 `.srt`（SmartStrm 可复制） |
 | R9 | **双源季集结构不一致**（TMDB 2 季 vs TVDB 1 季 24 集） | 集数与文件对不上，出现空集/错位 | §10.2.3 已规定：季集**只取 winning provider**，绝不混用；切源时触发整剧重建并保留已看进度（按 `SxxExx` 重映射） |
-| R10 | 外部 mpv 路径的进度只在退出时回传 | 该路径下断电/强杀会丢进度 | **默认路径已改为内置 Media3（5 秒心跳）**，风险大幅收敛；外部 mpv 作为兜底时，UI 标注「退出时保存」 |
-| R11 | **Media3 的能力边界**：复杂 ASS 特效不还原、DV P5 在非 DV 设备绿屏、冷门封装解不了 | 部分片源观感差或播不了 | 播放器错误时**主动弹窗引导切外部 mpv**；README 与播放器菜单都要写明；不允许静默失败 |
+| R10 | 播放器异常退出时最后一段进度可能丢失 | 断电/强杀会丢最后几秒 | 心跳 5 秒 + 暂停/`onStop`/`STATE_ENDED` 各补写一次，风险已收敛 |
+| R11 | **Media3 / FFmpeg 的能力边界**：复杂 ASS 特效不还原、DV P5 在非 DV 设备绿屏、冷门封装解不了 | 部分片源观感差或播不了 | 播放器错误时**主动弹窗说明原因并提供重试**；README 写明可改用桌面端；不允许静默失败 |
 | R12 | 内置播放器的 native 解码崩溃/ANR | 单个片源拖垮 App | 不用 native 渲染层（纯 Media3），`setEnableDecoderFallback(true)`；崩溃日志上报到 `/api/tasks` 附件（可选） |
 
 **核心设计决策**
 
-- D1 ✅ **伴侣 App 深度集成**。电视端是一等公民：内置 Media3 播放、外部 mpv 兜底、断点续播、自动连播。
+- D1 ✅ **伴侣 App 深度集成**。电视端是一等公民：内置 Media3 播放、断点续播、自动连播。
 - D2 ✅ **TVDB 双源体系**。默认 `[tmdb, tvdb]`，动漫库建议 `[tvdb, tmdb]`。
 - D3 ✅ **不做多语言 UI**。界面文案仅中文；要求所有文案集中在一个常量文件（`src/i18n/zh-CN.ts`），不散落在组件里，便于日后扩展。元数据语言仍可通过配置切换（那是数据层）。
 
@@ -1407,16 +1403,19 @@ ui:
    1. WebView 壳 + JS 桥
    2. **内置 Media3 播放（核心）**：先跑通「带 UA 头 + 302 跨协议 + 续播」，再补 UI
    3. 5 秒心跳 + 连播
-   4. 外部 mpv 兜底
+   4. 失败弹窗（重试 / 返回）
    5. 原生播放器 UI 与 TV 遥控打磨
 5. 最后进行**体验打磨**，动效、主题色与 TV 遥控焦点是本产品体验关键。
    - **附录 D 与附录 E**包含详细落地实现细节。
 6. 任何时候都**不要**给视频流加代理——那会让服务端的轻量化失去意义；也**不要**引入 Jellyfin 依赖。
 7. UI 文案集中放 `src/i18n/zh-CN.ts`，不要在组件里写死中文字符串，保持良好的可维护性。
 
-## 附录 B：mpv 端配置（写进 README）
+## 附录 B：外部播放器配置（v1.3 已废弃）
 
-Android（`mpv.conf`，应用内「设置 → 高级 → 编辑 mpv.conf」）：
+> v1.3 起不再支持外部播放器（`external_mpv` / `desktop_mpv` / `mpv_package` 全部下线），
+> 以下内容仅作历史参考。
+
+Android（`mpv.conf`）：
 
 ```ini
 http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/
@@ -1896,8 +1895,7 @@ companion/
    │  ├─ ProgressReporter.kt    # play_token 进度上报 + 队列
    │  ├─ PlayApi.kt             # POST /api/play/{id} 解析
    │  ├─ PlayInfo.kt            # 播放参数与设备判定
-   │  ├─ SetupActivity.kt       # 服务器配置
-   │  └─ MpvFallback.kt         # 外部 mpv 兜底
+   │  └─ SetupActivity.kt       # 服务器配置
    └─ res/drawable/banner.xml   # TV banner 320x180
 ```
 
@@ -2033,7 +2031,7 @@ private val playbackListener = object : Player.Listener {
     }
     override fun onPlayerError(error: PlaybackException) {
         controller.stopHeartbeat()
-        showFallbackDialog(error)                                 // → MpvFallback
+        showPlaybackError(error)                                  // 弹窗：重试 / 返回
     }
 }
 ```
@@ -2095,56 +2093,28 @@ object ProgressReporter {
 3. 位置钳制：`0 <= position <= duration`，越界直接丢弃。
 4. `play_token` 12h 过期；若返回 401，提示「请回到列表重新播放」（下次点播放会换新 token）。
 
-### E.6 错误与降级到 mpv
+### E.6 错误处理（v1.3：已取消 mpv 降级）
 
 ```kotlin
-private fun showFallbackDialog(err: PlaybackException) {
+private fun showPlaybackError(err: PlaybackException) {
     AlertDialog.Builder(this)
         .setTitle("此片源内置播放失败")
-        .setMessage("可能是编码或字幕特效不支持，是否用 mpv 打开？")
-        .setPositiveButton("用 mpv 打开") { _, _ -> MpvFallback.launch(this, currentInfo) }
-        .setNegativeButton("返回", null)
+        .setMessage(err.errorCodeName + "：" + (err.cause?.message ?: ""))
+        .setPositiveButton("重试") { _, _ -> playItem(info!!, player?.currentPosition ?: 0) }
+        .setNegativeButton("返回") { _, _ -> finishWithResult() }
+        .setCancelable(false)
         .show()
 }
 ```
 
-**外部 mpv 的 6 个坑（照抄即用）**
-
-| # | 坑 | 后果 |
-|---|---|---|
-| ① | `type` 必须是 **`video/any`** | strm 链接没有扩展名，`video/*` 会被拒 |
-| ② | 必须 `setPackage("is.xyz.mpv")` | 否则弹选择器，用户选别的播放器 → 没 UA → 403 |
-| ③ | **不能加 `FLAG_ACTIVITY_NEW_TASK`** | 加了 `onActivityResult` 永不回调，进度全丢 |
-| ④ | Android 11+ 必须声明 `<queries>` | 否则 `ActivityNotFoundException` |
-| ⑤ | 分支包名不同（mpvKt 等） | 做成设置项，默认 `is.xyz.mpv` |
-| ⑥ | 返回后焦点丢失 | `onResume` 里 `webView.requestFocus()` |
-
-```kotlin
-object MpvFallback {
-    fun launch(activity: Activity, info: PlayInfo, launcher: ActivityResultLauncher<Intent>) {
-        val intent = Intent(Intent.ACTION_VIEW).apply {
-            setDataAndType(Uri.parse(info.playUrl), "video/any")
-            setPackage(info.mpvPackage)          // 默认 is.xyz.mpv
-            putExtra("title", info.title)
-            putExtra("position", info.resumeMs.toInt())
-        }
-        runCatching { launcher.launch(intent) }
-            .onFailure { Toast.makeText(activity, "未安装 mpv", Toast.LENGTH_SHORT).show() }
-    }
-}
-```
-
-外部播放器返回后（`RESULT_OK`）：
-
-- `position` 存在 → 上报该位置；
-- `position` 不存在 → 播完，上报 `finished=true`；
-- `RESULT_CANCELED` → 不写。
+> v1.3 起不再拉起外部播放器：`MpvFallback`、`playExternal` 桥、`mpv_package` 设置项与
+> Manifest 的 `is.xyz.mpv` 可见性声明均已删除。失败时只提示原因并提供重试/返回。
 
 ### E.7 字幕
 
 - **内封**：`player.currentTracks` 里筛选 `TRACK_TYPE_TEXT`，UI 列轨道供切换；延迟调节用 `SubtitleView.setFractionalTextSize` 之外的 `player.setSubtitleOffset`？——以 Media3 当前版本 API 为准，若无非直接接口，用 `SubtitleConfiguration` 或自绘。
 - **外挂**：同目录 `.srt/.ass` 由服务端在 `PlayInfo` 里以数组下发 URL，客户端用 `SubtitleConfiguration.Builder(uri)` 附加。
-- **ASS 特效不还原**：UI 明确写一行「复杂字幕特效请用 mpv 打开」。
+- **ASS 特效不还原**：UI 明确写一行「复杂字幕特效可在桌面端观看」。
 
 ### E.8 TV 适配与画中画
 

@@ -1,8 +1,9 @@
-"""Integrated embedded PlayerView combining QVideoWidget, overlay, drawer, and keyboard handler."""
+"""Integrated embedded PlayerView: video surface, overlay, drawer, keyboard."""
 
 from __future__ import annotations
 
-from typing import Any, Callable, Sequence
+from typing import Any
+
 from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QKeyEvent, QMouseEvent
 from PySide6.QtMultimediaWidgets import QVideoWidget
@@ -11,8 +12,11 @@ from PySide6.QtWidgets import QWidget
 from ..security import PlaybackPayload
 from .controller import QtPlayerController
 from .drawer import PlayerDrawer
+from .endcard import MessageCard
 from .keyboard import KeyboardHandler
 from .overlay import ControlsOverlay
+
+NEXT_EPISODE_COUNTDOWN = 5
 
 
 class PlayerView(QWidget):
@@ -28,9 +32,11 @@ class PlayerView(QWidget):
         self._controller: QtPlayerController | Any = None
         self._payload: PlaybackPayload | None = None
         self._reporter = None
+        self._stream_url = ""
         self._normal_speed: float = 1.0
         self._is_paused: bool = False
         self._duration: float = 0.0
+        self._card_mode: str | None = None  # "end" | "error" | None
 
         self._init_ui()
         self._init_keyboard()
@@ -52,6 +58,9 @@ class PlayerView(QWidget):
         self.controller.speed_changed.connect(self._on_player_speed)
         self.controller.buffer_progress_changed.connect(self._on_player_buffer_progress)
         self.controller.loading_changed.connect(self._on_player_loading)
+        self.controller.error_occurred.connect(self._on_player_error)
+        self.controller.playback_finished.connect(self._on_playback_finished)
+        self.controller.tracks_changed.connect(self._on_tracks_changed)
 
         # 2. Controls Overlay
         self.overlay = ControlsOverlay(self)
@@ -73,6 +82,11 @@ class PlayerView(QWidget):
         self.drawer.subtitle_selected.connect(self._on_subtitle_selected)
         self.drawer.audio_selected.connect(self._on_audio_selected)
 
+        # 4. End-of-playback / error card
+        self.message_card = MessageCard(self)
+        self.message_card.primary_clicked.connect(self._on_card_primary)
+        self.message_card.secondary_clicked.connect(self._on_card_secondary)
+
     def _init_keyboard(self) -> None:
         self.keyboard = KeyboardHandler(self)
         self.keyboard.play_pause_toggled.connect(self._toggle_play_pause)
@@ -88,9 +102,6 @@ class PlayerView(QWidget):
         self.keyboard.cycle_audio_requested.connect(self._cycle_audio)
         self.keyboard.toggle_drawer_requested.connect(self._toggle_drawer)
 
-    def get_video_wid(self) -> int:
-        return int(self.video_widget.winId())
-
     def load_playback(
         self,
         payload: PlaybackPayload,
@@ -100,9 +111,12 @@ class PlayerView(QWidget):
         """Start playing a stream URL with metadata and optional progress reporter."""
         self._payload = payload
         self._reporter = reporter
+        self._stream_url = stream_url
         self._normal_speed = 1.0
         self._is_paused = False
         self._duration = (payload.duration_ms or 0) / 1000.0 if payload.duration_ms else 0.0
+        self._card_mode = None
+        self.message_card.hide_message()
 
         # Setup Overlay UI
         self.overlay.set_title(payload.title, payload.series_title)
@@ -115,24 +129,31 @@ class PlayerView(QWidget):
         has_prev, has_next = self._check_nav_available(payload)
         self.overlay.set_nav_buttons(has_prev, has_next)
 
-        # Setup Drawer UI
+        # Setup Drawer UI (embedded tracks arrive asynchronously from the player)
         self.drawer.set_data(
             playlist=payload.playlist,
             current_item_id=payload.item_id,
             current_speed=1.0,
-            subtitles=[{"label": s.label, "url": s.url} for s in payload.subtitles],
+            subtitles=[],
+            audio_tracks=[],
+            current_sid="no",
+            current_aid=None,
+            subtitle_hint=(
+                "外挂字幕暂不支持内嵌播放器，请使用伴侣 App 或网页端观看。"
+                if payload.subtitles
+                else ""
+            ),
         )
 
         self.setFocus()
         self.overlay.show_controls()
         self.overlay.restart_auto_hide_timer()
 
-        # Load media into Qt player
-        self.controller.load_media(stream_url)
-        if payload.resume_ms and payload.resume_ms > 0:
-            self.controller.seek(payload.resume_ms / 1000.0)
+        # Load media into Qt player; resume offset is applied once loaded.
+        self.controller.load_media(stream_url, start_ms=int(payload.resume_ms or 0))
 
     def stop_playback(self) -> None:
+        self.message_card.hide_message()
         self.controller.stop()
         if self._reporter:
             try:
@@ -140,34 +161,6 @@ class PlayerView(QWidget):
             except Exception:
                 pass
             self._reporter = None
-
-    def bind_controller(self, controller, payload: PlaybackPayload) -> None:
-        """Support external or legacy controller binding."""
-        self._controller = controller
-        self._payload = payload
-        self._normal_speed = 1.0
-        self._is_paused = False
-        self._duration = (payload.duration_ms or 0) / 1000.0 if payload.duration_ms else 0.0
-
-        self.overlay.set_title(payload.title, payload.series_title)
-        self.overlay.set_duration(self._duration)
-        self.overlay.set_position((payload.resume_ms or 0) / 1000.0)
-        self.overlay.set_speed_text(1.0)
-        self.overlay.set_paused(False)
-
-        has_prev, has_next = self._check_nav_available(payload)
-        self.overlay.set_nav_buttons(has_prev, has_next)
-
-        self.drawer.set_data(
-            playlist=payload.playlist,
-            current_item_id=payload.item_id,
-            current_speed=1.0,
-            subtitles=[{"label": s.label, "url": s.url} for s in payload.subtitles],
-        )
-
-        self.setFocus()
-        self.overlay.show_controls()
-        self.overlay.restart_auto_hide_timer()
 
     def _check_nav_available(self, payload: PlaybackPayload) -> tuple[bool, bool]:
         if not payload.playlist or payload.current_index < 0:
@@ -204,66 +197,143 @@ class PlayerView(QWidget):
     def _on_player_loading(self, is_loading: bool) -> None:
         self.overlay.set_loading(is_loading)
 
-    # Legacy / MPV callback adapters for tests & backwards compatibility
-    def on_mpv_position(self, seconds: float) -> None:
-        self._on_player_position(seconds)
-
-    def on_mpv_duration(self, seconds: float) -> None:
-        self._on_player_duration(seconds)
-
-    def on_mpv_paused(self, paused: bool) -> None:
-        self._on_player_paused(paused)
-
-    def on_mpv_speed(self, speed: float) -> None:
-        self._on_player_speed(speed)
-
-    def on_mpv_cache_state(self, cache_info: dict) -> None:
-        if not isinstance(cache_info, dict):
+    def _on_tracks_changed(self, tracks: list[dict]) -> None:
+        if not isinstance(tracks, list) or self._payload is None:
             return
-        cache_duration = cache_info.get("cache-duration", 0)
-        if cache_duration and self.overlay._position >= 0:
-            b_end = self.overlay._position + float(cache_duration)
-            self.overlay.seekbar.set_buffer_end(b_end)
-
-    def on_mpv_tracks(self, tracks: list[dict]) -> None:
-        if not isinstance(tracks, list):
-            return
-        subs = []
-        audios = []
-        cur_sid = None
-        cur_aid = None
-        for t in tracks:
-            t_type = t.get("type")
-            t_id = t.get("id")
-            selected = t.get("selected", False)
-            title = t.get("title") or t.get("lang") or f"#{t_id}"
-            if t_type == "sub":
-                subs.append({"id": t_id, "label": title, "selected": selected})
-                if selected:
-                    cur_sid = t_id
-            elif t_type == "audio":
-                audios.append({"id": t_id, "title": title, "selected": selected})
-                if selected:
-                    cur_aid = t_id
+        subs: list[dict] = []
+        audios: list[dict] = []
+        current_sid: Any = "no"
+        current_aid: Any = None
+        for track in tracks:
+            if track.get("type") == "sub":
+                subs.append(
+                    {
+                        "id": track.get("id"),
+                        "label": track.get("title") or f"字幕 #{track.get('id')}",
+                    }
+                )
+                if track.get("selected"):
+                    current_sid = track.get("id")
+            elif track.get("type") == "audio":
+                audios.append(
+                    {
+                        "id": track.get("id"),
+                        "title": track.get("title") or f"音轨 #{track.get('id')}",
+                    }
+                )
+                if track.get("selected"):
+                    current_aid = track.get("id")
         self.drawer.set_data(
             subtitles=subs,
             audio_tracks=audios,
-            current_sid=cur_sid,
-            current_aid=cur_aid,
+            current_sid=current_sid,
+            current_aid=current_aid,
+            subtitle_hint=(
+                "" if subs else
+                ("片中无内嵌字幕；外挂字幕暂不支持。" if self._payload.subtitles
+                 else "片中无字幕轨道")
+            ),
         )
 
-    def on_mpv_idle(self, is_idle: bool) -> None:
-        self.overlay.set_loading(is_idle)
+    # -- End of playback / errors --
+    def _next_episode_id(self) -> int | None:
+        if not self._payload:
+            return None
+        if self._payload.playlist and self._payload.current_index >= 0:
+            index = self._payload.current_index
+            if index + 1 < len(self._payload.playlist):
+                entry = self._payload.playlist[index + 1]
+                next_id = entry.get("item_id") or entry.get("id")
+                if next_id:
+                    return int(next_id)
+        if self._payload.next_item_id:
+            return int(self._payload.next_item_id)
+        return None
+
+    def _on_playback_finished(self) -> None:
+        self.overlay.set_loading(False)
+        self._is_paused = True
+        self.overlay.set_paused(True)
+        self.overlay.show_controls()
+        self._card_mode = "end"
+        if self._reporter:
+            try:
+                self._reporter.finish()
+                self._reporter.request_flush()
+            except Exception:
+                pass
+
+        next_id = self._next_episode_id()
+        if next_id:
+            next_label = ""
+            if self._payload:
+                for index, entry in enumerate(self._payload.playlist):
+                    if (entry.get("item_id") or entry.get("id")) == next_id:
+                        next_label = str(entry.get("title") or entry.get("code") or "")
+                        break
+                if not next_label:
+                    next_label = self._payload.next_title or ""
+            self.message_card.show_message(
+                "播放结束",
+                f"下一集：{next_label}" if next_label else "",
+                primary="播放下一集",
+                secondary="返回",
+                countdown=NEXT_EPISODE_COUNTDOWN,
+            )
+        else:
+            self.message_card.show_message(
+                "播放结束",
+                "已记录观看进度",
+                primary="返回",
+            )
+
+    def _on_player_error(self, message: str) -> None:
+        self.overlay.set_loading(False)
+        self.overlay.show_controls()
+        self._card_mode = "error"
+        self.message_card.show_message(
+            "播放失败",
+            message or "无法打开片源，请检查网络或片源地址。",
+            primary="重试",
+            secondary="返回",
+        )
+
+    def _on_card_primary(self) -> None:
+        mode = self._card_mode
+        self._card_mode = None
+        if mode == "end":
+            next_id = self._next_episode_id()
+            if next_id:
+                self.next_episode_requested.emit(next_id)
+                return
+            self._on_back_clicked()
+            return
+        # Retry the current stream without losing the progress reporter.
+        if self._stream_url:
+            self.overlay.set_loading(True)
+            self.controller.load_media(self._stream_url, start_ms=0)
+
+    def _on_card_secondary(self) -> None:
+        self._card_mode = None
+        self._on_back_clicked()
 
     # -- User Interactions --
     def _toggle_play_pause(self) -> None:
-        if self._controller:
-            new_pause = not self._is_paused
-            self._controller.set_pause(new_pause)
-            self.overlay.flash_center_play_pause(new_pause)
+        if not self._controller:
+            return
+        if self._card_mode == "end" and self.message_card.is_shown:
+            self._on_card_primary()
+            return
+        self.message_card.hide_message()
+        self._card_mode = None
+        new_pause = not self._is_paused
+        self._controller.set_pause(new_pause)
+        self.overlay.flash_center_play_pause(new_pause)
 
     def _on_seek_requested(self, target_sec: float) -> None:
         if self._controller:
+            self.message_card.hide_message()
+            self._card_mode = None
             self._controller.seek(target_sec, relative=False)
 
     def _on_seek_relative(self, delta_sec: float) -> None:
@@ -284,21 +354,16 @@ class PlayerView(QWidget):
 
     def _on_volume_relative(self, delta: int) -> None:
         if self._controller:
-            if hasattr(self._controller, "set_volume_relative"):
-                self._controller.set_volume_relative(delta)
-            elif hasattr(self._controller, "set_volume"):
-                cur_vol = getattr(self._controller, "volume", 100) or 100
-                new_vol = max(0, min(100, cur_vol + delta))
-                self._controller.set_volume(new_vol)
-            self.overlay.flash_seek_badge(f"音量调整")
+            self._controller.set_volume_relative(delta)
+            self.overlay.flash_seek_badge(f"音量 {self._controller.volume()}")
 
     def _cycle_subtitle(self) -> None:
-        if self._controller and hasattr(self._controller, "cycle_sub"):
-            self._controller.cycle_sub()
+        if self._controller:
+            self._controller.cycle_subtitle()
             self.overlay.flash_seek_badge("切换字幕")
 
     def _cycle_audio(self) -> None:
-        if self._controller and hasattr(self._controller, "cycle_audio"):
+        if self._controller:
             self._controller.cycle_audio()
             self.overlay.flash_seek_badge("切换音轨")
 
@@ -326,36 +391,38 @@ class PlayerView(QWidget):
             self._controller.set_speed(speed)
 
     def _on_subtitle_selected(self, sid: Any) -> None:
-        if self._controller and hasattr(self._controller, "set_sub"):
-            self._controller.set_sub(sid)
+        if not self._controller:
+            return
+        if sid in ("no", None, False):
+            self._controller.set_subtitle_track(-1)
+        else:
+            try:
+                self._controller.set_subtitle_track(int(sid))
+            except (TypeError, ValueError):
+                return
 
     def _on_audio_selected(self, aid: Any) -> None:
-        if self._controller and hasattr(self._controller, "set_audio"):
-            self._controller.set_audio(aid)
+        if not self._controller:
+            return
+        try:
+            self._controller.set_audio_track(int(aid))
+        except (TypeError, ValueError):
+            return
 
     def _play_prev_episode(self) -> None:
         if not self._payload or not self._payload.playlist:
             return
-        idx = self._payload.current_index
-        if idx > 0:
-            prev_ep = self._payload.playlist[idx - 1]
+        index = self._payload.current_index
+        if index > 0:
+            prev_ep = self._payload.playlist[index - 1]
             prev_id = prev_ep.get("item_id") or prev_ep.get("id")
             if prev_id:
-                self.next_episode_requested.emit(prev_id)
+                self.next_episode_requested.emit(int(prev_id))
 
     def _play_next_episode(self) -> None:
-        if not self._payload:
-            return
-        if self._payload.playlist and self._payload.current_index >= 0:
-            idx = self._payload.current_index
-            if idx + 1 < len(self._payload.playlist):
-                next_ep = self._payload.playlist[idx + 1]
-                next_id = next_ep.get("item_id") or next_ep.get("id")
-                if next_id:
-                    self.next_episode_requested.emit(next_id)
-                    return
-        if self._payload.next_item_id:
-            self.next_episode_requested.emit(self._payload.next_item_id)
+        next_id = self._next_episode_id()
+        if next_id:
+            self.next_episode_requested.emit(next_id)
 
     def _toggle_fullscreen(self) -> None:
         win = self.window()
@@ -388,8 +455,10 @@ class PlayerView(QWidget):
         self.video_widget.setGeometry(rect)
         self.overlay.setGeometry(rect)
         self.drawer.setGeometry(rect)
+        self.message_card.setGeometry(rect)
         self.overlay.raise_()
         self.drawer.raise_()
+        self.message_card.raise_()
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
         if event.button() == Qt.MouseButton.LeftButton:

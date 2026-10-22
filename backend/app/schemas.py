@@ -85,9 +85,7 @@ class PlayerPreferencePatch(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    mode: Literal[
-        "builtin", "external_mpv", "browser_intent", "desktop_mpv", "copy", "auto"
-    ] | None = None
+    mode: Literal["builtin", "browser_intent", "copy", "auto"] | None = None
     fallback_on_error: bool | None = None
 
 

@@ -20,7 +20,7 @@ object PlaybackCache {
     const val MEMORY_BUFFER_MB = 64
     private const val MIN_MEMORY_BUFFER_MB = 16
 
-    /** 服务端 player.cache_limit_mb 只作用于外部 mpv，这里保留常量用于解析。 */
+    /** 服务端 player.cache_limit_mb 的默认值，仅用于解析与展示。 */
     const val DEFAULT_LIMIT_MB = 128
     const val MIN_EFFECTIVE_LIMIT_MB = 16
     const val MAX_LIMIT_MB = 2048

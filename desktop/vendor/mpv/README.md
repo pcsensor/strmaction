@@ -1,10 +1,12 @@
-# 播放器组件说明
+# 播放器组件说明（已废弃）
 
-> **重要更新**：
-> 从当前版本起，StrmAction 桌面端已全面升级为 **PySide6 原生硬件加速播放内核（`QMediaPlayer` + `QVideoWidget` + 内置轻量环回代理）**。
-> 桌面端运行与打包**完全不再依赖或需要外部 mpv 二进制文件**，用户亦无需手动配置 mpv 路径，开箱即用。
-> 
-> 本目录及旧版 `prepare_mpv.py` 仅作为历史参考与向后兼容保留。
+> **重要更新（v1.3）**：
+> StrmAction 桌面端使用 **PySide6 播放内核（`QMediaPlayer` + `QVideoWidget` + 内置轻量环回代理）**，
+> 运行与打包**完全不再依赖外部 mpv 二进制**，也不再提供播放器路径配置。
+>
+> - `packaging/strmaction-desktop.spec` 已不再包含本目录；
+> - `scripts/prepare_mpv.py` 已删除；
+> - 本目录下的文件仅为历史遗留，可整目录删除，不影响运行与打包。
 
 ---
 

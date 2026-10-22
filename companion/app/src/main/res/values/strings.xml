@@ -11,11 +11,9 @@
     <string name="setup_ok">连接正常：StrmAction %1$s</string>
     <string name="setup_fail">连接失败：%1$s</string>
     <string name="setup_invalid">请输入以 http:// 或 https:// 开头的地址</string>
-    <string name="setup_mpv_label">mpv 包名（外部播放器兜底，默认 is.xyz.mpv）</string>
-    <string name="setup_mpv_default">is.xyz.mpv</string>
     <string name="setup_buffer_label">缓冲大小（MB）</string>
     <string name="setup_buffer_default_hint">留空默认 512，0 表示不预拉取</string>
-    <string name="setup_buffer_hint">实时预拉取窗口：播放（含暂停）时提前把后续内容拉下来，前拖/回拖到已拉过的区间不再重新下载。0 表示关闭预拉取；留空用默认 512MB，范围 64–8192。实际窗口不会超过磁盘缓存上限。仅对内置播放器生效，外部 mpv 不受控制。</string>
+    <string name="setup_buffer_hint">实时预拉取窗口：播放（含暂停）时提前把后续内容拉下来，前拖/回拖到已拉过的区间不再重新下载。0 表示关闭预拉取；留空用默认 512MB，范围 64–8192。实际窗口不会超过磁盘缓存上限。</string>
     <string name="setup_buffer_invalid">缓冲大小需为 0 或 64–8192 的整数（MB）</string>
     <string name="setup_disk_cache_label">磁盘缓存上限（MB）</string>
     <string name="setup_disk_cache_default_hint">留空默认 2048，0 表示不落盘</string>
@@ -55,24 +53,15 @@
     <string name="player_menu_audio">音轨</string>
     <string name="player_menu_speed">播放速度</string>
     <string name="player_menu_next">下一集</string>
-    <string name="player_menu_mpv">用 mpv 打开</string>
     <string name="player_subtitle_off">关闭字幕</string>
     <string name="player_no_track">没有可切换的轨道</string>
-    <string name="player_mpv_missing">未安装 mpv-android，请先安装 is.xyz.mpv</string>
     <string name="player_fallback_title">此片源内置播放失败</string>
-    <string name="player_fallback_message">可能是编码、HDR 或字幕特效不受支持。是否用外部 mpv 打开？</string>
-    <string name="player_fallback_positive">用 mpv 打开</string>
-    <string name="player_fallback_negative">返回</string>
-    <string name="player_fallback_unsupported">当前设备不支持外部播放器</string>
     <string name="player_token_expired">登录状态已失效，请回到列表重新播放</string>
     <string name="player_progress_failed">进度保存失败，将自动重试</string>
     <string name="player_next_title">即将播放：%1$s</string>
-    <string name="player_auto_next">自动连播</string>
-    <string name="player_auto_next_message">%1$d 秒后播放下一集 %2$s</string>
-    <string name="player_play_now">立即播放</string>
     <string name="player_ended">播放结束</string>
     <string name="player_speed_normal">正常</string>
-    <string name="player_subtitle_hint">复杂 ASS 特效无法还原，需要原样显示请用 mpv 打开。</string>
+    <string name="player_subtitle_hint">复杂 ASS 特效无法还原，可在桌面端或网页端观看原始样式。</string>
 
     <string name="player_prev">上一集</string>
     <string name="player_play">播放</string>
@@ -100,7 +89,5 @@
     <string name="player_seek_buffered">%1$s · 已缓冲</string>
     <string name="player_seek_buffering">%1$s · 缓冲中</string>
 
-    <!-- 外部 mpv -->
-    <string name="mpv_missing">未安装 mpv-android，请先安装 is.xyz.mpv</string>
-    <string name="progress_saved">播放进度已记录</string>
+    <string name="player_intent_missing">未找到可处理该链接的应用</string>
 </resources>
