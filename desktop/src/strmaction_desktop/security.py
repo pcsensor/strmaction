@@ -2,7 +2,7 @@
 
 Everything that enters the desktop client from the web UI is untrusted: the
 payload contains a direct media URL and request headers (credentials).  It is
-validated here before it is handed to mpv.
+validated here before it is handed to the player.
 """
 
 from __future__ import annotations

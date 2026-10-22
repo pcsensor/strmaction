@@ -6,7 +6,7 @@ import { copyText } from '../utils/clipboard'
 import type { PlayResponse } from '../api/types'
 
 interface StartOptions {
-  /** builtin（默认）/ external（外部 mpv）/ auto / copy */
+  /** auto / builtin / browser_intent / copy */
   mode?: string
   mediaFileId?: number
   silent?: boolean
@@ -27,17 +27,6 @@ function downgradeCopyText(reason: PlayResponse['downgrade_reason']): {
         title: t('player.intentOnlyTitle'),
         description: t('player.intentOnlyTip'),
       }
-    case 'admin_only':
-      return {
-        title: t('player.serverMpvAdminTitle'),
-        description: t('player.serverMpvAdminTip'),
-      }
-    case 'mpv_unavailable':
-    case 'launch_failed':
-      return {
-        title: t('player.mpvUnavailableTitle'),
-        description: t('player.mpvUnavailableTip'),
-      }
     default:
       return { title: t('player.copyTitle'), description: t('player.copyTip') }
   }
@@ -51,10 +40,8 @@ export function useStartPlayback() {
     async (itemId: number, options: StartOptions = {}): Promise<PlayResponse | null> => {
       const bridge =
         typeof window !== 'undefined' ? window.StrmActionNative : undefined
-      const nativeMode =
-        options.mode === 'external' || options.mode === 'external_mpv'
 
-      // 桌面端：网页负责取播放数据，Python 负责本机 mpv 播放
+      // 桌面端：网页负责取播放数据（direct），Python 负责本机内嵌播放
       if (bridge?.isDesktop?.()) {
         try {
           const result = await play.mutateAsync({
@@ -88,11 +75,7 @@ export function useStartPlayback() {
       // 伴侣 App：原生层自己请求 /api/play，网页不接触 URL 与 token（§12.8）
       if (bridge?.play) {
         try {
-          if (nativeMode && bridge.playExternal) {
-            bridge.playExternal(itemId)
-          } else {
-            bridge.play(itemId)
-          }
+          bridge.play(itemId)
           return null
         } catch (error) {
           toast({
@@ -140,14 +123,8 @@ export function useStartPlayback() {
           } else {
             await copy()
           }
-        } else if (result.mode === 'desktop_mpv') {
-          toast({
-            title: t('player.backend'),
-            description: t('player.backendTip'),
-            tone: 'success',
-          })
         } else {
-          // builtin / external_mpv 只可能出现在伴侣 App 中；浏览器拿不到原生播放器
+          // builtin 只可能出现在伴侣 App 中；浏览器拿不到原生播放器
           toast({
             title: t('player.backend'),
             description: t('player.externalHint'),

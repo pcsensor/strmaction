@@ -57,7 +57,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         const val PREFS = "strmaction"
         const val KEY_SERVER = "server_url"
-        const val KEY_MPV_PACKAGE = "mpv_package"
     }
 
     private lateinit var webView: WebView
@@ -66,7 +65,6 @@ class MainActivity : AppCompatActivity() {
     private lateinit var loadingView: LinearLayout
     private lateinit var serverUrl: String
     private lateinit var allowedHost: String
-    private lateinit var mpvPackage: String
     private var isTv = false
     private var pageFailed = false
     private var pageLoaded = false
@@ -110,7 +108,6 @@ class MainActivity : AppCompatActivity() {
             finish()
             return
         }
-        mpvPackage = PlayApi.mpvPackage(this)
         allowedHost = parsedHost(serverUrl) ?: ""
         isTv = Device.isTelevision(this)
 
@@ -475,7 +472,7 @@ class MainActivity : AppCompatActivity() {
                 val intent = Intent.parseUri(url, Intent.URI_INTENT_SCHEME)
                 startActivity(intent)
             }.onFailure {
-                toast(getString(R.string.mpv_missing))
+                toast(getString(R.string.player_intent_missing))
             }
             return true
         }
@@ -507,19 +504,9 @@ class MainActivity : AppCompatActivity() {
 
     /** JS 桥：播放内置播放器 */
     fun openPlayer(itemId: Int) {
-        startPlayer(itemId, null)
-    }
-
-    /** JS 桥：直接交给外部 mpv */
-    fun openExternal(itemId: Int) {
-        startPlayer(itemId, "external_mpv")
-    }
-
-    private fun startPlayer(itemId: Int, mode: String?) {
         if (itemId <= 0) return
         val intent = Intent(this, PlayerActivity::class.java)
             .putExtra(PlayerActivity.EXTRA_ITEM_ID, itemId)
-        if (mode != null) intent.putExtra(PlayerActivity.EXTRA_MODE, mode)
         runCatching { playerLauncher.launch(intent) }
             .onFailure { toast(it.message ?: getString(R.string.player_error_title)) }
     }
@@ -538,8 +525,6 @@ class MainActivity : AppCompatActivity() {
             webView.requestFocus()
         }
     }
-
-    fun mpvPackageName(): String = mpvPackage
 
     override fun onResume() {
         super.onResume()

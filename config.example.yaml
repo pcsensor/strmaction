@@ -51,21 +51,17 @@ scanner:
   max_depth: 6
 
 player:
-  mode: builtin                           # builtin | external_mpv | browser_intent | desktop_mpv | copy | auto
+  mode: builtin                           # builtin | browser_intent | copy | auto
                                           # builtin 只在伴侣 App 内生效；浏览器自动降级为 intent:// 或复制链接
+                                          # 桌面端固定使用 direct（服务端只下发 URL/headers/token）
   progress_interval_ms: 5000              # 内置播放器进度心跳间隔
   play_token_ttl_hours: 12                # 播放凭证有效期
-  cache_limit_mb: 128                     # 播放缓存上限；0=最小预读（桌面 mpv 为关闭），非 0 按 16–2048MB
-  fallback_on_error: true                 # 内置播放失败时提示切外部 mpv
+  cache_limit_mb: 128                     # 播放缓存上限；0=客户端默认，非 0 按 16–2048MB
+  fallback_on_error: true                 # 播放失败时给出提示
   # 全局播放请求头（库设置里可覆盖；不同网盘/架子要求不同）
   play_headers:
     User-Agent: pan.baidu.com
     Referer: https://pan.baidu.com/
-  mpv_package: is.xyz.mpv                 # 外部播放器兜底包名
-  mpv_path: /usr/bin/mpv                  # 桌面 mpv IPC 模式使用
-  mpv_extra_args:
-    - "--http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/"
-  enable_progress: true
 
 ui:
   default_language: zh-CN

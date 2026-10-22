@@ -41,7 +41,8 @@ router = APIRouter(tags=["settings"])
 
 PRIORITY_KEYS = {"movie", "tv", "home", "course"}
 PROVIDERS = {"tmdb", "tvdb"}
-PLAYER_MODES = {"builtin", "external_mpv", "browser_intent", "desktop_mpv", "copy", "auto"}
+# v1.3：服务端 mpv / 外部 mpv 已下线，设置里只保留这些模式。
+PLAYER_MODES = {"builtin", "browser_intent", "copy", "auto"}
 
 
 def _validate(patch: dict[str, Any]) -> None:
@@ -92,6 +93,9 @@ def _sanitize(patch: dict[str, Any]) -> dict[str, Any]:
             player["cache_limit_mb"] = normalize_cache_limit(player["cache_limit_mb"])
         if "mode" in player:
             player.pop("default", None)
+        # 已下线的播放器字段：直接丢弃，避免旧客户端写回。
+        for key in ("mpv_path", "mpv_extra_args", "mpv_package", "enable_progress"):
+            player.pop(key, None)
     return patch
 
 
@@ -129,7 +133,6 @@ def _player_preference_payload(
     user: CurrentUser,
     request: Request,
 ) -> dict[str, Any]:
-    allow_desktop_mpv = user.role == "admin"
     pref = get_preference(engine, user.id)
     context, client = _client_flags(request)
     # 延迟导入，避免 api 包初始化时的循环依赖。
@@ -141,15 +144,14 @@ def _player_preference_payload(
         settings,
         engine,
         player=effective_player(settings, pref),
-        allow_server_mpv=allow_desktop_mpv,
     )
     return {
-        "overrides": preference_payload(pref, allow_desktop_mpv),
-        "defaults": defaults_summary(settings, allow_desktop_mpv),
-        "effective": effective_summary(settings, pref, allow_desktop_mpv),
-        "allowed_modes": allowed_player_modes(allow_desktop_mpv),
+        "overrides": preference_payload(pref),
+        "defaults": defaults_summary(settings),
+        "effective": effective_summary(settings, pref),
+        "allowed_modes": allowed_player_modes(),
         "available_modes": available_player_modes(
-            allow_desktop_mpv, client["is_companion"], client["is_android"]
+            client["is_companion"], client["is_android"]
         ),
         "client": client,
         "resolved_mode": resolved_mode,
@@ -184,8 +186,6 @@ def patch_my_player(
     settings: SettingsService = Depends(get_settings),
 ):
     """只允许修改 mode / fallback_on_error；显式 null 表示恢复跟随全局。"""
-    if body.mode == "desktop_mpv" and user.role != "admin":
-        raise APIError(403, "FORBIDDEN", "服务器桌面 mpv 仅管理员可用")
     save_preference(engine, user.id, body.model_dump(exclude_unset=True))
     return _player_preference_payload(settings, engine, user, request)
 

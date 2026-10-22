@@ -247,3 +247,62 @@ def test_seekbar_buffer_progress_and_stability():
     bar.set_buffer_end(60.0)
     assert bar._buffered_ranges[0] == (0.0, 60.0)
 
+
+
+def test_resume_seek_is_not_clamped_to_zero_before_duration_known():
+    """Resume must survive load_media(): duration is 0 until the media loads."""
+    _get_app()
+    from strmaction_desktop.player.controller import QtPlayerController
+
+    controller = QtPlayerController()
+    controller.seek(600.0, relative=False)
+    assert controller._pending_seek_ms == 600_000
+
+    # Once the duration is known the seek is clamped to the media length.
+    controller._duration_sec = 100.0
+    controller.seek(600.0, relative=False)
+    assert controller._pending_seek_ms == 600_000
+    controller.stop()
+
+
+def test_end_card_counts_down_and_autoplays():
+    _get_app()
+    from strmaction_desktop.player.endcard import MessageCard
+
+    card = MessageCard()
+    fired: list[bool] = []
+    card.primary_clicked.connect(lambda: fired.append(True))
+    card.show_message("播放结束", "下一集", primary="播放下一集", countdown=2)
+    assert "2" in card.btn_primary.text()
+
+    card._tick()
+    assert "1" in card.btn_primary.text()
+    assert fired == []
+
+    card._tick()
+    assert fired == [True]
+    assert not card.isVisible()
+
+
+def test_drawer_subtitle_track_zero_is_selectable():
+    """Track id 0 is a real track and must not be treated as 'subtitles off'."""
+    _get_app()
+    from strmaction_desktop.player.drawer import PlayerDrawer
+
+    drawer = PlayerDrawer()
+    drawer.set_data(
+        subtitles=[{"id": 0, "label": "简体中文"}],
+        current_sid="no",
+        subtitle_hint="片中无内嵌字幕",
+    )
+    selected: list = []
+    drawer.subtitle_selected.connect(lambda sid: selected.append(sid))
+    drawer.open_tab("tracks")
+    buttons = [
+        child
+        for child in drawer.scroll_content.findChildren(type(drawer.btn_tab_episodes))
+        if child.text() == "简体中文"
+    ]
+    assert buttons, "subtitle button should exist"
+    buttons[0].click()
+    assert selected == [0]

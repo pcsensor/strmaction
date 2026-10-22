@@ -28,7 +28,6 @@ import javax.net.ssl.SSLPeerUnverifiedException
 class SetupActivity : AppCompatActivity() {
 
     private lateinit var urlInput: EditText
-    private lateinit var packageInput: EditText
     private lateinit var bufferInput: EditText
     private lateinit var diskCacheInput: EditText
     private lateinit var allowSelfSignedInput: CheckBox
@@ -91,24 +90,6 @@ class SetupActivity : AppCompatActivity() {
             setPadding(dp(14), dp(14), dp(14), dp(14))
         }
         container.addView(urlInput, matchWidth(top = 24))
-
-        container.addView(
-            TextView(this).apply {
-                text = getString(R.string.setup_mpv_label)
-                textSize = 12f
-                setTextColor(Color.parseColor("#8A93A5"))
-                setPadding(0, dp(18), 0, 0)
-            },
-        )
-        packageInput = EditText(this).apply {
-            setText(prefs.getString(MainActivity.KEY_MPV_PACKAGE, MpvFallback.DEFAULT_PACKAGE))
-            setTextColor(Color.WHITE)
-            setSingleLine(true)
-            textSize = 15f
-            setPadding(dp(14), dp(12), dp(14), dp(12))
-            inputType = InputType.TYPE_CLASS_TEXT
-        }
-        container.addView(packageInput, matchWidth(top = 6))
 
         container.addView(
             TextView(this).apply {
@@ -325,13 +306,10 @@ class SetupActivity : AppCompatActivity() {
                 return
             }
         }
-        val packageName = packageInput.text.toString().trim()
-            .ifBlank { MpvFallback.DEFAULT_PACKAGE }
         TlsPolicy.setEnabled(this, allowSelfSignedInput.isChecked)
         getSharedPreferences(MainActivity.PREFS, MODE_PRIVATE)
             .edit()
             .putString(MainActivity.KEY_SERVER, base)
-            .putString(MainActivity.KEY_MPV_PACKAGE, packageName)
             .apply()
         if (bufferLimit != null) {
             PlaybackCache.saveBuffer(this, bufferLimit)

@@ -22,7 +22,6 @@ data class PlayInfo(
     val progressIntervalMs: Long,
     val cacheLimitMb: Int,
     val fallbackOnError: Boolean,
-    val mpvPackage: String,
     val subtitles: List<SubtitleInfo>,
     val mode: String,
     val seriesTitle: String?,

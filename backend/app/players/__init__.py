@@ -17,28 +17,23 @@ from .base import (
 from .cache import (
     DEFAULT_CACHE_LIMIT_MB,
     MAX_CACHE_LIMIT_MB,
-    mpv_cache_args,
     normalize_cache_limit,
 )
-from .mpv_ipc import MpvIpcAdapter, write_progress
-from .web_intent import ClipboardAdapter, WebIntentAdapter, build_mpv_intent
+from .web_intent import ClipboardAdapter, WebIntentAdapter, build_external_intent
 
 __all__ = [
     "PlayContext",
     "PlayerAdapter",
-    "MpvIpcAdapter",
     "WebIntentAdapter",
     "ClipboardAdapter",
-    "build_mpv_intent",
+    "build_external_intent",
     "clean_headers",
     "headers_hint",
     "parse_headers",
     "DEFAULT_HEADERS_HINT",
     "DEFAULT_CACHE_LIMIT_MB",
     "MAX_CACHE_LIMIT_MB",
-    "mpv_cache_args",
     "normalize_cache_limit",
-    "write_progress",
     "mask_url",
     "normalize_mode",
     "select_adapter",
@@ -47,19 +42,17 @@ __all__ = [
 MODE_ALIASES = {
     "intent": "browser_intent",
     "web_intent": "browser_intent",
-    "mpv_ipc": "desktop_mpv",
-    "backend": "desktop_mpv",
     "default": "builtin",
 }
+# v1.3：服务端 mpv（desktop_mpv）与外部 mpv（external_mpv）已下线。
 VALID_MODES = {
     "builtin",
-    "external_mpv",
     "browser_intent",
-    "desktop_mpv",
     "copy",
     "auto",
     "direct",
 }
+OBSOLETE_MODES = {"external_mpv", "desktop_mpv", "mpv_ipc", "backend"}
 
 
 def normalize_mode(
@@ -67,6 +60,9 @@ def normalize_mode(
 ) -> str:
     """把请求/偏好归一到合法 mode；缺省时回落到 player 配置里的 mode。"""
     raw = str(requested or (player or {}).get("mode") or "builtin").lower()
+    if raw in OBSOLETE_MODES:
+        # 旧配置/旧客户端传来的已下线模式按自动处理。
+        return "auto"
     mode = MODE_ALIASES.get(raw, raw)
     return mode if mode in VALID_MODES else "builtin"
 
@@ -76,27 +72,23 @@ def select_adapter(
     context: PlayContext,
     settings: SettingsService,
     engine,
-    allow_server_mpv: bool = True,
 ) -> PlayerAdapter:
-    """按 v0.8 的 mode 选服务端适配器。
+    """按 mode 选服务端适配器。
 
-    builtin / external_mpv 由客户端自己播放，服务端不需要动作；
+    builtin / direct 由客户端自己播放，服务端不需要动作；
     这里返回 intent 适配器只为兼容旧调用方。
     """
     mode = normalize_mode(requested, settings.player())
     intent = WebIntentAdapter()
     clipboard = ClipboardAdapter()
-    mpv = MpvIpcAdapter(settings, engine)
     if mode == "auto":
         if context.is_companion:
             return intent
         if context.is_android:
             return intent
-        return mpv if allow_server_mpv and mpv.available(context) else clipboard
+        return clipboard
     if mode == "browser_intent":
         return intent
-    if mode == "desktop_mpv":
-        return mpv if allow_server_mpv and mpv.available(context) else clipboard
     if mode == "copy":
         return clipboard
     return intent

@@ -5,11 +5,10 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "strmaction-desktop"
 version = "0.1.0"
-description = "StrmAction desktop shell: WebView UI + local mpv playback + progress reporting"
+description = "StrmAction desktop shell: Qt WebEngine UI + embedded Qt Multimedia playback"
 requires-python = ">=3.10"
 dependencies = [
-  "PySide6>=6.5",
-  "pywebview>=5.0",
+  "PySide6>=6.8",
   "httpx>=0.27",
 ]
 

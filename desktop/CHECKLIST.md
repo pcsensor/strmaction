@@ -33,7 +33,7 @@
 - [x] `useStartPlayback` 检测桌面端：`/api/play` 使用 `mode: "direct"`，然后调用 `playItem`
 - [x] 桌面端播放失败时显示明确 toast，不静默失败
 - [x] `PlayResponse.mode` 支持 `direct`
-- [x] 设置页显示“当前为桌面端，由本机 mpv 播放”，提供“打开桌面端设置”
+- [x] 设置页显示“当前为桌面端”，提供“打开桌面端设置”（原生 QDialog）
 - [x] `npm run build` 通过
 
 ## 3. desktop/ 工程基础
@@ -48,7 +48,7 @@
 
 ## 4. 配置与设置页
 
-- [x] 本地 `settings.html`：服务器地址、预读缓存上限、版本（彻底去除 mpv 路径输入）
+- [x] 原生设置对话框：服务器地址、预读缓存上限、自签名证书开关、版本
 - [x] 保存配置并重新加载网页
 - [x] 开箱即用：零播放器路径配置
 - [x] 修改服务器地址后刷新 WebView
@@ -66,20 +66,19 @@
 
 ## 6. 请求头与字幕
 
-- [x] 使用服务端 `headers` 全量设置，不只 User-Agent
-- [x] 通过 IPC 设置 `http-header-fields`，避免出现在进程命令行
+- [x] 使用服务端 `headers` 全量设置，不只 User-Agent（由本地环回代理注入）
+- [x] `Range` / `If-Range` / `If-None-Match` 透传，保证拖拽 seek
 - [x] headers 只接受字符串键值；大小/数量限制
-- [x] 字幕 URL 拼接服务器绝对地址
-- [x] `sub-add` 加载字幕（首个 select，其余 auto）
+- [x] 字幕 URL 拼接服务器绝对地址（外挂字幕暂不支持内嵌播放器）
+- [x] 支持容器内嵌字幕/音轨切换（Qt 6.8+ `subtitleTracks/audioTracks`）
 - [x] headers/URL/token 不写日志
 
-## 7. IPC 与播放状态
+## 7. 播放状态
 
-- [x] JSON IPC 客户端：命令、事件、缓冲区
-- [x] 观察 `time-pos`、`duration`、`pause`、`eof-reached`
-- [x] `file-loaded` 后加载字幕
-- [x] 暂停/seek/退出时立即 flush 进度
-- [x] 播放器异常退出时停止上报、提示用户
+- [x] `positionChanged` / `durationChanged` / `playbackStateChanged` / `mediaStatusChanged`
+- [x] 暂停/seek/退出/播完时立即 flush 进度
+- [x] 播放错误上抛到界面（不再静默黑屏），提供重试/返回
+- [x] 播完显示结束卡片，5 秒倒计时自动下一集
 - [x] 单实例播放：新播放先停旧播放
 
 ## 8. 进度上报
@@ -98,13 +97,11 @@
 ## 9. 安全
 
 - [x] payload 校验：`item_id`、`http/https` URL、headers、token、数值范围
-- [x] WebView 导航限制在配置的服务器 origin
+- [x] WebView 导航限制在配置的服务器 origin（Qt `acceptNavigationRequest`）
 - [x] JS Bridge 只接受合法 payload，不执行任意命令
-- [x] mpv 路径只允许可执行文件，不拼接 shell
-- [x] IPC 本地 socket/pipe，随机名，权限 0700
 - [x] 日志脱敏：URL/token/headers 不落盘
 - [x] HTTPS 证书校验；自签名需用户显式信任（后续）
-- [x] 不保存密码/Cookie；只保存服务器地址与 mpv 路径
+- [x] 不保存密码/Cookie；只保存服务器地址、缓存上限与证书开关
 
 ## 10. 图标与打包
 
@@ -112,26 +109,25 @@
 - [x] `assets/icon.png` 512×512
 - [x] `assets/icon.ico`（Windows）
 - [x] `assets/icon.icns` 生成脚本（macOS）
-- [x] PyInstaller spec：`console=False`，包含 assets/settings.html/vendor mpv
+- [x] PyInstaller spec：`console=False`，包含 assets（不含任何播放器二进制）
 - [x] Windows 构建脚本
 - [x] macOS `.app` 构建脚本、签名/公证说明
-- [x] `scripts/prepare_mpv.py`：把 mpv 二进制放入 `vendor/mpv/<platform>/`
-- [x] README：运行、配置、构建、mpv 准备、限制
+- [x] README：运行、配置、构建、限制
 
 ## 11. 测试
 
 - [x] 配置校验单元测试
 - [x] payload 校验/脱敏单元测试
 - [x] headers 格式化单元测试
-- [x] mpv 发现顺序单元测试
+- [x] 代理 TLS 策略 / Content-Type 兜底单元测试
 - [x] 进度上报 payload/重试/401/单飞测试（httpx.MockTransport）
 - [x] Python `compileall` 通过
 - [x] `pytest desktop/tests` 通过
 - [x] 前端 `npm run build` 通过
 - [x] 服务端 `pytest` 通过
 - [x] 手工：设置保存、WebView 启动
-- [ ] 手工：无 mpv 时的播放错误提示
-- [ ] 手工：有 mpv 时播放、headers、暂停/退出进度
+- [ ] 手工：自签名片源播放（勾选「允许自签名 HTTPS」）
+- [ ] 手工：暂停/退出/播完的进度回写与续播
 - [ ] 手工：macOS/Windows 各一次（本轮至少验证当前平台）
 
 ## 12. 本轮已实现（纯原生硬件加速与 6 项缺陷彻底修复）
@@ -169,3 +165,20 @@
 - 本地流媒体代理：`LocalStreamingProxy` 正确透传 User-Agent/Referer，处理 302 重定向与分片 Range 字节范围请求。
 - 选集高亮与指示：`drawer.py` 正确识别后端 `id` 字段并指示当前播放剧集。
 - 鼠标与反馈：鼠标移动无卡顿，倍速提示移至顶部透明胶囊，进度缓冲平滑稳定。
+
+## 14. v1.3 本轮修复（黑屏 / 登录 / 设置 / 云端去 mpv）
+
+- [x] **黑屏根因**：`proxy.py` 用裸 urllib 抓流，未遵循 `allow_self_signed_https`，
+      自签名片源一律 `CERTIFICATE_VERIFY_FAILED` → 502 → `QMediaPlayer: Could not open file`。
+      已改为按设置注入 SSL context，并透传 `Range/If-Range`、补齐 `Content-Type`/`Accept-Ranges`。
+- [x] 播放失败不再静默：`errorOccurred` 接入界面，显示「播放失败 + 原因 + 重试/返回」。
+- [x] **每次启动重新登录**：`QWebEngineView()` 默认 profile 是 off-the-record，
+      `setPersistentStoragePath()` 无效。改为命名 profile + `ForcePersistentCookies` + 独立 cache 目录。
+- [x] **设置页只能退出/保存并进入**：改为原生 `QDialog`，不导航主 WebView；
+      保存后热生效（证书回调、代理 TLS 标志），只有服务器地址变化才重新加载。
+- [x] `_webview_allow_self_signed` 在 Qt 分支从未初始化 → 勾选自签名必然要求重启；已修复。
+- [x] 续播丢失：`seek()` 在 duration 未知时把目标 clamp 到 0；改为加载完成后应用起播位置。
+- [x] 播放器上/下一集、选集、自动连播失效：`strmaction:request-play` 无人监听；前端已接入。
+- [x] 播完/错误卡片、内嵌字幕与音轨切换、导航白名单、`settings.html` 移除。
+- [x] 打包剔除 `vendor/mpv`（124MB）与 `pywebview` 依赖。
+- [x] `desktop` 38 tests / `backend` 61 tests / 前端 `tsc + vite build` 全通过。

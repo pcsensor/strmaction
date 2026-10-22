@@ -1,7 +1,7 @@
 # StrmAction Companion（Android 伴侣 App）
 
 **手机优先、兼容电视**的 Android 壳：一个 WebView 加载 StrmAction 网页，
-播放交给原生 **Media3 / ExoPlayer** 作为默认播放内核，外部 mpv 作为兜底。
+播放交给原生 **Media3 / ExoPlayer**（v1.3 起不再有外部播放器兜底）。
 
 体积约 5 MB，不含网络代理、不含刮削、不中转视频流。
 
@@ -77,7 +77,7 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
                  ├─ resume_ms 续播
                  ├─ 每 5 秒 POST /api/items/{id}/progress（Bearer play_token）
                  ├─ 播完 → 上报 finished + 用 next_item_id 无缝连播
-                 └─ 失败 → 弹窗 → 外部 mpv 兜底
+                 └─ 失败 → 弹窗说明原因 + 重试/返回
 ```
 
 ### 播放控件与手势
@@ -95,7 +95,7 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 - **40% 侧滑抽屉（全面替代原生丑陋弹窗）**：
   - **选集**：点击后从右侧平滑滑出抽屉面板，占据屏幕 40% 宽度，点击左侧 60% 遮罩区域即可即刻收回；卡片式分集列表，当前播放集高亮金黄色标签并带 `▶` 标志，已看集打勾 `✓`；
   - **倍速面板**：从右侧平滑滑出，单列展示 `0.5x`~`3.0x` 倍速，直接集成长按倍速配置；
-  - **右上角更多菜单**：右侧滑出暗黑毛玻璃面板，包含字幕、音轨切换、倍速与外部 mpv 选项；
+  - **右上角更多菜单**：右侧滑出暗黑毛玻璃面板，包含字幕、音轨切换、倍速与下一集；
 - **手势控制**：
   - 单击唤起/收起控件（播放时 4.5s 自动淡出）；
   - 双击屏幕左侧 35% 区域快退 10 秒（居中提示 `⏪ 快退 10 秒`）；
@@ -112,7 +112,7 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 - 数据源：Media3 `OkHttpDataSource` + `setDefaultRequestProperties(headers)`；
   OkHttp 自动跟随 302（AList → 百度 CDN）、支持 HTTP/2/TLS 重试，云端媒体库兼容性更好；
 - 直连 15 秒仍未就绪时自动逐级切换传输参数（保留 pan.baidu.com UA；首轮 Range: bytes=0-、identity、HTTP/1.1；后续 HTTP/2）；
-  仍失败则明确提示「连接网盘超时」并提供「用 MPV 打开」，不再无限转圈；
+  仍失败则明确提示「连接网盘超时」并提供「重试 / 返回」，不再无限转圈；
 - 换库/换源时自动重建播放器，保证请求头跟随当前媒体库；
 - 心跳失败不阻塞播放：本地队列最多 3 条，下一跳补发；`401` 提示重新播放；
 - 进度钳制：`0 <= position <= duration`；暂停、`onStop`、`STATE_ENDED` 各补写一次；
@@ -158,30 +158,16 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
   （缓存层之下），只统计真正走网络的字节，命中磁盘时自然归零；500ms 采样一次并做
   非对称平滑（上升快、下降慢）。
 - **边界**：预取需要 `Content-Length`（渐进式 MP4）；HLS 分段拿不到整片长度时自动跳过
-  预取，播放器仍按内存缓冲正常播放。只控制内置 Media3；通过 Intent 拉起的「外部 mpv」
-  无法传参，仍由 `mpv.conf` 决定缓存；服务端 `player.cache_limit_mb` 现在只影响 mpv。
+  预取，播放器仍按内存缓冲正常播放。缓存策略全部由 App 设置页控制。
 
-## 外部 mpv 兜底（E.6 的 6 个坑）
+## 播放失败的处理
 
-| # | 处理 |
-|---|---|
-| 1 | `setDataAndType(uri, "video/any")`，兼容无扩展名的 SmartStrm 地址 |
-| 2 | `setPackage("is.xyz.mpv")`，绝不弹系统选择器 |
-| 3 | 使用 `registerForActivityResult`，**不添加** `FLAG_ACTIVITY_NEW_TASK` |
-| 4 | Manifest 声明 `<queries><package android:name="is.xyz.mpv"/></queries>` |
-| 5 | 分支包名不同（mpvKt 等）→ 首次设置页可改 |
-| 6 | `onResume` 里 `webView.requestFocus()`，避免遥控器焦点丢失 |
+v1.3 起移除了「外部 mpv 兜底」（`MpvFallback`、`playExternal` 桥、设置页的 mpv 包名、
+`<queries>` 里的 `is.xyz.mpv` 全部删除），失败时改为：
 
-外部 mpv 的 `mpv.conf`：
-
-```ini
-http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/
-cache=yes
-demuxer-max-bytes=256MiB
-```
-
-> 这段只影响外部 mpv；内置 Media3 播放器的缓存由 App 设置页/播放器菜单控制，
-> 不会读取 `mpv.conf`。
+1. 在弹窗里给出可读原因（Media3 错误名 + 底层 message）；
+2. 提供「重试」（从当前位置重播）与「返回」；
+3. 用户可回到列表改用桌面端或网页端观看。
 
 ## 网页上传支持
 
@@ -208,16 +194,14 @@ app/src/main/java/top/strmaction/companion/
 ├─ PlaybackDiskCache.kt # 会话级磁盘缓存（SimpleCache / 退出清理）
 ├─ PlaybackPrefetcher.kt # 后台磁盘预取（按缓冲大小提前拉取后续内容）
 ├─ NetworkSpeedMeter.kt # 实时网速统计（TransferListener + 平滑采样）
-├─ MpvFallback.kt       # 外部 mpv intent
-└─ SetupActivity.kt     # 服务器地址 / mpv 包名 / 缓冲大小 / 磁盘缓存上限
+└─ SetupActivity.kt     # 服务器地址 / 缓冲大小 / 磁盘缓存上限 / 自签名证书
 ```
 
 ## 已知限制
 
-- 复杂 ASS 特效字幕无法还原（Media3 只支持基础样式），需要原样显示请用 mpv；
+- 复杂 ASS 特效字幕无法还原（Media3 只支持基础样式），需要原样显示可在桌面端观看；
 - 杜比视界 P5 在非 DV 设备上颜色异常，属于设备能力限制；
-- 外部 mpv 路径只能拿到退出时的进度，断电/强杀会丢最后一段；
-- 外部 mpv 无法接收缓存上限参数，其缓存仍由 `mpv.conf` 控制；
+- 个别编码（DTS/TrueHD 音轨、部分 HEVC 10bit）依赖设备解码能力；
 - 电视端浏览器内核由系统 WebView 提供，Android 7 以下不再保证体验。
 
 

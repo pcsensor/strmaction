@@ -15,7 +15,6 @@ import {
   Folder,
   ImagePlus,
   Info,
-  MonitorPlay,
   Play,
   RefreshCw,
   Search,
@@ -79,9 +78,6 @@ export function DetailPage() {
   const toast = useToast()
   const auth = useAuthState()
   const isAdmin = auth.data?.user?.role === 'admin'
-  const canExternalPlay =
-    typeof window !== 'undefined' && Boolean(window.StrmActionNative?.playExternal)
-  const showManageMenu = isAdmin || canExternalPlay
   const markWatched = useMarkWatched()
   const refresh = useRefreshItem()
   const unlock = useUnlockItem()
@@ -221,8 +217,6 @@ export function DetailPage() {
   const seriesStarted = Boolean(item.series_progress && item.series_progress.watched > 0)
 
   const play = () => start(playTarget, { mediaFileId: selectedMedia?.id })
-  const playExternal = () =>
-    start(playTarget, { mediaFileId: selectedMedia?.id, mode: 'external' })
   const toggleWatched = async () => {
     const target = isSeries || isSeason ? item.id : playTarget
     if (!target) return
@@ -504,7 +498,7 @@ export function DetailPage() {
                   {allWatched ? t('common.markUnwatched') : t('common.markWatched')}
                 </button>
 
-                {showManageMenu ? (
+                {isAdmin ? (
                   <div className="relative">
                     <button
                       type="button"
@@ -515,23 +509,13 @@ export function DetailPage() {
                       className="btn-ghost gap-2 px-5 py-3.5"
                     >
                       <Edit3 className="h-4 w-4" />
-                      {isAdmin ? '管理' : t('detail.more')}
+                      '管理'
                     </button>
                     {menuOpen ? (
                       <div
                         className="absolute left-0 top-[calc(100%+8px)] z-30 w-56 overflow-hidden rounded-2xl border border-white/10 bg-[#0e1219]/97 p-1.5 shadow-lift backdrop-blur-xl"
                         onClick={(event) => event.stopPropagation()}
                       >
-                        {canExternalPlay ? (
-                          <MenuButton
-                            icon={MonitorPlay}
-                            label={t('detail.playExternal')}
-                            onClick={() => {
-                              setMenuOpen(false)
-                              void playExternal()
-                            }}
-                          />
-                        ) : null}
                         {isAdmin ? (
                           <>
                             <MenuButton

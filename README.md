@@ -9,8 +9,9 @@
 
 SmartStrm 生成的 `.strm` 文件里只有一行网盘解析地址。StrmAction 扫描这些文件，用
 **TMDB + TVDB** 自己刮削元数据，提供 VidHub / SenPlayer 级别的浏览界面；用户点播放时，
-把该集 `.strm` 里的 URL 交给播放器：**伴侣 App 内置 Media3 播放（默认，5 秒进度心跳）**，
-失败或手动选择时降级到外部 mpv，桌面浏览器可用本机 mpv，纯网页兜底复制链接。
+把该集 `.strm` 里的 URL 交给播放器：**StrmAction 桌面端内嵌 Qt 播放器（5 秒进度心跳）**、
+**伴侣 App 内置 Media3**，Android 浏览器可跳转系统播放器，纯网页兜底复制链接。
+（v1.3 起不再依赖 mpv，服务端也不会启动任何播放器进程。）
 
 ```
 SmartStrm 生成 .strm（内容 = 网盘解析地址）
@@ -22,12 +23,12 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 用户浏览（伴侣 App / 手机浏览器 / 桌面 / TV）
         │  点击播放
         ▼
-伴侣 App 内置 Media3（默认） / mpv（兜底）──(302)──► Alist ──(302)──► 百度 CDN
+桌面端内嵌播放器 / 伴侣 App 内置 Media3 ──(302)──► Alist ──(302)──► 百度 CDN
         │
         └─ 全程不经过 StrmAction，服务端零中转、零带宽、零转码
 ```
 
-**播放请求头（UA/Referer）由服务端按库下发**，内置播放器与 mpv 都会带上；
+**播放请求头（UA/Referer）由服务端按库下发**，桌面端与伴侣 App 的内置播放器都会带上；
 服务端对视频数据**永不发起请求**，只读取 `.strm` 文本、下载海报与背景图。
 
 ## 功能
@@ -41,7 +42,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | 元数据 | 17 项字段、季/集详情、剧照、演职员头像、预告片、合集、分级、别名 |
 | 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
 | 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
-| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定、**缓存上限与缓冲进度**）、桌面端原生硬件加速内嵌播放器（QVideoWidget + 内置轻量流媒体代理，零外部二进制依赖与路径配置，三层缓冲条/40% 抽屉/全套键盘控制/顶部半透明长按 2.0x 倍速）、外部 mpv 兜底、浏览器 `intent://`、复制链接 |
+| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定、**缓存上限与缓冲进度**）、桌面端原生硬件加速内嵌播放器（QVideoWidget + 内置轻量流媒体代理，零外部二进制依赖与路径配置，三层缓冲条/40% 抽屉/全套键盘控制/顶部半透明长按 2.0x 倍速）、浏览器 `intent://`、复制链接（v1.3 移除 mpv 依赖） |
 | 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发、支持从「继续观看」移除（保留进度与断点）、多用户隔离 |
 | 用户与权限 | 多用户体系（管理员 + 普通用户）、细粒度媒体库访问授权、播放进度与已看记录多用户完全隔离、个人播放偏好（设置页「我的播放方式」）、用户管理与密码重置后台（`/users`） |
 | 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看（支持快捷移除且保留媒体库进度）、分类横滑、详情、选集、搜索、用户管理、设置、任务、待修正列表、首次向导 |
@@ -55,9 +56,9 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
   - **全局内容隔离**：首页 Hero 轮播、继续观看、最近添加、分类横滑、搜索与条目详情全局按用户媒体库授权范围严格过滤，彻底杜绝越权访问。
   - **播放进度与已看独立**：每个用户的播放进度、断点与已看状态完全独立，换设备换账号互不干扰。
   - **后台与个人管理**：内置 `/users` 用户管理控制台，管理员可直观增删改查用户、重置密码、勾选媒体库分配；支持各用户自主修改个人登录密码。
-  - **设置分层**：普通用户打开「设置」只看到「我的播放方式」「安全」「关于」，可自选 `builtin / external_mpv / browser_intent / copy / auto` 与失败回退提示；`desktop_mpv`（服务器桌面 mpv）仅管理员可用。设置页会显示「当前设备实际使用」并对不支持的播放方式给出降级提示。全局播放器默认、库管理、元数据源等仍仅管理员可改，`/api/export`、`/api/import` 同样要求管理员。
-- **播放**：伴侣 App 内置 Media3 成为默认路径；5 秒进度心跳、`play_token` 回传、播完无缝连播，
-  外部 mpv 降级为兜底；播放请求头按媒体库下发。
+  - **设置分层**：普通用户打开「设置」只看到「我的播放方式」「安全」「关于」，可自选 `builtin（伴侣 App 内置）/ browser_intent（Android 外部播放器）/ copy（复制链接）/ auto` 与失败回退提示。设置页会显示「当前设备实际使用」并对不支持的播放方式给出降级提示。全局播放器默认、库管理、元数据源等仍仅管理员可改，`/api/export`、`/api/import` 同样要求管理员。
+- **播放**：桌面端内嵌 Qt 播放器与伴侣 App 内置 Media3；5 秒进度心跳、`play_token` 回传、播完无缝连播；
+  播放请求头按媒体库下发。v1.3 起服务端不再启动 mpv，`external_mpv` / `desktop_mpv` 模式已下线。
 - **播放控件主流化与长按倍速**：全面重构伴侣 App 播放器 UI，换用现代主流矢量图标；新增屏幕中心
   悬浮大播放键、双击左/右快退快进手势与反馈、长按触感震动极速播放，并支持自定义长按倍速（1.5x~3.0x）。
 - **40% 抽屉交互与主流界面**：选集、倍速与更多菜单采用右侧 40% 侧滑抽屉取代传统弹窗；返回键在全屏与非全屏模式下均直接退出播放。
@@ -75,7 +76,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
   - Android 伴侣端播放器解耦 40% 右侧抽屉 (`PlayerDrawer`)、音轨字幕 (`PlayerTrackHelper`) 与倍速管理 (`PlayerSpeedHelper`)。
   - 修复后端图片处理误转 RGB 导致 Logo 出现黑框的问题，原生保留 WebP 8-bit Alpha 透明通道。
 - **后端**：`config.example.yaml` 与 `player.*`（builtin / 心跳 / `play_token` /
-  请求头 / mpv 包名）对齐。
+  请求头）对齐。
 
 截图：
 
@@ -280,13 +281,15 @@ cd frontend && npm run build
 | mode | 使用方 | 进度 | 说明 |
 |---|---|---|---|
 | `builtin` | 伴侣 App | **5 秒心跳** | 默认；Media3 解码、直连网盘 |
-| `external_mpv` | 伴侣 App | 退出时一次 | 调起手机/电视本机 mpv；桌面浏览器会明确提示并降级为 `copy` |
 | `browser_intent` | Android 浏览器 | 无 | 无伴侣 App 时的降级；桌面浏览器降级为 `copy` |
-| `desktop_mpv` | 桌面浏览器（后端同机，仅管理员） | 5 秒（JSON IPC） | 由服务端 spawn mpv；普通用户自动降级为 `copy`/`intent` |
-| `direct` | StrmAction 桌面端 | 由桌面端上报 | 服务端只返回 URL/headers/play_token，桌面端内置原生播放器播放 |
+| `direct` | StrmAction 桌面端 | 由桌面端上报 | 服务端只返回 URL/headers/play_token，桌面端内嵌播放器播放 |
 | `copy` | 任意 | 无 | 最终兜底 |
 
-> 桌面浏览器没有权限直接启动用户电脑上的程序：选 `builtin` / `external_mpv` 会收到明确的降级提示并复制播放地址。要真正在本机 mpv 打开，需要桌面伴侣或协议助手（后续能力）。
+> 桌面浏览器没有权限直接启动用户电脑上的程序：选 `builtin` 会收到明确的降级提示并复制播放地址；
+> 需要原生播放时请使用 StrmAction 桌面端（`direct`）或伴侣 App（`builtin`）。
+>
+> v1.3 起 `external_mpv` / `desktop_mpv` 已下线：服务端与伴侣 App 都不再依赖 mpv，旧配置里的
+> `mpv_path` / `mpv_extra_args` / `mpv_package` / `enable_progress` 会在读取时被丢弃。
 >
 > `POST /api/play/{item_id}` 只负责下发 `play_url / headers / resume_ms / play_token /
 next_item_id`，并带 `requested_mode / downgraded / downgrade_reason` 说明是否发生降级。`play_token` 是 item 级、12 小时有效的进度写入凭证，原生播放器**不需要**也不接触会话 Cookie。
@@ -297,7 +300,7 @@ next_item_id`，并带 `requested_mode / downgraded / downgrade_reason` 说明�
   使用 Media3 `OkHttpDataSource` 自动跟随 AList → 百度 CDN 的 302，兼容 HTTP/2/TLS 重试；
 - 从 `resume_ms` 起播，硬解失败自动回退软解；暂停、退后台、播完各补写一次进度；
 - `STATE_ENDED` 用 `next_item_id` 无缝连播，不黑屏、不跳转；
-- 播放器错误 → 弹窗「用 mpv 打开」；菜单支持字幕/音轨/倍速/下一集/外部 mpv；
+- 播放器错误 → 弹窗提示原因并支持重试；菜单支持字幕/音轨/倍速/下一集；
 - 底部控制条：上一集 / 播放暂停 / 下一集、进度条、**选集（同剧全部剧集）/ 倍速 / 全屏**；
   右侧中间提供**锁定**按钮，锁定后只保留解锁入口；
 - **缓存上限与缓冲进度**：设置页可设 0–2048MB（0=最小预读），播放器菜单可快捷切换；
@@ -305,52 +308,27 @@ next_item_id`，并带 `requested_mode / downgraded / downgrade_reason` 说明�
 - 手机端支持画中画和全屏横屏，电视端支持遥控器左右 ±10s、确定暂停、上下呼出菜单。
 
 > 缓存上限只作用于客户端预读，不改变服务端「不中转、不缓存视频」的边界。
-> 伴侣 App 的「外部 mpv」无法传参，该设置不生效；桌面端 mpv 由 StrmAction 启动，可覆盖 `mpv.conf` 的缓存参数。
+> 服务端 `player.cache_limit_mb` 只作为默认值下发，伴侣 App 与桌面端设置页均可覆盖。
 
-### 外部 mpv（兜底）
+### StrmAction 桌面端（内嵌播放器）
 
-```bash
-mpv --no-terminal --force-window \
-    --start=123.4 \
-    --http-header-fields="User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/" \
-    "<strm url>"
-```
+桌面端加载现有网页，点播放时由网页请求 `mode=direct` 拿到 `play_url / headers / play_token`，
+再交给本机内嵌的 Qt 播放器：
 
-Android 上由伴侣 App 用 `video/any` + `setPackage("is.xyz.mpv")` 拉起，退出时读取
-`position` / `duration` 回写；未安装 mpv 会提示而不是崩溃。
-`mpv.conf` 只需配置一次请求头：
-
-```ini
-http-header-fields=User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/
-cache=yes
-demuxer-max-bytes=256MiB
-```
-
-> 这段只影响外部 mpv。伴侣 App 内置 Media3 的缓存由 App 设置页/播放器菜单控制，
-> 服务端 `player.cache_limit_mb` 只作为默认值下发；桌面端由设置页覆盖 `mpv.conf`。
-
-### 桌面 mpv
-
-后端与 mpv 同机时，`player.mode=desktop_mpv` 会自动 spawn mpv，并通过 JSON IPC 每 5 秒回写进度：
-
-```bash
-mpv --no-terminal --force-window \
-    --start=123.4 \
-    --http-header-fields="User-Agent: pan.baidu.com,Referer: https://pan.baidu.com/" \
-    --input-ipc-server=/tmp/strmaction-xxx.sock \
-    "<strm url>"
-```
-
-> Docker 容器内没有显示/音频设备，桌面 spawn 只适合**本机直接运行后端**的部署方式。
-> 使用 Docker 时请用伴侣 App 或 `copy` 模式。
+- **零外部依赖**：Qt Multimedia（FFmpeg 后端）随应用打包，不再需要安装 mpv 或配置路径；
+- **防盗链**：本地环回代理 `127.0.0.1:<随机端口>` 注入 UA / Referer / Cookie，并跟随 302；
+  「允许自签名 HTTPS 证书」开关同时作用于网页、代理与进度上报；
+- **进度回传**：5 秒心跳 + 暂停/退出/播完立即补写，`Authorization: Bearer <play_token>`；
+- **登录保持**：使用持久化的 WebEngine profile（cookie / localStorage 落盘），重启免登录；
+- **设置**：原生对话框（服务器地址 / 缓存上限 / 自签名证书），保存即时生效、不打断当前页面；
+- **字幕**：支持容器内嵌字幕与音轨切换；外挂 `.srt/.ass` 暂不支持内嵌播放器。
 
 ### 进度粒度
 
 | 端 | 进度来源 | 粒度 | 断点续播 |
 |---|---|---|---|
+| StrmAction 桌面端 | `positionChanged` 每 5s + 暂停/退出/播完补写 | **准实时** | ✅ |
 | 伴侣 App · 内置 Media3 | 5s 心跳 + 暂停/退后台补写 | **准实时** | ✅ |
-| 伴侣 App · 外部 mpv | 退出时的 result intent | 每次退出一次 | ✅（可能丢最后一段） |
-| 桌面 mpv（IPC） | `time-pos` 每 5s | 准实时 | ✅ |
 | 纯网页（Chrome `intent://`） | 无 | 拿不到 | ❌（可手动标记） |
 
 写入规则：≥90% 或 `finished=true` → 标记已看并把位置归零；否则 UPSERT；
@@ -388,11 +366,10 @@ adb install -r companion/app/build/outputs/apk/release/app-release.apk
 伴侣 App 只负责：
 
 1. WebView 加载同一个 StrmAction 页面（电视自动带 `?tv=1`，触摸设备永远按手机处理）；
-2. 提供 `window.StrmActionNative.play(itemId) / playExternal(itemId) / openSettings()` 桥；
+2. 提供 `window.StrmActionNative.play(itemId) / openSettings()` 桥；
 3. 原生层带 Cookie 请求 `/api/play/{itemId}`，用 Media3 播放并每 5 秒用 `play_token` 回传进度；
 4. 网页只传 `itemId`，**不接触播放 URL 与 token**；返回后刷新「继续观看」；
-5. 外部 mpv 兜底：`type=video/any`、`setPackage`、不加 `FLAG_ACTIVITY_NEW_TASK`、
-   Manifest 声明 `<queries>`，返回后恢复 WebView 焦点。
+5. 播放失败时弹窗给出原因，提供「重试 / 返回」（v1.3 起不再拉起外部播放器）。
 
 网页里的海报/背景图上传也支持：Android 侧通过 `onShowFileChooser` 调起系统文件选择器。
 
@@ -468,10 +445,9 @@ python scripts/seed_demo.py --base-url http://127.0.0.1:8080
 
 ## 已知限制
 
-- 纯网页 `intent://` 无法获取播放进度，需伴侣 App 或桌面 mpv；
-- 桌面 mpv 的 IPC 进度在 Linux/macOS 完整可用，Windows 命名管道为 best-effort；
+- 纯网页 `intent://` 无法获取播放进度，需桌面端或伴侣 App；
+- 桌面端内嵌播放器只支持容器内嵌字幕，外挂 `.srt/.ass` 暂不支持（可用伴侣 App 观看）；
 - 内置播放器的复杂 ASS 特效字幕无法还原；DV P5 在非 DV 设备上颜色可能异常；
-- 外部 mpv 路径只能拿到退出时的进度，断电/强杀会丢最后一段；
 - 内置播放器的字幕延迟调节（±0.5s）Media3 1.4 未提供公开 API，暂未实现；
 - 重复条目合并目前仅支持电影 / 视频；
 - 导入备份不恢复 `.strm` URL（安全考虑），需要重新扫描；
@@ -489,7 +465,7 @@ backend/
 │  ├─ scanner/           walker（遍历 + .strm 读取）/ sync（增量入库）
 │  ├─ parser/            rules（模板 + 中文规则）/ guess（guessit 兜底）
 │  ├─ scraper/           base / registry / tmdb / tvdb / nfo / matcher / merge / service / cache
-│  ├─ players/           web_intent / mpv_ipc / clipboard
+│  ├─ players/           web_intent / clipboard（v1.3 移除 mpv_ipc）
 │  ├─ images.py          下载队列 + WebP 变体（保持透明Alpha） + 主题色
 │  ├─ jobs.py            TaskManager + APScheduler
 │  └─ security.py        argon2 + 签名会话 + 登录限流 + play_token
@@ -502,7 +478,7 @@ frontend/src/
 ├─ i18n/zh-CN.ts         全部界面文案
 └─ hooks/                useStartPlayback useTVMode（空间导航）
 
-companion/               Android WebView 壳 + Media3 播放器（解耦 PlayerDrawer / 音轨 / 倍速）+ JS Bridge + mpv 兜底
+companion/               Android WebView 壳 + Media3 播放器（解耦 PlayerDrawer / 音轨 / 倍速）+ JS Bridge
 desktop/                 Windows/macOS 桌面端（PySide6 + 原生 QVideoWidget 硬件加速 + 本地流媒体代理 + direct 播放/进度上报）
 scripts/                 make_samples.py / seed_demo.py
 docs/screenshots/        截图
@@ -520,8 +496,8 @@ Dockerfile / docker-compose.yml / docker-compose.cloud.yml / config.example.yaml
 | 目录扫描 + 文件解析（增量/多版本/规范支持） | ✅ 解析/扫描单测覆盖 |
 | 元数据刮削（双源 + @register_provider + 匹配 + 修正 + 刷新 + 图片透明WebP + NFO） | ✅ 映射/打分/跨源/锁定测试覆盖；真实 Key 需自行联调 |
 | 前端浏览（轮播横滑/继续观看移除管理/详情/选集/搜索/骨架屏） | ✅ 截图验证 |
-| 播放分发（builtin / external / desktop / copy + 5s心跳 + play_token） | ✅ API 与 token 测试覆盖；桌面 mpv 需真机验证 |
+| 播放分发（builtin / browser_intent / direct / copy + 5s心跳 + play_token） | ✅ API 与 token 测试覆盖 |
 | TV 适配与体验打磨（TV 布局/动效/任务页/待修正） | ✅ 自动化与实机验证 |
-| 伴侣 App + 内置 Media3（矢量UI / 40%抽屉 / 双击手势 / 长按倍速 / 全屏退出 / mpv 兜底） | ✅ 源码构建通过，实机验证通过 |
+| 伴侣 App + 内置 Media3（矢量UI / 40%抽屉 / 双击手势 / 长按倍速 / 全屏退出） | ✅ 源码构建通过，实机验证通过 |
 
 

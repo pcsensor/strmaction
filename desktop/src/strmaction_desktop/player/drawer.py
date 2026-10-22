@@ -60,6 +60,7 @@ class PlayerDrawer(QWidget):
         self._audio_tracks: list[dict] = []
         self._current_sid: Any = None
         self._current_aid: Any = None
+        self._subtitle_hint: str = ""
 
         self._init_ui()
 
@@ -174,6 +175,7 @@ class PlayerDrawer(QWidget):
         audio_tracks: Sequence[dict] | None = None,
         current_sid: Any = None,
         current_aid: Any = None,
+        subtitle_hint: str | None = None,
     ) -> None:
         if playlist is not None:
             self._playlist = list(playlist)
@@ -190,6 +192,8 @@ class PlayerDrawer(QWidget):
             self._current_sid = current_sid
         if current_aid is not None:
             self._current_aid = current_aid
+        if subtitle_hint is not None:
+            self._subtitle_hint = subtitle_hint
 
         # Auto-switch to speed/tracks if single video has no playlist
         if len(self._playlist) <= 1 and self._current_tab == "episodes":
@@ -323,21 +327,31 @@ class PlayerDrawer(QWidget):
             off_btn = QPushButton("关闭字幕", self.scroll_content)
             off_btn.setCursor(Qt.CursorShape.PointingHandCursor)
             off_btn.setFixedHeight(40)
-            is_off = self._current_sid in (None, "no", False, 0)
+            # Track id 0 is a valid track, so only the explicit sentinels count
+            # as "off". Comparing against 0/False used to highlight both.
+            is_off = self._current_sid is None or self._current_sid == "no"
             self._style_track_btn(off_btn, is_off)
             off_btn.clicked.connect(lambda: self.subtitle_selected.emit("no"))
             self.content_vbox.addWidget(off_btn)
 
             for sub in self._subtitles:
-                sid = sub.get("id") or sub.get("url")
+                sid = sub.get("id")
+                if sid is None:
+                    sid = sub.get("url")
                 label = sub.get("label") or sub.get("lang") or sub.get("title") or "字幕"
                 btn = QPushButton(label, self.scroll_content)
                 btn.setCursor(Qt.CursorShape.PointingHandCursor)
                 btn.setFixedHeight(40)
-                is_active = self._current_sid == sid
+                is_active = sid is not None and self._current_sid == sid
                 self._style_track_btn(btn, is_active)
                 btn.clicked.connect(lambda _c=False, s_id=sid: self.subtitle_selected.emit(s_id))
                 self.content_vbox.addWidget(btn)
+
+            if self._subtitle_hint:
+                hint = QLabel(self._subtitle_hint, self.scroll_content)
+                hint.setWordWrap(True)
+                hint.setStyleSheet("color: #8E9297; font-size: 11.5px; margin-top: 2px;")
+                self.content_vbox.addWidget(hint)
 
             # Audio tracks section
             audio_title = QLabel("音轨", self.scroll_content)

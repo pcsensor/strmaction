@@ -21,7 +21,6 @@ from ..preferences import effective_player, get_preference
 from ..schemas import CurrentUser
 from ..players import (
     ClipboardAdapter,
-    MpvIpcAdapter,
     PlayContext,
     WebIntentAdapter,
     clean_headers,
@@ -150,20 +149,12 @@ def _next_unwatched(
 # ---------------------------------------------------------------------------
 
 
-def _mpv_available(settings, engine, context: PlayContext) -> bool:
-    try:
-        return MpvIpcAdapter(settings, engine).available(context)
-    except Exception:  # pragma: no cover - 环境探测失败按不可用处理
-        return False
-
-
 def resolve_mode_detail(
     requested: str | None,
     context: PlayContext,
     settings,
     engine,
     player: dict | None = None,
-    allow_server_mpv: bool = True,
 ) -> tuple[str, str | None]:
     """返回 (实际 mode, 降级原因)；原因仅用于向用户解释，不影响播放。"""
     player = player or settings.player()
@@ -176,25 +167,13 @@ def resolve_mode_detail(
             return "builtin", None
         if context.is_android:
             return "browser_intent", None
-        if allow_server_mpv and _mpv_available(settings, engine, context):
-            return "desktop_mpv", None
         return "copy", None
     if mode == "builtin" and not context.is_companion:
         # 浏览器里没有原生播放器：Android 走 intent://，其余复制链接
         return ("browser_intent" if context.is_android else "copy"), "requires_companion"
-    if mode == "external_mpv" and not context.is_companion:
-        return ("browser_intent" if context.is_android else "copy"), "requires_companion"
     if mode == "browser_intent" and not context.is_android:
         # intent:// 是 Android Chrome 的能力，桌面/iOS 直接复制链接
         return "copy", "requires_android"
-    if mode == "desktop_mpv":
-        if context.is_companion:
-            return "builtin", "requires_desktop"
-        if not allow_server_mpv:
-            # 服务器 mpv 仅管理员可用；普通用户按设备降级。
-            return ("browser_intent" if context.is_android else "copy"), "admin_only"
-        if not _mpv_available(settings, engine, context):
-            return "copy", "mpv_unavailable"
     return mode, None
 
 
@@ -204,7 +183,6 @@ def resolve_mode(
     settings,
     engine,
     player: dict | None = None,
-    allow_server_mpv: bool = True,
 ) -> str:
     return resolve_mode_detail(
         requested,
@@ -212,7 +190,6 @@ def resolve_mode(
         settings,
         engine,
         player=player,
-        allow_server_mpv=allow_server_mpv,
     )[0]
 
 
@@ -426,7 +403,6 @@ async def play(
         settings,
         engine,
         player=player,
-        allow_server_mpv=user.role == "admin",
     )
 
     subtitle_payload = [
@@ -467,7 +443,6 @@ async def play(
         "progress_interval_ms": int(player.get("progress_interval_ms") or 5000),
         "cache_limit_mb": cache_limit_mb(player),
         "fallback_on_error": bool(player.get("fallback_on_error", True)),
-        "mpv_package": str(settings.player().get("mpv_package") or "is.xyz.mpv"),
         "subtitles": subtitle_payload,
         "media_file_id": media_id,
         "progress_updated_at": progress_updated_at,
@@ -509,25 +484,6 @@ async def play(
             )
         )
         result["mode"] = "copy"
-        result["play_url"] = play_url
-        result["headers"] = headers
-        result["play_token"] = token
-        result["next_item_id"] = next_episode_id
-        result["subtitles"] = subtitle_payload
-    elif mode == "desktop_mpv":
-        adapter = MpvIpcAdapter(settings, engine, user_id=user.id)
-        built = await adapter.build(
-            item=target,
-            media=media,
-            title=play_title,
-            resume_ms=resume_ms,
-            context=context,
-        )
-        result.update(built)
-        result["mode"] = built.get("mode") or "desktop_mpv"
-        if mode == "desktop_mpv" and result["mode"] == "copy":
-            result["downgraded"] = True
-            result["downgrade_reason"] = "launch_failed"
         result["play_url"] = play_url
         result["headers"] = headers
         result["play_token"] = token
