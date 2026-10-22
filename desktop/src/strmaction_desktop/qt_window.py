@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from urllib.parse import urlparse
 
-from PySide6.QtCore import QFile, QIODevice, QObject, QUrl, Signal, Slot
+from PySide6.QtCore import QFile, QIODevice, QObject, Qt, QUrl, Signal, Slot
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWebChannel import QWebChannel
 from PySide6.QtWebEngineCore import (
@@ -18,11 +17,10 @@ from PySide6.QtWebEngineCore import (
     QWebEngineSettings,
 )
 from PySide6.QtWebEngineWidgets import QWebEngineView
-from PySide6.QtWidgets import QDialog, QMainWindow, QMessageBox, QStackedWidget
+from PySide6.QtWidgets import QDialog, QMainWindow, QMessageBox
 
 from .config import webview_cache_dir, webview_storage_dir
 from .progress import ProgressReporter
-from .proxy import get_proxy
 from .player import PlayerView
 from .security import PlaybackPayload, config_error_message, parse_payload
 from .settings_dialog import SettingsDialog
@@ -166,17 +164,12 @@ class MainWindow(QMainWindow):
         self.resize(self.app.config.window_width, self.app.config.window_height)
         self.setMinimumSize(900, 640)
 
-        self._active_stream_id: str | None = None
-        self._proxy = None
         self._web_loaded = False
         self._cert_handler_on = False
         self.connection_checked.connect(self._apply_connection_result)
 
-        # Main stacked layout: 0 = Web, 1 = Embedded Player
-        self.stack = QStackedWidget(self)
-        self.setCentralWidget(self.stack)
-
         self._init_web_page()
+        self.setCentralWidget(self.web)
         self._init_player_page()
         self._install_shortcuts()
 
@@ -239,8 +232,6 @@ class MainWindow(QMainWindow):
         # A dead server must not leave the user on Chromium's error page with no
         # way back: fall back to the local error page (it has retry + settings).
         self.page.loadFinished.connect(self._on_load_finished)
-
-        self.stack.addWidget(self.web)
 
     def _on_load_finished(self, ok: bool) -> None:
         if ok:
@@ -344,10 +335,13 @@ class MainWindow(QMainWindow):
         profile.scripts().insert(user_script)
 
     def _init_player_page(self) -> None:
-        self.player_view = PlayerView(self)
+        self.player_view = PlayerView(None)
+        self.player_view.setWindowFlags(Qt.WindowType.Window)
+        self.player_view.setWindowTitle("StrmAction")
+        if self.windowIcon():
+            self.player_view.setWindowIcon(self.windowIcon())
         self.player_view.exit_requested.connect(self.close_player_and_return_to_web)
         self.player_view.next_episode_requested.connect(self.request_play_item)
-        self.stack.addWidget(self.player_view)
 
     # -- navigation -----------------------------------------------------
     def load_url(self, url: str) -> None:
@@ -425,15 +419,11 @@ class MainWindow(QMainWindow):
     def play_embedded(self, payload: PlaybackPayload) -> None:
         self._teardown_player()
 
-        # Switch to player page
-        self.stack.setCurrentWidget(self.player_view)
-        self.player_view.raise_()
-
-        # Register stream with local loopback proxy (TLS policy included)
-        self._proxy = get_proxy(tls_verify=not self.app.config.allow_self_signed_https)
-        stream_id = f"stream_{payload.item_id}_{int(time.time() * 1000)}"
-        self._active_stream_id = stream_id
-        local_url = self._proxy.register_stream(stream_id, payload.play_url, payload.headers)
+        # Cache size and TLS policy follow the desktop settings.
+        self.player_view.configure(
+            cache_limit_mb=self.app.config.cache_limit_mb,
+            tls_verify=not self.app.config.allow_self_signed_https,
+        )
 
         # Create progress reporter
         reporter = ProgressReporter(
@@ -447,24 +437,35 @@ class MainWindow(QMainWindow):
         )
         reporter.start()
 
-        # Load playback in PlayerView
-        self.player_view.load_playback(payload, local_url, reporter=reporter)
+        # Open player window matching current MainWindow geometry
+        self.player_view.setGeometry(self.geometry())
+        if self.isMaximized():
+            self.player_view.showMaximized()
+        else:
+            self.player_view.show()
+        self.player_view.raise_()
+        self.player_view.activateWindow()
+        self.hide()
+
+        # The direct CDN URL goes to the player: mpv sends the payload headers
+        # with every request, so the loopback proxy is no longer needed.
+        self.player_view.load_playback(payload, payload.play_url, reporter=reporter)
         if self.app.logger:
             self.app.logger.info("内嵌原生播放开始 item=%s", payload.item_id)
 
     def _teardown_player(self) -> None:
         self.player_view.stop_playback()
-        if self._active_stream_id and self._proxy is not None:
-            self._proxy.unregister_stream(self._active_stream_id)
-        self._active_stream_id = None
 
     def close_player_and_return_to_web(self) -> None:
-        was_playing = self.stack.currentWidget() is self.player_view
+        was_playing = self.player_view.isVisible()
         self._teardown_player()
 
-        if self.isFullScreen():
-            self.showNormal()
-        self.stack.setCurrentWidget(self.web)
+        if self.player_view.isFullScreen():
+            self.player_view.showNormal()
+        self.player_view.hide()
+        self.show()
+        self.raise_()
+        self.activateWindow()
         self.web.setFocus()
         if was_playing:
             # Refresh "continue watching" data now that progress changed.
@@ -479,14 +480,14 @@ class MainWindow(QMainWindow):
             window.dispatchEvent(new CustomEvent('strmaction:request-play', {{ detail: {{ itemId: {int(item_id)} }} }}));
         }}
         """
-        if self.stack.currentWidget() is self.player_view:
-            # The web app must run the play request, so hand control back first.
+        if self.player_view.isVisible():
             self._teardown_player()
-            self.stack.setCurrentWidget(self.web)
         self.page.runJavaScript(js_code)
 
     def closeEvent(self, event) -> None:
         self.close_player_and_return_to_web()
+        self.player_view.shutdown()
+        self.player_view.close()
         cfg = self.app.config
         cfg.window_width = self.width()
         cfg.window_height = self.height()

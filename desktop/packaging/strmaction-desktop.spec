@@ -4,9 +4,10 @@
 Build from the desktop/ directory:
     pyinstaller packaging/strmaction-desktop.spec --noconfirm --clean
 
-The generated app name is StrmAction.  Playback is handled by Qt Multimedia
-(FFmpeg backend shipped inside the PySide6 wheel), so no external player
-binary is bundled.
+The generated app name is StrmAction.  Playback uses libmpv, so the shared
+library from src/strmaction_desktop/vendor/libmpv/<platform-arch>/ ships with
+the package; mpv_loader resolves it at runtime and the app falls back to Qt
+Multimedia when it is absent.
 """
 
 import sys
@@ -15,13 +16,22 @@ from pathlib import Path
 spec_dir = Path(SPECPATH).resolve()
 desktop = spec_dir.parent
 src = desktop / "src"
-assets = src / "strmaction_desktop" / "assets"
+package = src / "strmaction_desktop"
+assets = package / "assets"
+vendor = package / "vendor"
 
 datas = [(str(assets), "strmaction_desktop/assets")]
+# Keep the vendor layout intact: mpv_loader resolves the library through a
+# package-relative path, so it must not be flattened into the bundle root.
+if vendor.is_dir():
+    datas.append((str(vendor), "strmaction_desktop/vendor"))
 
 hiddenimports = [
+    "mpv",
     "PySide6.QtMultimedia",
     "PySide6.QtMultimediaWidgets",
+    "PySide6.QtOpenGL",
+    "PySide6.QtOpenGLWidgets",
     "PySide6.QtWebEngineWidgets",
     "PySide6.QtWebEngineCore",
     "PySide6.QtWebChannel",

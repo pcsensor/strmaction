@@ -26,7 +26,6 @@ from .config import (
     normalize_server_url,
 )
 from .logging_setup import setup_logging
-from .proxy import configure_proxy_tls
 from .version import __version__
 
 
@@ -131,6 +130,19 @@ class DesktopApp:
         self.window.retry_connection()
 
     # -- settings ------------------------------------------------------
+    def _push_player_settings(self) -> None:
+        """Forward cache/TLS settings to the playback engine, if it exists."""
+        window = self.window
+        if window is None:
+            return
+        try:
+            window.player_view.configure(
+                cache_limit_mb=self.config.cache_limit_mb,
+                tls_verify=not self.config.allow_self_signed_https,
+            )
+        except Exception:  # noqa: BLE001 - the window may not be built yet
+            pass
+
     def open_settings(self) -> None:
         if self.window is not None and hasattr(self.window, "open_settings_page"):
             self.window.open_settings_page()
@@ -162,8 +174,8 @@ class DesktopApp:
             log_level=self.config.log_level,
         ).normalized()
         self.config.save()
-        # Streaming proxy + certificate handler pick the new policy up live.
-        configure_proxy_tls(not self.config.allow_self_signed_https)
+        # The player picks the new cache/TLS policy up without a restart.
+        self._push_player_settings()
         self.logger.info("桌面端设置已保存，服务器=%s", server)
         return self.config.server_url != previous_server
 
@@ -183,11 +195,17 @@ class DesktopApp:
 
         from .qt_window import MainWindow
 
+        import os
+
+        # Enable GPU rasterization and zero-copy for QtWebEngine for smooth 60fps rendering
+        if "QTWEBENGINE_CHROMIUM_FLAGS" not in os.environ:
+            os.environ["QTWEBENGINE_CHROMIUM_FLAGS"] = (
+                "--enable-gpu-rasterization --enable-zero-copy"
+            )
+
         # Stable storage locations for QtWebEngine (cookies, localStorage).
         QCoreApplication.setOrganizationName(APP_NAME)
         QCoreApplication.setApplicationName(APP_NAME)
-        # QtWebEngine requires this before the application object exists once
-        # other GPU-backed widgets (the video surface) live in the same window.
         QApplication.setAttribute(Qt.ApplicationAttribute.AA_ShareOpenGLContexts, True)
 
         qt_app = QApplication.instance() or QApplication(sys.argv)

@@ -1,13 +1,15 @@
-"""In-process media player controller wrapping PySide6 QtMultimedia.
+"""Fallback playback controller wrapping PySide6 QtMultimedia.
 
-Uses a native QMediaPlayer + QAudioOutput.
-Codec support comes from Qt's FFmpeg backend, so no external binary ships with
-the app.
+Used only when no libmpv can be loaded.  It keeps the same signal contract as
+MpvEngine so PlayerView needs no branches, but it inherently loses everything
+Qt Multimedia cannot do: per-request HTTP headers, external subtitles, a real
+demuxer cache, and MKV/TrueHD level format coverage.
 """
 
 from __future__ import annotations
 
 import logging
+from typing import Any, Sequence
 
 from PySide6.QtCore import QObject, QUrl, Signal, Slot
 from PySide6.QtMultimedia import QAudioOutput, QMediaMetaData, QMediaPlayer
@@ -22,7 +24,8 @@ class QtPlayerController(QObject):
     duration_changed = Signal(float)       # duration in seconds
     paused_changed = Signal(bool)          # True if paused
     speed_changed = Signal(float)          # playback rate
-    buffer_progress_changed = Signal(float)  # 0.0 to 1.0
+    buffered_ranges_changed = Signal(list)  # [(start_sec, end_sec)] absolute
+    network_speed_changed = Signal(float)  # bytes/s; negative means unknown
     loading_changed = Signal(bool)         # True when buffering/loading
     error_occurred = Signal(str)
     playback_finished = Signal()           # end of media reached
@@ -41,6 +44,7 @@ class QtPlayerController(QObject):
         self._speed: float = 1.0
         self._pending_seek_ms: int | None = None
         self._finished_emitted = False
+        self._last_buffer_progress: float = 0.0
 
         # Wire QMediaPlayer signals
         self._player.positionChanged.connect(self._on_position_changed)
@@ -56,6 +60,16 @@ class QtPlayerController(QObject):
     def set_video_output(self, video_widget) -> None:
         self._player.setVideoOutput(video_widget)
 
+    # -- settings the mpv backend honours but Qt cannot -----------------
+    def set_headers(self, headers: dict[str, str]) -> None:
+        """Qt cannot attach headers to a media source, so this is a no-op."""
+
+    def set_tls_verify(self, verify: bool) -> None:
+        """Certificate policy lives on the WebEngine profile, not the player."""
+
+    def set_cache_limit_mb(self, limit_mb: int) -> None:
+        """Qt manages its own buffering; the desktop cache setting is inert."""
+
     @property
     def duration(self) -> float:
         return self._duration_sec
@@ -66,13 +80,24 @@ class QtPlayerController(QObject):
 
     # -- loading --------------------------------------------------------
     @Slot(str, int)
-    def load_media(self, url: str, start_ms: int = 0) -> None:
-        """Start playback of ``url``, resuming at ``start_ms`` once it is loaded."""
+    def load_media(
+        self,
+        url: str,
+        start_ms: int = 0,
+        subtitles: Sequence[Any] = (),
+    ) -> None:
+        """Start playback of ``url``, resuming at ``start_ms`` once it is loaded.
+
+        ``subtitles`` is accepted for interface parity and ignored: Qt
+        Multimedia cannot attach external subtitle tracks.
+        """
         logger.info("Loading media URL: %s", url)
         self._player.stop()
         self._finished_emitted = False
         self._duration_sec = 0.0
         self._position_sec = 0.0
+        self._last_buffer_progress = 0.0
+        self._reset_buffer_stats()
         # QMediaPlayer drops setPosition() before the media is loaded, so the
         # resume offset is applied on LoadedMedia instead.
         self._pending_seek_ms = int(start_ms) if start_ms and start_ms > 1000 else None
@@ -143,6 +168,8 @@ class QtPlayerController(QObject):
         self._finished_emitted = False
         self._player.stop()
         self._player.setSource(QUrl())
+        self._last_buffer_progress = 0.0
+        self._reset_buffer_stats()
 
     # -- tracks ---------------------------------------------------------
     def tracks(self) -> list[dict]:
@@ -203,13 +230,48 @@ class QtPlayerController(QObject):
     def _on_duration_changed(self, duration_ms: int) -> None:
         self._duration_sec = max(0.0, duration_ms / 1000.0)
         self.duration_changed.emit(self._duration_sec)
+        # Ranges received before the duration was known could not be clamped.
+        self._emit_buffered_ranges()
 
     def _on_playback_rate_changed(self, rate: float) -> None:
         self._speed = rate
         self.speed_changed.emit(rate)
 
     def _on_buffer_progress_changed(self, progress: float) -> None:
-        self.buffer_progress_changed.emit(progress)
+        self._last_buffer_progress = max(0.0, min(float(progress), 1.0))
+        self._emit_buffered_ranges()
+
+    def _emit_buffered_ranges(self) -> None:
+        """Mirror Qt's buffered time range into absolute-second pairs.
+
+        Qt 6.10+ exposes ``bufferedTimeRange()``.  Older backends only report
+        a filled percentage, so approximate a forward range from the current
+        position in that case.
+        """
+        ranges: list[tuple[float, float]] = []
+        time_range = None
+        try:
+            time_range = self._player.bufferedTimeRange()
+        except (AttributeError, RuntimeError):
+            time_range = None
+
+        if time_range is not None:
+            ranges = _ranges_from_media_time_range(time_range)
+
+        if not ranges and self._last_buffer_progress > 0 and self._duration_sec > 0:
+            start = max(0.0, self._position_sec)
+            end = min(
+                self._duration_sec,
+                start + self._last_buffer_progress * self._duration_sec,
+            )
+            if end > start:
+                ranges = [(start, end)]
+
+        self.buffered_ranges_changed.emit(ranges)
+
+    def _reset_buffer_stats(self) -> None:
+        self.buffered_ranges_changed.emit([])
+        self.network_speed_changed.emit(-1.0)
 
     def _on_playback_state_changed(self, state: QMediaPlayer.PlaybackState) -> None:
         is_paused = state != QMediaPlayer.PlaybackState.PlayingState
@@ -226,6 +288,7 @@ class QtPlayerController(QObject):
             QMediaPlayer.MediaStatus.StalledMedia,
         )
         self.loading_changed.emit(is_loading)
+        self._emit_buffered_ranges()
         if status == QMediaPlayer.MediaStatus.EndOfMedia and not self._finished_emitted:
             self._finished_emitted = True
             self.playback_finished.emit()
@@ -255,6 +318,24 @@ class QtPlayerController(QObject):
         elif error == QMediaPlayer.Error.FormatError:
             message = message or "片源格式不受支持"
         self.error_occurred.emit(message or "播放失败")
+
+
+def _ranges_from_media_time_range(time_range: Any) -> list[tuple[float, float]]:
+    """Convert ``QMediaTimeRange`` intervals from milliseconds to seconds."""
+    ranges: list[tuple[float, float]] = []
+    try:
+        intervals = time_range.intervals()
+    except (AttributeError, RuntimeError):
+        return ranges
+    for interval in intervals:
+        try:
+            start = float(interval.start()) / 1000.0
+            end = float(interval.end()) / 1000.0
+        except (AttributeError, TypeError, ValueError):
+            continue
+        if end > start:
+            ranges.append((max(0.0, start), end))
+    return ranges
 
 
 def _track_label(meta: QMediaMetaData, fallback: str) -> str:
