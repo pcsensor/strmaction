@@ -1057,6 +1057,64 @@ def test_tree_folder_course_api():
         assert client.get(f"/api/libraries/{lib_id}").status_code == 404
 
 
+def test_poster_play_target_selection():
+    """测试海报图点击播放的目标决策：
+    1. 优先续播处于「继续播放」中最后播放的一集（即便跳集观看）；
+    2. 从「继续观看」移除后，再次点击海报播放，重新从第 1 集从头播放（resume_ms=0）；
+    3. 全剧所有集数均已看完后，再次点击海报播放，重新从第 1 集播放（而不是停在最后一集）。
+    """
+    app = create_app()
+    with TestClient(app) as client:
+        client.post(
+            "/api/auth/login",
+            json={"username": "admin", "password": "S3cure-passphrase"},
+        )
+        libs = client.get("/api/libraries").json()["libraries"]
+        tv_lib = next(l for l in libs if l["type"] == "tv")
+        items = client.get("/api/items", params={"library_id": tv_lib["id"]}).json()["items"]
+        series = next(i for i in items if i["title"] == "三体")
+        detail = client.get(f"/api/items/{series['id']}").json()
+        episodes = detail["seasons"][0]["episodes"]
+        assert len(episodes) >= 2
+        ep0, ep1 = episodes[0], episodes[1]
+
+        # 1. 模拟跳集观看：第 1 集未看，第 2 集看了一半（产生有效继续播放进度）
+        client.post(f"/api/items/{ep0['id']}/watched", json={"finished": False})
+        res1 = client.post(
+            f"/api/items/{ep1['id']}/progress",
+            json={"position_ms": 45000, "duration_ms": 120000, "finished": False},
+        )
+        assert res1.status_code == 200
+
+        # 点击剧集海报播放，必须精准返回正在继续播放的 ep1，且 resume_ms 为 45000
+        play1 = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert play1["item_id"] == ep1["id"]
+        assert play1["resume_ms"] == 45000
+
+        # 详情页下发的 play_target_id 同样应精准指向 ep1
+        detail1 = client.get(f"/api/items/{series['id']}").json()
+        assert detail1["item"]["play_target_id"] == ep1["id"]
+
+        # 2. 从「继续观看」移除（dismiss）
+        dismiss = client.delete(f"/api/items/{ep1['id']}/continue")
+        assert dismiss.status_code == 200
+
+        # 移除后，再次点击海报播放，因为没有处于「继续播放」的有效记录，必须从第一集从头播放
+        play2 = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert play2["item_id"] == ep0["id"]
+        assert play2["resume_ms"] == 0
+
+        # 3. 全剧看完全部集数（ep0 和 ep1 均已看完）
+        client.post(f"/api/items/{ep0['id']}/watched", json={"finished": True})
+        client.post(f"/api/items/{ep1['id']}/watched", json={"finished": True})
+
+        # 全剧看完后，点击海报播放，必须从第 1 集重新播放（而不是旧逻辑的最后一集）
+        play3 = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert play3["item_id"] == ep0["id"]
+        assert play3["resume_ms"] == 0
+
+
+
 
 
 

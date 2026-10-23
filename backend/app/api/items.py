@@ -116,10 +116,33 @@ def _episode_sequence(session: Session, series: Item) -> list[Item]:
     return sequence
 
 
+def _find_continue_target(session: Session, candidates: list[Item], user_id: int) -> Item | None:
+    if not candidates:
+        return None
+    candidate_map = {c.id: c for c in candidates if c.id is not None}
+    if not candidate_map:
+        return None
+    row = session.exec(
+        select(PlayProgress)
+        .where(
+            PlayProgress.user_id == user_id,
+            PlayProgress.item_id.in_(list(candidate_map.keys())),
+            PlayProgress.finished == False,  # noqa: E712
+            PlayProgress.position_ms > 0,
+            PlayProgress.dismissed == False,  # noqa: E712
+        )
+        .order_by(PlayProgress.updated_at.desc(), PlayProgress.id.desc())
+    ).first()
+    if row and row.item_id in candidate_map:
+        return candidate_map[row.item_id]
+    return None
+
+
 def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
     if item.kind in {"movie", "video", "episode"}:
         return item
     if item.kind == "season":
+        ready = ready_item_ids(session, item.library_id)
         episodes = session.exec(
             select(Item)
             .where(Item.parent_id == item.id, Item.kind == "episode")
@@ -127,22 +150,51 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
         ).all()
         if not episodes:
             raise APIError(400, "NO_EPISODE", "该季没有可播放的剧集")
-        progress = _progress_map(session, [e.id for e in episodes], user_id)
-        for episode in episodes:
-            row = progress.get(episode.id)
-            if row is None or not row.finished:
-                return episode
-        return episodes[-1]
+        ready_episodes = [e for e in episodes if e.id in ready]
+        playable_episodes = ready_episodes or episodes
+
+        # 1. 优先寻找处于“继续播放”状态的单集（最近一次播放优先）
+        continue_target = _find_continue_target(session, playable_episodes, user_id)
+        if continue_target is not None:
+            return continue_target
+
+        # 2. 若无在播单集，但已看完整集且存在未看集（未被整体移除），顺位接播下一集
+        progress_map = _progress_map(session, [e.id for e in playable_episodes], user_id)
+        has_watched_any = any(p.finished for p in progress_map.values())
+        all_dismissed = any(p.dismissed for p in progress_map.values())
+        if has_watched_any and not all_dismissed:
+            for ep in playable_episodes:
+                p = progress_map.get(ep.id)
+                if p is None or not p.finished:
+                    return ep
+
+        # 3. 否则（全新未看、全剧已看完、或已被移出继续播放），从第一集播放
+        return playable_episodes[0]
     if item.kind == "series":
         sequence = _episode_sequence(session, item)
         if not sequence:
             raise APIError(400, "NO_EPISODE", "该剧没有可播放的剧集")
-        progress = _progress_map(session, [e.id for e in sequence], user_id)
-        for episode in sequence:
-            row = progress.get(episode.id)
-            if row is None or not row.finished:
-                return episode
-        return sequence[-1]
+        ready = ready_item_ids(session, item.library_id)
+        ready_sequence = [e for e in sequence if e.id in ready]
+        playable_sequence = ready_sequence or sequence
+
+        # 1. 优先寻找处于“继续播放”状态的单集（最近一次播放优先）
+        continue_target = _find_continue_target(session, playable_sequence, user_id)
+        if continue_target is not None:
+            return continue_target
+
+        # 2. 若无在播单集，但已看完整集且存在未看集（未被整体移除），顺位接播下一集
+        progress_map = _progress_map(session, [e.id for e in playable_sequence], user_id)
+        has_watched_any = any(p.finished for p in progress_map.values())
+        all_dismissed = any(p.dismissed for p in progress_map.values())
+        if has_watched_any and not all_dismissed:
+            for ep in playable_sequence:
+                p = progress_map.get(ep.id)
+                if p is None or not p.finished:
+                    return ep
+
+        # 3. 否则（全新未看、全剧已看完、或已被移出继续播放），从第一集播放
+        return playable_sequence[0]
     if item.kind == "folder":
         ready = ready_item_ids(session, item.library_id)
         videos = session.exec(
@@ -155,11 +207,19 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
         videos = [v for v in videos if v.id in ready]
         videos.sort(key=lambda x: natural_sort_key(x.title))
         if videos:
-            progress = _progress_map(session, [v.id for v in videos if v.id], user_id)
-            for v in videos:
-                row = progress.get(v.id)
-                if row is None or not row.finished:
-                    return v
+            continue_target = _find_continue_target(session, videos, user_id)
+            if continue_target is not None:
+                return continue_target
+
+            progress_map = _progress_map(session, [v.id for v in videos], user_id)
+            has_watched_any = any(p.finished for p in progress_map.values())
+            all_dismissed = any(p.dismissed for p in progress_map.values())
+            if has_watched_any and not all_dismissed:
+                for v in videos:
+                    p = progress_map.get(v.id)
+                    if p is None or not p.finished:
+                        return v
+
             return videos[0]
         # 递归在子目录中寻找第一个可播放视频
         child_folders = session.exec(

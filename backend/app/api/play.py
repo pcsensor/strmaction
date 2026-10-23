@@ -254,7 +254,7 @@ async def play(
             )
         ).first()
         resume_ms = 0
-        if progress and not progress.finished:
+        if progress and not progress.finished and not progress.dismissed:
             resume_ms = max(0, progress.position_ms)
         series = series_of(session, target)
         series_obj = series if series and series.kind == "series" else None
