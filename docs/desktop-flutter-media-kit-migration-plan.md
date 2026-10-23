@@ -837,15 +837,14 @@ JS 兼容层要点：
 3. **登录迁移**：Cookie 不通用，首次登录；发布说明写清楚。
 4. **灰度**：先小范围用户，收集日志；关键指标：首帧时间、播放失败率、进度上报成功率、崩溃率。
 5. **回滚**：保留旧安装包与旧下载入口；新端严重问题时切回。
-6. **清理**：稳定 1–2 个版本后，删除 `desktop/` 或移到 `legacy/`，更新 README/CI/发布脚本。
+6. **清理**：已完成。已删除旧版 `desktop/` 目录，全量切至 `desktop_flutter/`，并同步更新 README 与文档。
 
 ---
 
-## 9. 建议的第一周任务（可直接执行）
+## 9. 迁移状态
 
-1. 建 `desktop_flutter/`，搭最小 Flutter app。
-2. 跑通 media_kit 播放一个 HLS + 一个 MKV，截图记录。
-3. 用本地 302 服务器验证 `Media.httpHeaders` / `http-header-fields`。
-4. 用 `flutter_inappwebview` 加载现有 Web UI，验证登录 Cookie 与 `addJavaScriptHandler`。
-5. 写一页最小 `PlayerPage`：Video + 一个半透明按钮，证明控件叠加。
-6. 产出 Phase 0 报告；通过后再进入 Phase 1。
+- [x] Phase 0 ~ 5 全部完成并通过自动化测试与实机验证。
+- [x] 修复 Impeller 渲染崩溃与页面转场快照问题。
+- [x] 修复 Seekbar 交互卡顿、跳闪与回弹。
+- [x] 优化桌面端秒关（即时隐藏与后台安全清理）。
+- [x] Phase 6：旧版 `desktop/` 播放器方案已完全移除，仓库全面转向 `desktop_flutter/`。

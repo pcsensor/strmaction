@@ -9,7 +9,7 @@
 
 SmartStrm 生成的 `.strm` 文件里只有一行网盘解析地址。StrmAction 扫描这些文件，用
 **TMDB + TVDB** 自己刮削元数据，提供 VidHub / SenPlayer 级别的浏览界面；用户点播放时，
-把该集 `.strm` 里的 URL 交给播放器：**StrmAction 桌面端内嵌 Qt 播放器（5 秒进度心跳）**、
+把该集 `.strm` 里的 URL 交给播放器：**StrmAction 桌面端内嵌播放器（Flutter + media_kit，5 秒进度心跳）**、
 **伴侣 App 内置 Media3**，Android 浏览器可跳转系统播放器，纯网页兜底复制链接。
 （v1.3 起不再依赖 mpv，服务端也不会启动任何播放器进程。）
 
@@ -42,7 +42,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
 | 元数据 | 17 项字段、季/集详情、剧照、演职员头像、预告片、合集、分级、别名 |
 | 维护 | 单条刷新 / 全库刷新 / 每 30 天自动刷新、`meta_hash` 跳过无变更、字段锁定、手动匹配、解除匹配 |
 | 图片 | 三档尺寸 WebP、URL 级去重、异步头像/剧照队列、主题色提取、`/img` 长缓存 |
-| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定、**缓存上限与缓冲进度**）、桌面端原生硬件加速内嵌播放器（QVideoWidget + 内置轻量流媒体代理，零外部二进制依赖与路径配置，三层缓冲条/40% 抽屉/全套键盘控制/顶部半透明长按 2.0x 倍速）、浏览器 `intent://`、复制链接（v1.3 移除 mpv 依赖） |
+| 播放 | 伴侣 App 内置 Media3（默认：自带请求头、续播、无缝连播、现代矢量控件、中心播放、双击快进退、长按倍速及设置、选集/倍速/全屏/锁定、**缓存上限与缓冲进度**）、桌面端原生硬件加速内嵌播放器（Flutter + media_kit / libmpv，零外部依赖与路径配置，现代矢量 UI，三层缓冲条/40% 抽屉/全套键盘控制/2.0x 倍速）、浏览器 `intent://`、复制链接（v1.3 移除 mpv 依赖） |
 | 进度 | 内置播放器 5 秒心跳、暂停/退后台补写、`play_token`（item 级 12h、Bearer）、90% 自动已看、防倒退、离线补发、支持从「继续观看」移除（保留进度与断点）、多用户隔离 |
 | 用户与权限 | 多用户体系（管理员 + 普通用户）、细粒度媒体库访问授权、播放进度与已看记录多用户完全隔离、个人播放偏好（设置页「我的播放方式」）、用户管理与密码重置后台（`/users`） |
 | 前端 | 手机优先布局、Hero 轮播（触摸横滑）、继续观看（支持快捷移除且保留媒体库进度）、分类横滑、详情、选集、搜索、用户管理、设置、任务、待修正列表、首次向导 |
@@ -57,7 +57,7 @@ StrmAction 扫描目录 → 解析命名 → TMDB/TVDB 刮削 → 入库
   - **播放进度与已看独立**：每个用户的播放进度、断点与已看状态完全独立，换设备换账号互不干扰。
   - **后台与个人管理**：内置 `/users` 用户管理控制台，管理员可直观增删改查用户、重置密码、勾选媒体库分配；支持各用户自主修改个人登录密码。
   - **设置分层**：普通用户打开「设置」只看到「我的播放方式」「安全」「关于」，可自选 `builtin（伴侣 App 内置）/ browser_intent（Android 外部播放器）/ copy（复制链接）/ auto` 与失败回退提示。设置页会显示「当前设备实际使用」并对不支持的播放方式给出降级提示。全局播放器默认、库管理、元数据源等仍仅管理员可改，`/api/export`、`/api/import` 同样要求管理员。
-- **播放**：桌面端内嵌 Qt 播放器与伴侣 App 内置 Media3；5 秒进度心跳、`play_token` 回传、播完无缝连播；
+- **播放**：桌面端内嵌播放器（Flutter + media_kit）与伴侣 App 内置 Media3；5 秒进度心跳、`play_token` 回传、播完无缝连播；
   播放请求头按媒体库下发。v1.3 起服务端不再启动 mpv，`external_mpv` / `desktop_mpv` 模式已下线。
 - **播放控件主流化与长按倍速**：全面重构伴侣 App 播放器 UI，换用现代主流矢量图标；新增屏幕中心
   悬浮大播放键、双击左/右快退快进手势与反馈、长按触感震动极速播放，并支持自定义长按倍速（1.5x~3.0x）。
@@ -310,18 +310,18 @@ next_item_id`，并带 `requested_mode / downgraded / downgrade_reason` 说明�
 > 缓存上限只作用于客户端预读，不改变服务端「不中转、不缓存视频」的边界。
 > 服务端 `player.cache_limit_mb` 只作为默认值下发，伴侣 App 与桌面端设置页均可覆盖。
 
-### StrmAction 桌面端（内嵌播放器）
+### StrmAction 桌面端（Flutter 内嵌播放器）
 
-桌面端加载现有网页，点播放时由网页请求 `mode=direct` 拿到 `play_url / headers / play_token`，
-再交给本机内嵌的 Qt 播放器：
+桌面端基于 Flutter + media_kit（libmpv）构建，加载现有 Web UI，点播放时由网页请求 `mode=direct` 拿到 `play_url / headers / play_token`，
+再交给内嵌的原生播放引擎：
 
-- **零外部依赖**：Qt Multimedia（FFmpeg 后端）随应用打包，不再需要安装 mpv 或配置路径；
-- **防盗链**：本地环回代理 `127.0.0.1:<随机端口>` 注入 UA / Referer / Cookie，并跟随 302；
-  「允许自签名 HTTPS 证书」开关同时作用于网页、代理与进度上报；
+- **零外部依赖**：底层 libmpv 原生渲染库随应用打包分发，用户无需手动安装或配置外部播放器路径；
+- **防盗链与请求头**：自动透传媒体库配置的 `User-Agent` 与 `Referer`，302 重定向不报 403；
+  「允许自签名 HTTPS 证书」开关同时作用于 Web 视图、媒体加载与进度上报；
 - **进度回传**：5 秒心跳 + 暂停/退出/播完立即补写，`Authorization: Bearer <play_token>`；
-- **登录保持**：使用持久化的 WebEngine profile（cookie / localStorage 落盘），重启免登录；
-- **设置**：原生对话框（服务器地址 / 缓存上限 / 自签名证书），保存即时生效、不打断当前页面；
-- **字幕**：支持容器内嵌字幕与音轨切换；外挂 `.srt/.ass` 暂不支持内嵌播放器。
+- **登录保持**：使用持久化 WebView 数据（Cookie / localStorage 落盘），重启免登录；
+- **设置**：原生设置抽屉/弹窗（服务器地址 / 缓存上限 / 自签名证书），保存即时生效；
+- **字幕与音轨**：支持多音轨切换与容器内嵌字幕 / 外挂字幕。
 
 ### 进度粒度
 
@@ -375,13 +375,13 @@ adb install -r companion/app/build/outputs/apk/release/app-release.apk
 
 ## 桌面端（Windows / macOS）
 
-源码与构建说明在 [`desktop/`](desktop/README.md)。
+源码与构建说明在 [`desktop_flutter/`](desktop_flutter/README.md)。
 
-- 基于 PySide6 原生硬件加速内嵌渲染（QVideoWidget，零外部依赖与配置，无外部窗口弹出）；
-- 仿安卓伴侣 App 自制视频控件：三层缓冲进度条、40% 侧滑选集/倍速/音轨抽屉、中心脉冲与反馈徽标；
+- 基于 Flutter + media_kit（libmpv）原生硬件加速内嵌渲染，零外部依赖与路径配置，无独立外部窗口弹出；
+- 现代矢量播放控件：三层缓冲进度条、40% 侧滑选集/倍速/音轨/字幕抽屉、中心手势反馈；
 - 全键盘快捷键支持：空格播放/暂停、方向键快进退、长按右键 2.0x 极速播放、音量调节、连播下一集；
 - 严格透传 `User-Agent` 与防盗链 Headers，302 跨域重定向不报 403，5 秒心跳回传进度；
-- 不保存账号密码/网页 Cookie；本机可用 `uv` 管理 Python 环境。
+- 独立单执行文件/便携包分发，支持 Windows 与 macOS。
 
 ## API
 
@@ -446,7 +446,6 @@ python scripts/seed_demo.py --base-url http://127.0.0.1:8080
 ## 已知限制
 
 - 纯网页 `intent://` 无法获取播放进度，需桌面端或伴侣 App；
-- 桌面端内嵌播放器只支持容器内嵌字幕，外挂 `.srt/.ass` 暂不支持（可用伴侣 App 观看）；
 - 内置播放器的复杂 ASS 特效字幕无法还原；DV P5 在非 DV 设备上颜色可能异常；
 - 内置播放器的字幕延迟调节（±0.5s）Media3 1.4 未提供公开 API，暂未实现；
 - 重复条目合并目前仅支持电影 / 视频；
@@ -479,7 +478,7 @@ frontend/src/
 └─ hooks/                useStartPlayback useTVMode（空间导航）
 
 companion/               Android WebView 壳 + Media3 播放器（解耦 PlayerDrawer / 音轨 / 倍速）+ JS Bridge
-desktop/                 Windows/macOS 桌面端（PySide6 + 原生 QVideoWidget 硬件加速 + 本地流媒体代理 + direct 播放/进度上报）
+desktop_flutter/         Windows/macOS 桌面端（Flutter + media_kit 原生硬件加速 + direct 播放/进度上报）
 scripts/                 make_samples.py / seed_demo.py
 docs/screenshots/        截图
 docs/deploy-cloud.md     云服务器（公网 + HTTPS）部署指南

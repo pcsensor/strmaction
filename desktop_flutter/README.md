@@ -1,15 +1,13 @@
 # StrmAction Desktop（Flutter + media_kit）
 
-这是 StrmAction 桌面端的 Flutter 重构版本：
+这是 StrmAction 官方桌面端应用：
 
 - Flutter 桌面壳，复用现有服务端 Web UI；
 - WebView 负责登录、媒体库、详情、设置；
-- media_kit（libmpv）负责内嵌视频播放；
+- media_kit（libmpv）负责内嵌原生硬件加速视频播放；
 - 云服务器下发的 `User-Agent` / `Referer` 会附加到媒体请求；
 - 支持缓存预算、TLS、音轨/字幕、外挂字幕、5 秒进度上报；
-- 播放器 UI 按旧版 Qt 播放器复刻。
-
-旧版 `desktop/` 暂时保留，待新版本验证稳定后再切换。
+- 现代矢量播放器 UI（40% 抽屉/三层缓冲进度条/全套快捷键）。
 
 ## 环境要求
 
@@ -157,5 +155,4 @@ flutter test
 
 - 旧 QtWebEngine 的 Cookie 不能迁移到 WKWebView/WebView2，首次使用需要重新登录一次；
 - Windows 端当前使用 DPI unaware manifest 以保证窗口坐标和 Flutter 布局一致，后续可改为 PerMonitorV2 + 显式坐标换算；
-- macOS 构建/签名/公证需要在 macOS 机器上执行，本仓库的 Windows 开发环境无法实际运行 Xcode；
-- 旧 `desktop/` 保留到新端完成验收后再移除或归档。
+- macOS 构建/签名/公证需要在 macOS 机器上执行，本仓库的 Windows 开发环境无法实际运行 Xcode。
