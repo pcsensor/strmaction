@@ -856,14 +856,12 @@ class _Tracks extends StatelessWidget {
 class _TrackOption extends StatelessWidget {
   final String text;
   final bool active;
-  final double height;
   final VoidCallback onTap;
 
   const _TrackOption({
     required this.text,
     required this.active,
     required this.onTap,
-    this.height = 40,
   });
 
   @override
@@ -878,7 +876,7 @@ class _TrackOption extends StatelessWidget {
         borderRadius: BorderRadius.circular(6),
         onTap: onTap,
         child: SizedBox(
-          height: height,
+          height: 40,
           child: Align(
             alignment: Alignment.centerLeft,
             child: Padding(
@@ -887,7 +885,7 @@ class _TrackOption extends StatelessWidget {
                 text,
                 style: TextStyle(
                   color: active ? const Color(0xFFF0A94D) : Colors.white,
-                  fontSize: height > 40 ? 15 : 13,
+                  fontSize: 13,
                   fontWeight: active ? FontWeight.bold : FontWeight.normal,
                 ),
               ),
