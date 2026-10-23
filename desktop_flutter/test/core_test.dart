@@ -40,6 +40,30 @@ void main() {
       expect(config.cacheLimitMb, 0);
       expect(config.allowSelfSignedHttps, isTrue);
       expect(config.logLevel, 'DEBUG');
+      expect(config.boostSpeed, defaultBoostSpeed);
+      expect(config.customSpeed, isNull);
+    });
+
+    test('handles boost_speed and custom_speed with clamps', () {
+      final config = const AppConfig(
+        serverUrl: 'https://media.example.com',
+        boostSpeed: 0.1,
+        customSpeed: 10.0,
+      ).normalized();
+      expect(config.boostSpeed, 0.25);
+      expect(config.customSpeed, 4.0);
+
+      final fromJson = AppConfig.fromJson({
+        'server_url': 'https://media.example.com',
+        'boost_speed': 3.5,
+        'custom_speed': 1.75,
+      });
+      expect(fromJson.boostSpeed, 3.5);
+      expect(fromJson.customSpeed, 1.75);
+
+      final json = fromJson.toJson();
+      expect(json['boost_speed'], 3.5);
+      expect(json['custom_speed'], 1.75);
     });
   });
 

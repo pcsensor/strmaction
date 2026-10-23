@@ -47,6 +47,7 @@ class _PlayerPageState extends State<PlayerPage> {
   bool _fullscreen = false;
   bool _speedBoost = false;
   double _normalSpeed = 1.0;
+  late double _boostSpeed;
   bool _completionHandled = false;
   bool _messageVisible = false;
   String? _cardMode;
@@ -68,6 +69,7 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
+    _boostSpeed = widget.app.config.boostSpeed;
     _engine = MediaKitEngine(
       logger: widget.app.logger,
       hardwareAcceleration: widget.app.config.playerHardwareAcceleration,
@@ -85,6 +87,7 @@ class _PlayerPageState extends State<PlayerPage> {
     widget.app.activeProgress = _reporter;
     widget.app.setPlaybackShutdown(_shutdownPlayback);
     _keyboard = PlayerKeyboardHandler(
+      boostSpeed: _boostSpeed,
       onPlayPause: _togglePlayPause,
       onSeekRelative: _seekRelative,
       onSpeedBoostStarted: _startSpeedBoost,
@@ -138,6 +141,12 @@ class _PlayerPageState extends State<PlayerPage> {
       cacheLimitMb: widget.app.config.cacheLimitMb,
       tlsVerify: !widget.app.config.allowSelfSignedHttps,
     );
+    if ((_boostSpeed - widget.app.config.boostSpeed).abs() > 0.001) {
+      setState(() {
+        _boostSpeed = widget.app.config.boostSpeed;
+        _keyboard.boostSpeed = _boostSpeed;
+      });
+    }
   }
 
   void _onEngineChanged() {
@@ -450,6 +459,15 @@ class _PlayerPageState extends State<PlayerPage> {
     _normalSpeed = speed;
     _engine.setSpeed(speed);
     _reporter.requestFlush();
+    unawaited(widget.app.saveSettings(widget.app.config.copyWith(customSpeed: speed)));
+  }
+
+  void _onBoostSpeedSelected(double speed) {
+    setState(() {
+      _boostSpeed = speed;
+      _keyboard.boostSpeed = speed;
+    });
+    unawaited(widget.app.saveSettings(widget.app.config.copyWith(boostSpeed: speed)));
   }
 
   void _onSubtitleSelected(String? id) {
@@ -589,7 +607,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   hasPrevious: _hasPrevious,
                   hasNext: _hasNext,
                   speedBoost: _speedBoost,
-                  speedBoostValue: 2.0,
+                  speedBoostValue: _boostSpeed,
                   centerIconPath: _centerIconPath,
                   centerText: _centerText,
                   showCenterIcon: _showCenterIcon,
@@ -618,6 +636,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   playlist: widget.payload.playlist,
                   currentItemId: widget.payload.itemId,
                   currentSpeed: _engine.speed,
+                  boostSpeed: _boostSpeed,
                   subtitles: _engine.subtitleTracks,
                   audioTracks: _engine.audioTracks,
                   currentSid: _engine.currentSubtitleId,
@@ -626,6 +645,7 @@ class _PlayerPageState extends State<PlayerPage> {
                   onClose: _closeDrawer,
                   onEpisodeSelected: _onEpisodeSelected,
                   onSpeedSelected: _onSpeedSelected,
+                  onBoostSpeedSelected: _onBoostSpeedSelected,
                   onSubtitleSelected: _onSubtitleSelected,
                   onAudioSelected: _onAudioSelected,
                 ),

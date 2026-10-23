@@ -18,7 +18,7 @@ class PlayerKeyboardHandler {
   final VoidCallback onCycleAudio;
   final VoidCallback onToggleDrawer;
 
-  final double boostSpeed;
+  double boostSpeed;
   bool _rightPressed = false;
   bool _boostActive = false;
   Timer? _holdTimer;
@@ -41,6 +41,10 @@ class PlayerKeyboardHandler {
   });
 
   KeyEventResult handle(FocusNode node, KeyEvent event) {
+    if (FocusManager.instance.primaryFocus?.context?.widget is EditableText) {
+      return KeyEventResult.ignored;
+    }
+
     final key = event.logicalKey;
     final repeat = event is KeyRepeatEvent;
 
@@ -84,6 +88,20 @@ class PlayerKeyboardHandler {
         onVolumeRelative(-5);
         return KeyEventResult.handled;
       }
+      if (_isHandledKey(key)) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
+    if (event is KeyUpEvent) {
+      if (_isHandledKey(key)) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+
+    if (event is! KeyDownEvent) {
       return KeyEventResult.ignored;
     }
 
@@ -136,6 +154,24 @@ class PlayerKeyboardHandler {
       return KeyEventResult.handled;
     }
     return KeyEventResult.ignored;
+  }
+
+  bool _isHandledKey(LogicalKeyboardKey key) {
+    return key == LogicalKeyboardKey.space ||
+        key == LogicalKeyboardKey.arrowLeft ||
+        key == LogicalKeyboardKey.arrowUp ||
+        key == LogicalKeyboardKey.arrowDown ||
+        key == LogicalKeyboardKey.keyM ||
+        key == LogicalKeyboardKey.keyF ||
+        key == LogicalKeyboardKey.f11 ||
+        key == LogicalKeyboardKey.escape ||
+        key == LogicalKeyboardKey.bracketLeft ||
+        key == LogicalKeyboardKey.bracketRight ||
+        key == LogicalKeyboardKey.keyC ||
+        key == LogicalKeyboardKey.keyS ||
+        key == LogicalKeyboardKey.keyA ||
+        key == LogicalKeyboardKey.keyE ||
+        key == LogicalKeyboardKey.tab;
   }
 
   void cancelBoost() {

@@ -10,6 +10,9 @@ const int minHeight = 640;
 const int defaultCacheLimitMb = 128;
 const int minActiveCacheLimitMb = 16;
 const int maxCacheLimitMb = 2048;
+const double defaultBoostSpeed = 2.0;
+const double minPlaybackSpeed = 0.25;
+const double maxPlaybackSpeed = 4.0;
 
 class ConfigException implements Exception {
   final String message;
@@ -37,6 +40,12 @@ class AppConfig {
   /// (it is capped at 1080p), so it is the default.
   final bool playerHardwareAcceleration;
 
+  /// Speed multiplier applied during long-press boost (right arrow key hold).
+  final double boostSpeed;
+
+  /// User-configured custom playback speed (if set).
+  final double? customSpeed;
+
   const AppConfig({
     this.serverUrl = '',
     this.cacheLimitMb = defaultCacheLimitMb,
@@ -45,6 +54,8 @@ class AppConfig {
     this.windowHeight = defaultHeight,
     this.logLevel = 'INFO',
     this.playerHardwareAcceleration = false,
+    this.boostSpeed = defaultBoostSpeed,
+    this.customSpeed,
   });
 
   bool get isConfigured => serverUrl.isNotEmpty;
@@ -57,6 +68,8 @@ class AppConfig {
     int? windowHeight,
     String? logLevel,
     bool? playerHardwareAcceleration,
+    double? boostSpeed,
+    double? customSpeed,
   }) {
     return AppConfig(
       serverUrl: serverUrl ?? this.serverUrl,
@@ -68,6 +81,8 @@ class AppConfig {
       logLevel: logLevel ?? this.logLevel,
       playerHardwareAcceleration:
           playerHardwareAcceleration ?? this.playerHardwareAcceleration,
+      boostSpeed: boostSpeed ?? this.boostSpeed,
+      customSpeed: customSpeed ?? this.customSpeed,
     );
   }
 
@@ -81,6 +96,10 @@ class AppConfig {
       windowHeight: _clamp(windowHeight, minHeight, 2160, defaultHeight),
       logLevel: (logLevel.isEmpty ? 'INFO' : logLevel).toUpperCase(),
       playerHardwareAcceleration: playerHardwareAcceleration,
+      boostSpeed: _clampDouble(boostSpeed, minPlaybackSpeed, maxPlaybackSpeed, defaultBoostSpeed),
+      customSpeed: customSpeed == null
+          ? null
+          : _clampDouble(customSpeed!, minPlaybackSpeed, maxPlaybackSpeed, 1.0),
     );
   }
 
@@ -92,6 +111,8 @@ class AppConfig {
         'window_height': windowHeight,
         'log_level': logLevel,
         'player_hardware_acceleration': playerHardwareAcceleration,
+        'boost_speed': boostSpeed,
+        if (customSpeed != null) 'custom_speed': customSpeed,
       };
 
   factory AppConfig.fromJson(Map<String, dynamic> json) {
@@ -103,7 +124,29 @@ class AppConfig {
       windowHeight: _asInt(json['window_height'], defaultHeight),
       logLevel: (json['log_level'] ?? 'INFO').toString(),
       playerHardwareAcceleration: json['player_hardware_acceleration'] == true,
+      boostSpeed: _asDouble(json['boost_speed'], defaultBoostSpeed),
+      customSpeed: _asDoubleNullable(json['custom_speed']),
     ).normalized();
+  }
+
+  static double _asDouble(dynamic value, double fallback) {
+    if (value is double) return value;
+    if (value is num) return value.toDouble();
+    return double.tryParse('$value') ?? fallback;
+  }
+
+  static double? _asDoubleNullable(dynamic value) {
+    if (value == null) return null;
+    if (value is double) return value;
+    if (value is num) return value.toDouble();
+    return double.tryParse('$value');
+  }
+
+  static double _clampDouble(double value, double low, double high, double fallback) {
+    if (value.isNaN || value.isInfinite) return fallback;
+    if (value < low) return low;
+    if (value > high) return high;
+    return value;
   }
 
   static int _asInt(dynamic value, int fallback) {

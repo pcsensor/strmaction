@@ -19,6 +19,7 @@ class SettingsDialog extends StatefulWidget {
 class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController _server;
   late final TextEditingController _cache;
+  late final TextEditingController _boostSpeed;
   late bool _allowSelfSigned;
   String? _error;
 
@@ -27,6 +28,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     super.initState();
     _server = TextEditingController(text: widget.initial.serverUrl);
     _cache = TextEditingController(text: '${widget.initial.cacheLimitMb}');
+    _boostSpeed = TextEditingController(text: '${widget.initial.boostSpeed}');
     _allowSelfSigned = widget.initial.allowSelfSignedHttps;
   }
 
@@ -34,6 +36,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
   void dispose() {
     _server.dispose();
     _cache.dispose();
+    _boostSpeed.dispose();
     super.dispose();
   }
 
@@ -41,10 +44,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
     try {
       final server = normalizeServerUrl(_server.text);
       final cache = normalizeCacheLimit(int.tryParse(_cache.text.trim()) ?? 0);
+      final boostSpeed = double.tryParse(_boostSpeed.text.trim()) ?? defaultBoostSpeed;
       final next = widget.initial.copyWith(
         serverUrl: server,
         cacheLimitMb: cache,
         allowSelfSignedHttps: _allowSelfSigned,
+        boostSpeed: boostSpeed,
       ).normalized();
       Navigator.of(context).pop(next);
     } on ConfigException catch (error) {
@@ -96,6 +101,19 @@ class _SettingsDialogState extends State<SettingsDialog> {
               const SizedBox(height: 8),
               const Text(
                 '范围 16–2048 MB；0 表示不启用 demuxer 缓存。',
+                style: TextStyle(color: Color(0xFF7C8698), fontSize: 11),
+              ),
+              const SizedBox(height: 14),
+              const _Label('长按倍速（0.25 - 4.0，默认 2.0）'),
+              const SizedBox(height: 6),
+              _field(
+                controller: _boostSpeed,
+                hintText: '2.0',
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              ),
+              const SizedBox(height: 8),
+              const Text(
+                '播放时按住键盘右方向键（→）加速播放，松开恢复原速。',
                 style: TextStyle(color: Color(0xFF7C8698), fontSize: 11),
               ),
               const SizedBox(height: 12),
