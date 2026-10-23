@@ -68,7 +68,10 @@ class _PlayerPageState extends State<PlayerPage> {
   @override
   void initState() {
     super.initState();
-    _engine = MediaKitEngine(logger: widget.app.logger);
+    _engine = MediaKitEngine(
+      logger: widget.app.logger,
+      hardwareAcceleration: widget.app.config.playerHardwareAcceleration,
+    );
     _engine.addListener(_onEngineChanged);
     _reporter = ProgressReporter(
       serverUrl: widget.app.config.serverUrl,

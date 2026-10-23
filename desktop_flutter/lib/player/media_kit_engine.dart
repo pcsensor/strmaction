@@ -38,16 +38,26 @@ class MediaKitEngine extends PlaybackEngine {
   Track? _track;
   bool _disposed = false;
 
-  MediaKitEngine({this.logger}) {
+  MediaKitEngine({this.logger, this.hardwareAcceleration = false}) {
     _player = Player();
+    // The GPU (ANGLE/DXGI shared-handle) output registers and swaps external
+    // textures from media_kit's worker thread while the Flutter raster thread
+    // composites them. On some GPU/driver combinations that races the engine
+    // and crashes the process inside GrDirectContext::flush, so we only use it
+    // when explicitly enabled.
     _videoController = VideoController(
       _player,
-      configuration: const VideoControllerConfiguration(
-        enableHardwareAcceleration: true,
+      configuration: VideoControllerConfiguration(
+        enableHardwareAcceleration: hardwareAcceleration,
       ),
+    );
+    logger?.info(
+      '播放器渲染模式：${hardwareAcceleration ? '硬件加速（ANGLE/DXGI）' : '软件渲染'}',
     );
     _bindStreams();
   }
+
+  final bool hardwareAcceleration;
 
   @override
   VideoController? get videoController => _videoController;
@@ -335,8 +345,10 @@ class MediaKitEngine extends PlaybackEngine {
       }
       final merged = _mergeRanges(ranges);
       if (merged.isNotEmpty) {
-        _bufferedRanges = merged;
-        _notify();
+        if (!areBufferedRangesEqual(_bufferedRanges, merged)) {
+          _bufferedRanges = merged;
+          _notify();
+        }
       } else {
         _refreshBufferFallback();
       }
@@ -354,8 +366,11 @@ class MediaKitEngine extends PlaybackEngine {
   void _refreshBufferFallback() {
     if (_bufferedRanges.isNotEmpty) return;
     if (_bufferPosition > _position + 0.1) {
-      _bufferedRanges = [BufferedRange(_position, _bufferPosition)];
-      _notify();
+      final fallback = [BufferedRange(_position, _bufferPosition)];
+      if (!areBufferedRangesEqual(_bufferedRanges, fallback)) {
+        _bufferedRanges = fallback;
+        _notify();
+      }
     }
   }
 

@@ -6,6 +6,14 @@ project(strmaction_desktop LANGUAGES CXX)
 # the on-disk name of your application.
 set(BINARY_NAME "strmaction_desktop")
 
+# MSVC 14.5x (Visual Studio 2026, used by the windows-latest runner) turns the
+# C++/WinRT usage of <experimental/coroutine> in plugins such as
+# flutter_inappwebview_windows into a hard error: STL1011. Silencing the
+# deprecation keeps the plugin sources buildable with the newer toolset.
+# Declared before the plugin subdirectories are added so every plugin target
+# inherits the definition.
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
 cmake_policy(VERSION 3.14...3.25)

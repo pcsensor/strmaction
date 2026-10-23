@@ -105,9 +105,30 @@ class StrmActionApp extends StatelessWidget {
         ),
         scaffoldBackgroundColor: const Color(0xFF0B0E13),
         useMaterial3: true,
+        pageTransitionsTheme: const PageTransitionsTheme(
+          builders: {
+            TargetPlatform.windows: _NoSnapshotPageTransitionsBuilder(),
+            TargetPlatform.macOS: _NoSnapshotPageTransitionsBuilder(),
+          },
+        ),
       ),
       home: WebShellPage(app: app),
     );
+  }
+}
+
+class _NoSnapshotPageTransitionsBuilder extends PageTransitionsBuilder {
+  const _NoSnapshotPageTransitionsBuilder();
+
+  @override
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    return child;
   }
 }
 
@@ -125,21 +146,50 @@ class _WindowListener extends WindowListener {
   }
 
   Future<void> _close() async {
+    Size? windowSize;
     try {
       final views = WidgetsBinding.instance.platformDispatcher.views;
       if (views.isNotEmpty) {
         final view = views.first;
-        final size = view.physicalSize / view.devicePixelRatio;
-        await app.persistWindowSize(size.width.round(), size.height.round());
+        windowSize = view.physicalSize / view.devicePixelRatio;
       } else {
-        final size = await windowManager.getSize();
-        await app.persistWindowSize(size.width.round(), size.height.round());
+        windowSize = await windowManager.getSize();
       }
     } on Object {
-      // ignore geometry errors during shutdown
+      // ignore geometry query errors
     }
-    await app.shutdown();
+
+    try {
+      await windowManager.hide();
+    } on Object {
+      // ignore
+    }
+
+    if (windowSize != null && windowSize.width > 0 && windowSize.height > 0) {
+      try {
+        await app.persistWindowSize(
+          windowSize.width.round(),
+          windowSize.height.round(),
+        );
+      } on Object {
+        // ignore geometry errors during shutdown
+      }
+    }
+
+    try {
+      await app.shutdown().timeout(const Duration(milliseconds: 1500));
+    } on Object {
+      // ignore shutdown errors or timeout
+    }
+
     app.dispose();
-    await windowManager.destroy();
+
+    try {
+      await windowManager.destroy();
+    } on Object {
+      // ignore
+    }
+
+    exit(0);
   }
 }

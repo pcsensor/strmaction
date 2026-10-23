@@ -27,6 +27,16 @@ class AppConfig {
   final int windowHeight;
   final String logLevel;
 
+  /// Whether media_kit should render through ANGLE/DXGI (GPU surface texture).
+  ///
+  /// The GPU path shares ANGLE with the Flutter engine inside the same process
+  /// and registers/unregisters external textures from media_kit's worker
+  /// thread; on some driver/GPU combinations that races the engine's raster
+  /// thread and kills the process with an access violation in
+  /// `GrDirectContext::flush`. Software rendering avoids that path entirely
+  /// (it is capped at 1080p), so it is the default.
+  final bool playerHardwareAcceleration;
+
   const AppConfig({
     this.serverUrl = '',
     this.cacheLimitMb = defaultCacheLimitMb,
@@ -34,6 +44,7 @@ class AppConfig {
     this.windowWidth = defaultWidth,
     this.windowHeight = defaultHeight,
     this.logLevel = 'INFO',
+    this.playerHardwareAcceleration = false,
   });
 
   bool get isConfigured => serverUrl.isNotEmpty;
@@ -45,6 +56,7 @@ class AppConfig {
     int? windowWidth,
     int? windowHeight,
     String? logLevel,
+    bool? playerHardwareAcceleration,
   }) {
     return AppConfig(
       serverUrl: serverUrl ?? this.serverUrl,
@@ -54,6 +66,8 @@ class AppConfig {
       windowWidth: windowWidth ?? this.windowWidth,
       windowHeight: windowHeight ?? this.windowHeight,
       logLevel: logLevel ?? this.logLevel,
+      playerHardwareAcceleration:
+          playerHardwareAcceleration ?? this.playerHardwareAcceleration,
     );
   }
 
@@ -66,6 +80,7 @@ class AppConfig {
       windowWidth: _clamp(windowWidth, minWidth, 3840, defaultWidth),
       windowHeight: _clamp(windowHeight, minHeight, 2160, defaultHeight),
       logLevel: (logLevel.isEmpty ? 'INFO' : logLevel).toUpperCase(),
+      playerHardwareAcceleration: playerHardwareAcceleration,
     );
   }
 
@@ -76,6 +91,7 @@ class AppConfig {
         'window_width': windowWidth,
         'window_height': windowHeight,
         'log_level': logLevel,
+        'player_hardware_acceleration': playerHardwareAcceleration,
       };
 
   factory AppConfig.fromJson(Map<String, dynamic> json) {
@@ -86,6 +102,7 @@ class AppConfig {
       windowWidth: _asInt(json['window_width'], defaultWidth),
       windowHeight: _asInt(json['window_height'], defaultHeight),
       logLevel: (json['log_level'] ?? 'INFO').toString(),
+      playerHardwareAcceleration: json['player_hardware_acceleration'] == true,
     ).normalized();
   }
 

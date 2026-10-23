@@ -162,7 +162,7 @@ class ProgressReporter {
     _timer = null;
     if (flush && !_authFailed) {
       try {
-        await flushOnce(force: true).timeout(const Duration(seconds: 4));
+        await flushOnce(force: true).timeout(const Duration(milliseconds: 1500));
       } on Object {
         // Best effort on shutdown.
       }

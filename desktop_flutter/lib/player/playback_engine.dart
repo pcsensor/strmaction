@@ -22,6 +22,26 @@ class BufferedRange {
   final double end;
 
   const BufferedRange(this.start, this.end);
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is BufferedRange &&
+          runtimeType == other.runtimeType &&
+          (start - other.start).abs() < 0.1 &&
+          (end - other.end).abs() < 0.1;
+
+  @override
+  int get hashCode => Object.hash((start * 10).round(), (end * 10).round());
+}
+
+bool areBufferedRangesEqual(List<BufferedRange> a, List<BufferedRange> b) {
+  if (identical(a, b)) return true;
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }
 
 abstract class PlaybackEngine extends ChangeNotifier {

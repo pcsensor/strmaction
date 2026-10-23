@@ -215,9 +215,22 @@ class _WebShellPageState extends State<WebShellPage> {
       case 'getConnectionError':
         return jsonEncode({'ok': true, 'error': app.lastError});
       case 'quit':
-        await app.shutdown();
-        await windowManager.destroy();
-        return jsonEncode({'ok': true});
+        try {
+          await windowManager.hide();
+        } on Object {
+          // ignore
+        }
+        try {
+          await app.shutdown().timeout(const Duration(milliseconds: 1500));
+        } on Object {
+          // ignore
+        }
+        try {
+          await windowManager.destroy();
+        } on Object {
+          // ignore
+        }
+        exit(0);
       default:
         return jsonEncode({'ok': false, 'error': '未知的桌面端方法：$method'});
     }
@@ -228,12 +241,15 @@ class _WebShellPageState extends State<WebShellPage> {
     _playerOpen = true;
     _pendingRequestId = null;
     await Navigator.of(context).push(
-      MaterialPageRoute<void>(
-        builder: (_) => PlayerPage(
+      PageRouteBuilder<void>(
+        pageBuilder: (context, animation, secondaryAnimation) => PlayerPage(
           app: app,
           payload: payload,
           onRequestItem: (id) => _pendingRequestId = id,
         ),
+        transitionDuration: Duration.zero,
+        reverseTransitionDuration: Duration.zero,
+        allowSnapshotting: false,
       ),
     );
     _playerOpen = false;

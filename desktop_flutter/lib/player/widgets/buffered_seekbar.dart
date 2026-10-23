@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -40,7 +41,10 @@ class BufferedSeekBar extends StatefulWidget {
 
 class _BufferedSeekBarState extends State<BufferedSeekBar> {
   bool _dragging = false;
+  bool _inDrag = false;
   double _dragPosition = 0;
+  double? _pendingPosition;
+  Timer? _pendingTimer;
   double? _hoverX;
   double _lastX = 0;
 
@@ -62,11 +66,17 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
 
   void _begin(double x, double width) {
     _lastX = x;
+    _pendingTimer?.cancel();
+    _pendingPosition = null;
+    final wasDragging = _dragging;
+    final target = _xToSeconds(x, width);
     setState(() {
       _dragging = true;
-      _dragPosition = _xToSeconds(x, width);
+      _dragPosition = target;
     });
-    widget.onSeekingChanged?.call(true);
+    if (!wasDragging) {
+      widget.onSeekingChanged?.call(true);
+    }
   }
 
   void _update(double x, double width) {
@@ -78,12 +88,37 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
   void _end(double x, double width) {
     if (!_dragging) return;
     final target = _xToSeconds(x, width);
+    _pendingTimer?.cancel();
+    _pendingPosition = target;
     setState(() {
       _dragging = false;
       _dragPosition = target;
     });
     widget.onSeekingChanged?.call(false);
     widget.onSeek(target);
+
+    _pendingTimer = Timer(const Duration(milliseconds: 1500), () {
+      if (mounted && _pendingPosition != null) {
+        setState(() => _pendingPosition = null);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant BufferedSeekBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (_pendingPosition != null) {
+      if ((widget.position - _pendingPosition!).abs() < 0.8) {
+        _pendingTimer?.cancel();
+        _pendingPosition = null;
+      }
+    }
+  }
+
+  @override
+  void dispose() {
+    _pendingTimer?.cancel();
+    super.dispose();
   }
 
   @override
@@ -91,7 +126,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth;
-        final shown = _dragging ? _dragPosition : widget.position;
+        final shown = _dragging ? _dragPosition : (_pendingPosition ?? widget.position);
         return MouseRegion(
           cursor: SystemMouseCursors.click,
           onHover: (event) => setState(() => _hoverX = event.localPosition.dx),
@@ -101,18 +136,33 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
             onTapDown: (details) => _begin(details.localPosition.dx, width),
             onTapUp: (details) => _end(details.localPosition.dx, width),
             onTapCancel: () {
-              if (_dragging) {
-                setState(() => _dragging = false);
-                widget.onSeekingChanged?.call(false);
-              }
+              scheduleMicrotask(() {
+                if (mounted && !_inDrag && _dragging) {
+                  _pendingTimer?.cancel();
+                  _pendingPosition = null;
+                  setState(() => _dragging = false);
+                  widget.onSeekingChanged?.call(false);
+                }
+              });
             },
-            onHorizontalDragStart: (details) =>
-                _begin(details.localPosition.dx, width),
+            onHorizontalDragStart: (details) {
+              _inDrag = true;
+              _begin(details.localPosition.dx, width);
+            },
             onHorizontalDragUpdate: (details) =>
                 _update(details.localPosition.dx, width),
             onHorizontalDragEnd: (details) {
-              // DragEndDetails has no local position; use the last update.
+              _inDrag = false;
               _end(_lastX, width);
+            },
+            onHorizontalDragCancel: () {
+              _inDrag = false;
+              if (_dragging) {
+                _pendingTimer?.cancel();
+                _pendingPosition = null;
+                setState(() => _dragging = false);
+                widget.onSeekingChanged?.call(false);
+              }
             },
             child: SizedBox(
               height: 32,
@@ -242,8 +292,8 @@ class _SeekBarPainter extends CustomPainter {
   bool shouldRepaint(covariant _SeekBarPainter oldDelegate) {
     return oldDelegate.position != position ||
         oldDelegate.duration != duration ||
-        oldDelegate.bufferedRanges != bufferedRanges ||
         oldDelegate.left != left ||
-        oldDelegate.right != right;
+        oldDelegate.right != right ||
+        !areBufferedRangesEqual(oldDelegate.bufferedRanges, bufferedRanges);
   }
 }
