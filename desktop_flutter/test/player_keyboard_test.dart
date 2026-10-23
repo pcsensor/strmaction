@@ -4,6 +4,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/player/input/player_keyboard.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('PlayerKeyboardHandler', () {
     test('space key triggers play/pause only once on press, not on release or repeat', () {
       int playPauseCalls = 0;

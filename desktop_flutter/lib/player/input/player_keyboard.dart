@@ -41,8 +41,12 @@ class PlayerKeyboardHandler {
   });
 
   KeyEventResult handle(FocusNode node, KeyEvent event) {
-    if (FocusManager.instance.primaryFocus?.context?.widget is EditableText) {
-      return KeyEventResult.ignored;
+    try {
+      if (FocusManager.instance.primaryFocus?.context?.widget is EditableText) {
+        return KeyEventResult.ignored;
+      }
+    } catch (_) {
+      // Binding not initialized (e.g. in test environments without a widget tree)
     }
 
     final key = event.logicalKey;
