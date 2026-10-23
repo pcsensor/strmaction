@@ -61,7 +61,7 @@ apksigner sign --ks release.keystore --ks-key-alias strmaction \
 ## 首次启动
 
 1. 输入服务器地址（如 `http://192.168.1.10:8080`，公网建议 `https://你的域名`，
-   见 [云服务器部署指南](../docs/deploy-cloud.md)），点「测试连接」；
+   参考根目录 `README.md` 的部署说明），点「测试连接」；
 2. 「保存并进入」后加载同一套网页，登录一次即可（Cookie 由 WebView 保存）；
 3. 电视上长按「确定」可随时重新配置；手机可在网页「设置 → 播放器 → 伴侣 App →
    打开 App 设置」重新进入配置页。
