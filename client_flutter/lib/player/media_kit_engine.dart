@@ -258,7 +258,7 @@ class MediaKitEngine extends PlaybackEngine {
     required int cacheLimitMb,
     required bool tlsVerify,
   }) async {
-    _cacheEpoch++;
+    final epoch = ++_cacheEpoch;
     _fallbackRate = NetworkRate();
     _lastRateSample = _pollClock.elapsed;
     _error = null;
@@ -271,13 +271,24 @@ class MediaKitEngine extends PlaybackEngine {
     _notify();
 
     await applySettings(cacheLimitMb: cacheLimitMb, tlsVerify: tlsVerify);
+    if (_disposed || epoch != _cacheEpoch) return;
     try {
-    await _diskCache?.close();
+    final previous = _diskCache;
     _diskCache = null;
+    await previous?.close();
+    if (_disposed || epoch != _cacheEpoch) return;
     if (cacheDirectory != null && diskLimitMb > 0) {
-      _diskCache = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
-        trustedCaPem: trustedCaPem, directory: cacheDirectory!, budgetBytes: diskLimitMb * 1024 * 1024,
+      final opened = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
+        trustedCaPem: trustedCaPem, directory: '$cacheDirectory/$epoch', budgetBytes: diskLimitMb * 1024 * 1024,
         prefetchBytes: cacheLimitMb * 1024 * 1024);
+      if (_disposed || epoch != _cacheEpoch) {
+        await opened?.close();
+        // A delayed opener may finish after shutdown removed the parent.
+        // Non-recursive removal cannot delete a newer playback's cache.
+        try { await Directory(cacheDirectory!).delete(); } on FileSystemException { /* another load owns it */ }
+        return;
+      }
+      _diskCache = opened;
     }
     final media = Media(
       _diskCache?.localUrl.toString() ?? payload.playUrl,
@@ -287,11 +298,14 @@ class MediaKitEngine extends PlaybackEngine {
           : null,
     );
       await _player.open(media, play: true);
+      if (_disposed || epoch != _cacheEpoch) return;
       _loading = false;
       await _addExternalSubtitles(payload.subtitles);
+      if (_disposed || epoch != _cacheEpoch) return;
       _startCachePolling();
       _notify();
     } on Object catch (error) {
+      if (_disposed || epoch != _cacheEpoch) return;
       _error = _friendlyError('$error');
       _loading = false;
       _notify();
@@ -567,6 +581,8 @@ class MediaKitEngine extends PlaybackEngine {
   @override
   Future<void> stop() async {
     _cacheEpoch++;
+    final cache = _diskCache;
+    _diskCache = null;
     _networkTimer?.cancel();
     _cacheTimer?.cancel();
     _cacheTimer = null;
@@ -579,10 +595,10 @@ class MediaKitEngine extends PlaybackEngine {
     _notify();
     try {
       await _player.stop();
-      await _diskCache?.close();
-      _diskCache = null;
     } on Object {
       // Stopping is best-effort.
+    } finally {
+      await cache?.close();
     }
   }
 
