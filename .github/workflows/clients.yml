@@ -65,12 +65,24 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
+      - uses: actions/cache@v4
+        with:
+          path: ~/.android/debug.keystore
+          key: strmaction-android-test-key-v1
+      - name: Prepare existing release signing identity
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: python3 ci/android_signing.py
       - name: Prepare Flutter Android runner
         run: |
           flutter create --platforms=android --org top.strmaction --project-name strmaction_desktop .
           python3 ../ci/prepare_mobile.py android
         working-directory: client_flutter
       - name: Build Android shared client
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: flutter build apk --debug && flutter build apk --release
         working-directory: client_flutter
       - name: Verify Android trust and redirects
@@ -80,8 +92,12 @@ jobs:
         run: |
           mkdir -p dist
           cp client_flutter/build/app/outputs/flutter-apk/app-debug.apk dist/StrmAction-Android-test.apk
-          cp client_flutter/build/app/outputs/flutter-apk/app-release.apk dist/StrmAction-Android-unsigned.apk
-          python3 ci/artifacts.py android dist --signing 'test-debug-and-unsigned-release'
+          if [ "$ANDROID_SIGNING_STATUS" = "existing-release-key" ]; then
+            cp client_flutter/build/app/outputs/flutter-apk/app-release.apk dist/StrmAction-Android.apk
+          else
+            cp client_flutter/build/app/outputs/flutter-apk/app-release.apk dist/StrmAction-Android-unsigned.apk
+          fi
+          python3 ci/artifacts.py android dist --signing "$ANDROID_SIGNING_STATUS"
       - uses: actions/upload-artifact@v4
         with:
           name: StrmAction-Android
@@ -164,7 +180,7 @@ jobs:
           APP=$(find client_flutter/build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)
           test -n "$APP"
           ditto -c -k --keepParent "$APP" dist/StrmAction-macOS.zip
-          python3 ci/artifacts.py macos dist --signing development
+          python3 ci/artifacts.py macos dist --signing adhoc
       - uses: actions/upload-artifact@v4
         with:
           name: StrmAction-${{ matrix.platform }}

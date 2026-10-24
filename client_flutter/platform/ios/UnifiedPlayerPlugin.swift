@@ -30,7 +30,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         FlutterEventChannel(name: "strmaction/player/events", binaryMessenger: registrar.messenger()).setStreamHandler(plugin)
         let native = FlutterMethodChannel(name: "strmaction/native", binaryMessenger: registrar.messenger())
         native.setMethodCallHandler { call, result in plugin.handleNative(call, result: result) }
-        registrar.register(UnifiedVideoFactory(plugin: plugin, parent: registrar.viewController()), withId: "strmaction/video")
+        registrar.register(UnifiedVideoFactory(plugin: plugin, parent: registrar.viewController), withId: "strmaction/video")
         plugin.controller.onPlaybackEnded = { [weak plugin] in plugin?.completed = true; plugin?.emit() }
         plugin.timer = Timer.scheduledTimer(withTimeInterval: 0.5, repeats: true) { [weak plugin] _ in
             Task { @MainActor in plugin?.emit() }

@@ -43,7 +43,21 @@ def android():
     # Unsigned releases can be re-signed with the existing installation key.
     text = text.replace('signingConfig = signingConfigs.getByName("debug")', 'signingConfig = null')
     text += '''
-android { buildFeatures { buildConfig = true } }
+android {
+    buildFeatures { buildConfig = true }
+    val releaseKey = System.getenv("STRMACTION_KEYSTORE_PATH")
+    if (!releaseKey.isNullOrBlank()) {
+        signingConfigs {
+            create("existing") {
+                storeFile = file(releaseKey)
+                storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
+                keyAlias = System.getenv("ANDROID_KEY_ALIAS")
+                keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
+            }
+        }
+        buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("existing") } }
+    }
+}
 dependencies {
     testImplementation("junit:junit:4.13.2")
     testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
