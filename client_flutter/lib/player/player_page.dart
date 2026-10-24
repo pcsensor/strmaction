@@ -665,7 +665,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               fit: StackFit.expand,
               children: [
                 _engine.buildVideo(),
-                ControlsOverlay(
+                if (!_engine.isPiP) ControlsOverlay(
                   visible: _controlsVisible && !_locked && !_engine.isPiP,
                   title: widget.payload.title,
                   seriesTitle: widget.payload.seriesTitle,
@@ -709,7 +709,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                     IconButton(tooltip: _locked ? '解锁' : '锁定', icon: Icon(_locked ? Icons.lock : Icons.lock_open, color: Colors.white), onPressed: () => setState(() => _locked = !_locked)),
                   ]),
                 ),
-                PlayerDrawer(
+                if (!_engine.isPiP) PlayerDrawer(
                   key: _drawerKey,
                   visible: _drawerVisible,
                   playlist: widget.payload.playlist,
@@ -728,7 +728,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onSubtitleSelected: _onSubtitleSelected,
                   onAudioSelected: _onAudioSelected,
                 ),
-                MessageCard(
+                if (!_engine.isPiP) MessageCard(
                   visible: _messageVisible,
                   title: _cardTitle,
                   description: _cardDescription,

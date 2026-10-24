@@ -39,6 +39,10 @@ def android():
     settings.write_text(text)
     wrapper = CLIENT / 'android/gradle/wrapper/gradle-wrapper.properties'
     wrapper.write_text(re.sub(r'gradle-[0-9.]+-all.zip', 'gradle-8.14-all.zip', wrapper.read_text()))
+    drawables = app / 'src/main/res/drawable'
+    drawables.mkdir(parents=True, exist_ok=True)
+    for name in ['ic_launcher.xml', 'banner.xml']:
+        shutil.copy2(ROOT / 'companion/app/src/main/res/drawable' / name, drawables / name)
     gradle = app / 'build.gradle.kts'
     text = gradle.read_text().replace('top.strmaction.strmaction_desktop', 'top.strmaction.companion')
     if 'id("org.jetbrains.kotlin.android")' not in text:
@@ -86,7 +90,7 @@ dependencies {
     <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
     <uses-feature android:name="android.software.leanback" android:required="false" />
     <application android:usesCleartextTraffic="true"''')
-    text = text.replace('android:label="strmaction_desktop"', 'android:label="StrmAction"')
+    text = text.replace('android:label="strmaction_desktop"', 'android:label="StrmAction" android:banner="@drawable/banner"').replace('@mipmap/ic_launcher', '@drawable/ic_launcher')
     text = text.replace('android:name=".MainActivity"', 'android:name="top.strmaction.companion.MainActivity" android:supportsPictureInPicture="true"')
     text = text.replace('<category android:name="android.intent.category.LAUNCHER"/>', '<category android:name="android.intent.category.LAUNCHER"/><category android:name="android.intent.category.LEANBACK_LAUNCHER"/>')
     text = text.replace('</application>', '<service android:name="top.strmaction.companion.PlaybackService" android:exported="false" android:foregroundServiceType="mediaPlayback" /></application>')

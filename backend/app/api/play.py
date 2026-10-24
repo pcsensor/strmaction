@@ -83,7 +83,9 @@ def list_subtitles(media: MediaFile) -> list[dict[str, str]]:
         for entry in sorted(directory.iterdir(), key=lambda p: p.name.lower()):
             if not entry.is_file() or entry.suffix.lower() not in SUBTITLE_EXTENSIONS:
                 continue
-            if not entry.stem.lower().startswith(media_stem.lower()[:12]):
+            candidate = entry.stem.casefold()
+            base = media_stem.casefold()
+            if candidate != base and not any(candidate.startswith(base + separator) for separator in (".", " ", "_", "-", "[", "(")):
                 continue
             found.append(
                 {

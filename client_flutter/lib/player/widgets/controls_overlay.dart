@@ -87,7 +87,7 @@ class ControlsOverlay extends StatelessWidget {
         : title;
     return IgnorePointer(
       ignoring: !visible,
-      child: AnimatedOpacity(
+      child: SafeArea(child: AnimatedOpacity(
         opacity: visible ? 1 : 0,
         duration: const Duration(milliseconds: 160),
         child: SizedBox.expand(
@@ -215,7 +215,7 @@ class ControlsOverlay extends StatelessWidget {
             },
           ),
         ),
-      ),
+      )),
     );
   }
 

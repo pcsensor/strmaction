@@ -118,3 +118,13 @@ def test_selected_version_owns_subtitles_and_missing_version_is_rejected(catalog
         session.add(media)
         session.commit()
     assert client.post(f"/api/play/{ids['movie']}", json={"media_file_id": selected}).status_code == 404
+
+
+def test_subtitles_do_not_cross_versions_with_the_same_title_prefix(tmp_path):
+    from app.api.play import list_subtitles
+    stem = "A-very-long-title.EditionB"
+    media = MediaFile(item_id=1, library_id=1, abs_path=str(tmp_path / (stem + ".strm")), rel_path=stem + ".strm", url="https://example.com/video")
+    (tmp_path / "A-very-long-title.EditionA.zh.srt").write_text("other version")
+    (tmp_path / (stem + ".zh.srt")).write_text("selected version")
+    (tmp_path / (stem + "2.zh.srt")).write_text("different basename")
+    assert [entry["filename"] for entry in list_subtitles(media)] == [stem + ".zh.srt"]

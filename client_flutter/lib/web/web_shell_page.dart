@@ -350,6 +350,7 @@ class _WebShellPageState extends State<WebShellPage> {
   }
 
   Future<void> _openExternal(Uri uri) async {
+    if (uri.scheme != 'http' && uri.scheme != 'https') return;
     try {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } on Object catch (error) {

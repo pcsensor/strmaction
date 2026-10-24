@@ -33,7 +33,7 @@
             }
             catch (...) { deferral->Complete(); return S_OK; }
             wil::com_ptr<ICoreWebView2ServerCertificateErrorDetectedEventArgs> retained;
-            retained.copy_from(args);
+            if (FAILED(args->QueryInterface(IID_PPV_ARGS(&retained)))) { deferral->Complete(); return S_OK; }
             auto finish = [retained, deferral, trustWebView](bool allow) {
               retained->put_Action(allow ? COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_ALWAYS_ALLOW : COREWEBVIEW2_SERVER_CERTIFICATE_ERROR_ACTION_CANCEL);
               deferral->Complete();

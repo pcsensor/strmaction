@@ -82,6 +82,12 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 result(FlutterError(code: "player", message: "播放地址无效", details: nil)); return
             }
             clear()
+            do {
+                try AVAudioSession.sharedInstance().setCategory(.playback, mode: .moviePlayback)
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                result(FlutterError(code: "audio_session", message: error.localizedDescription, details: nil)); return
+            }
             loaded = true
             completed = false
             title = data["title"] as? String ?? "StrmAction"
@@ -203,6 +209,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         requestTask?.cancel(); requestTask = nil
         subtitleTask?.cancel(); subtitleTask = nil
         controller.destroy()
+        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         subtitles = []; selectedExternal = nil; loaded = false; completed = false
         UIScreen.main.brightness = originalBrightness
         UIApplication.shared.isIdleTimerDisabled = false

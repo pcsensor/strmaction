@@ -116,6 +116,13 @@ void main() {
       expect(parsed.playlist[parsed.currentIndex - 1].itemId, 301);
     });
 
+    test('preserves explicit zero and inherited null cache budgets', () {
+      final zero = PlaybackPayload.fromJson((payload()..['buffer_limit_mb'] = 0..['disk_cache_limit_mb'] = 0), 'https://media.example.com');
+      expect(zero.bufferLimitMb, 0); expect(zero.diskCacheLimitMb, 0);
+      final inherited = PlaybackPayload.fromJson(payload(), 'https://media.example.com');
+      expect(inherited.bufferLimitMb, isNull); expect(inherited.diskCacheLimitMb, isNull);
+    });
+
     test('rejects bad token and non-http url', () {
       final badToken = payload()..['play_token'] = 'bad token';
       expect(

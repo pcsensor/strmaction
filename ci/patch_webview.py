@@ -17,11 +17,15 @@ folder = Path(urllib.request.url2pathname(urllib.parse.urlparse(uri).path))
 target = folder / 'windows/in_app_webview/in_app_webview.cpp'
 source = target.read_text()
 marker = '// StrmAction: strict private-CA verification'
-if marker not in source:
+if marker in source:
+    start = source.index('    ' + marker)
+    end = source.index('    if (userContentController)', start)
+else:
     start = source.index('    /*\n    wil::com_ptr<ICoreWebView2_14> webView14;')
     end = source.index('    }*/', start) + len('    }*/')
-    patch = (ROOT / 'client_flutter/patches/windows_server_trust.cpp').read_text()
-    source = source[:start] + patch + source[end:]
+patch = (ROOT / 'client_flutter/patches/windows_server_trust.cpp').read_text()
+source = source[:start] + patch.rstrip() + '\n\n' + source[end:].lstrip('\n')
+if '#include <urlmon.h>' not in source:
     source = '#include <algorithm>\n#include <cctype>\n#include <urlmon.h>\n#pragma comment(lib, "urlmon.lib")\n' + source
-    target.write_text(source)
+target.write_text(source)
 print('Windows WebView private-CA callback enabled; default is deny.')
