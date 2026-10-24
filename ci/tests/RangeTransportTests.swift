@@ -1,0 +1,92 @@
+import Foundation
+import Network
+import Security
+
+// The transport tests use HTTP loopback. Certificate evaluation below is the
+// production implementation; only the app's persisted anchor store/UI log are
+// replaced in this standalone harness. App builds compile the real store.
+final class TLSTrustStore {
+    static let shared = TLSTrustStore()
+    func anchorCertificates() -> [SecCertificate] { [] }
+}
+enum D { static func log(_ tag: String, _ value: String) {} }
+
+func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
+    if !value() { throw NSError(domain: "RangeTransportTests", code: 1, userInfo: [NSLocalizedDescriptionKey: message]) }
+}
+
+@main struct RangeTransportTests {
+    static let headers = ["User-Agent": "pan-fixture", "Referer": "https://pan.example/"]
+    static func fetch(_ session: RangeOriginSession, _ queue: DispatchQueue, _ start: Int64, _ end: Int64) async throws -> Data {
+        try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                var data = Data()
+                session.fetch(start: start, end: end, pace: { _ in .now }, onMeta: { _ in },
+                    onData: { data.append($0) }, onEnd: { error in
+                        if let error { continuation.resume(throwing: error) }
+                        else { continuation.resume(returning: data) }
+                    })
+            }
+        }
+    }
+    static func main() async throws {
+        let base = URL(string: ProcessInfo.processInfo.environment["RANGE_FIXTURE_URL"]!)!
+        let queue = DispatchQueue(label: "range-tests")
+        let session = RangeOriginSession(url: base.appendingPathComponent("entry"), headers: headers, queue: queue)
+        let first = try await fetch(session, queue, 0, 4 * 1_048_576)
+        try require(first.count == 4 * 1_048_576 && first[99] == 99, "incorrect first segment")
+        async let second = fetch(session, queue, 4 * 1_048_576, 8 * 1_048_576)
+        async let third = fetch(session, queue, 8 * 1_048_576, 12 * 1_048_576)
+        let pair = try await (second, third)
+        try require(pair.0.first == UInt8((4 * 1_048_576) % 251), "incorrect parallel offset")
+        let before = try JSONSerialization.jsonObject(with: Data(contentsOf: base.appendingPathComponent("stats"))) as! [String: Any]
+        try require(before["entries"] as! Int == 1, "repeated AList redirect")
+        try require((before["peak"] as! Int) >= 2 && (before["peak"] as! Int) <= 4, "connection limit violated")
+        try require((before["ports"] as! Int) <= 3, "bounded responses did not reuse connections")
+        _ = try Data(contentsOf: base.appendingPathComponent("expire"))
+        async let retryA = fetch(session, queue, 0, 1024)
+        async let retryB = fetch(session, queue, 1024, 2048)
+        _ = try await (retryA, retryB)
+        let after = try JSONSerialization.jsonObject(with: Data(contentsOf: base.appendingPathComponent("stats"))) as! [String: Any]
+        try require(after["entries"] as! Int == 2, "refresh was not shared")
+        queue.sync { session.stop() }
+
+        let bad = RangeOriginSession(url: base.appendingPathComponent("bad-range"), headers: headers, queue: queue)
+        do { _ = try await fetch(bad, queue, 0, 1024); throw NSError(domain: "bad range accepted", code: 1) }
+        catch RangeOriginSession.SessionError.rangeMismatch { }
+        queue.sync { bad.stop() }
+        let plain = RangeOriginSession(url: base.appendingPathComponent("non-range"), headers: headers, queue: queue)
+        let plainData = try await fetch(plain, queue, 0, 1024)
+        try require(String(data: plainData, encoding: .utf8) == "plain-video", "non-Range fallback failed")
+        queue.sync { plain.stop() }
+
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        let store = RangeStore(directory: root, limitBytes: 2 * 1_048_576)
+        try store.prepare()
+        try require(store.write(Data(repeating: 1, count: 1_048_576), at: 0), "first block write")
+        try require(store.write(Data(repeating: 2, count: 1_048_576), at: 1_048_576), "second block write")
+        _ = store.read(length: 1, at: 0)
+        try require(store.write(Data(repeating: 3, count: 1_048_576), at: 2 * 1_048_576), "LRU write")
+        try require(store.read(length: 1, at: 1_048_576) == nil, "LRU did not evict old block")
+        try require(store.storedBytes <= 2 * 1_048_576, "disk budget exceeded")
+        store.removeFiles(); try? FileManager.default.removeItem(at: root)
+        var now: TimeInterval = 0
+        let sampler = ThroughputSampler(clock: { now })
+        now = 0.5; sampler.add(3 * 1_048_576)
+        now = 1; try require(sampler.bytesPerSecond() == 3 * 1_048_576, "burst rate")
+        now = 2; try require(sampler.bytesPerSecond() > 0, "burst gap prematurely zero")
+        now = 3.5; try require(sampler.bytesPerSecond() == 0, "real stall did not reach zero")
+
+        let cacheStore = RangeStore(directory: root, limitBytes: 8 * 1_048_576); try cacheStore.prepare()
+        let cache = try CacheServer(sourceURL: base.appendingPathComponent("entry"), headers: headers, store: cacheStore,
+                                    token: "test-token", targetAheadMb: 8, targetAheadSeconds: 10)
+        let port = try await cache.start()
+        var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/test-token")!)
+        request.setValue("bytes=0-999", forHTTPHeaderField: "Range")
+        let (localData, response) = try await URLSession.shared.data(for: request)
+        try require((response as? HTTPURLResponse)?.statusCode == 206 && localData.count == 1000, "local proxy range framing")
+        try require(localData[999] == UInt8(999 % 251), "local proxy data corruption")
+        cache.seek(); cache.stop(); cacheStore.removeFiles(); try? FileManager.default.removeItem(at: root)
+        print("Swift Range transport: URL reuse, shared refresh, pooled connections, parallelism, validation, fallback, LRU, rate and proxy passed")
+    }
+}

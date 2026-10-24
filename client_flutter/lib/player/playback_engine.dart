@@ -70,6 +70,12 @@ abstract class PlaybackEngine extends ChangeNotifier {
   bool get completed;
   String? get errorMessage;
   double? get networkSpeed;
+  String? get networkStatus {
+    if ((networkSpeed ?? 0) > 0) return null;
+    if (isLoading || isBuffering) return '等待数据';
+    if (bufferedRanges.any((range) => range.start <= position && range.end > position + 1)) return '读取缓存';
+    return null;
+  }
   List<BufferedRange> get bufferedRanges;
   List<TrackInfo> get audioTracks;
   List<TrackInfo> get subtitleTracks;

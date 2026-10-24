@@ -27,7 +27,12 @@ final class CacheServer {
     /// 回源吞吐采样。只统计真正走网络的字节，UI 的「实时网速」读它。
     let throughput = ThroughputSampler()
     /// 每个本地连接对应的回源客户端，连接断开时一并取消，避免僵尸下载。
-    private var origins: [ObjectIdentifier: OriginClient] = [:]
+    private var origins: [ObjectIdentifier: OriginRequest] = [:]
+    private lazy var originSession = RangeOriginSession(url: sourceURL, headers: headers, queue: queue)
+    private var speculation: [Int64: OriginRequest] = [:]
+    private var reservations: [Int64: Range<Int64>] = [:]
+    private var focusOffset: Int64 = 0
+    private var waiting: [ObjectIdentifier: (NWConnection, Int64, Int64?)] = [:]
     private var isStopped = false
 
     // MARK: 流量控制
@@ -145,6 +150,9 @@ final class CacheServer {
             self.listener.cancel()
             for (_, origin) in self.origins { origin.cancel() }
             self.origins.removeAll()
+            self.waiting.values.forEach { $0.0.cancel() }; self.waiting.removeAll()
+            self.originSession.stop()
+            self.speculation.removeAll(); self.reservations.removeAll()
             self.pacing.removeAll()
             self.store.close()
         }
@@ -162,7 +170,15 @@ final class CacheServer {
     /// 水位是「已拉取 − 已消费」，所以播放位置必须回流到这一层，
     /// 否则无法判断预拉取是否超前。
     func setConsumedBytes(_ bytes: Int64) {
+        let previous = consumedBytes
         consumedBytes = max(0, bytes)
+        queue.async {
+            // Metrics are approximate; explicit large jumps cancel stale work.
+            if abs(bytes - previous) > max(self.targetAheadBytes, 8 * 1_048_576) {
+                self.cancelSpeculation()
+            }
+            self.prefetch()
+        }
     }
 
     /// 打开/关闭预拉取流控。起播阶段由播放层关着，真正开始播放后打开。
@@ -312,9 +328,21 @@ final class CacheServer {
 
         let range = Self.parseRange(head)
         let start = range.start
+        if start < focusOffset || start > focusOffset + max(targetAheadBytes, 8 * 1_048_576) {
+            cancelSpeculation()
+        }
+        focusOffset = start
         let cachedEnd = store.cachedEnd(from: start)
 
-        if cachedEnd > start, totalLength > 0 {
+        if reservations.values.contains(where: { $0.contains(start) }) ||
+            origins.values.contains(where: { start >= $0.start && start < min($0.end ?? totalLength, totalLength) }) {
+            let key = ObjectIdentifier(connection)
+            waiting[key] = (connection, start, range.end)
+            queue.asyncAfter(deadline: .now() + 30) { [weak self] in
+                guard let self, let pending = self.waiting.removeValue(forKey: key) else { return }
+                pending.0.cancel()
+            }
+        } else if cachedEnd > start, totalLength > 0 {
             // 命中：从磁盘直发，零网络
             serveFromDisk(connection, start: start, end: range.end, cachedEnd: cachedEnd)
         } else {
@@ -348,8 +376,9 @@ final class CacheServer {
     }
 
     private func pumpDisk(_ connection: NWConnection, offset: Int64, remain: Int64) {
-        guard remain > 0, !isStopped else {
-            connection.cancel()
+        guard !isStopped else { connection.cancel(); return }
+        guard remain > 0 else {
+            connection.send(content: nil, isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
             return
         }
         let chunk = Int(min(remain, 256 * 1024))
@@ -366,92 +395,126 @@ final class CacheServer {
     // MARK: 回源
 
     private func serveFromOrigin(_ connection: NWConnection, start: Int64, end: Int64?) {
-        let client = OriginClient(queue: queue)
         let key = ObjectIdentifier(connection)
-        let pace = Pace()
-        pace.startOffset = start
-        pace.writeOffset = start
-        origins[key] = client
+        let pace = Pace(); pace.startOffset = start; pace.writeOffset = start
         pacing[key] = pace
+        focusOffset = start
+        // Keep decoder reads finite so it can consume already-prefetched ranges.
+        let upper = min(end ?? Int64.max, start + originSession.policy.segmentBytes)
         var headSent = false
-        var forwarded: Int64 = 0
-
-        client.fetch(
-            url: sourceURL,
-            headers: headers,
-            start: start,
-            end: end,
-            // 每收一批就问一次下一步怎么走：全速 / 限速 / 真停。
-            // 限速是主力手段——socket 一直在排空，源站不会因为我们不读而 RST。
+        let request = originSession.fetch(start: start, end: upper,
             pace: { [weak self] chunkBytes in
                 guard let self else { return .suspend }
-                let decision = self.nextDecision(pace, chunkBytes: chunkBytes)
-                if case .suspend = decision {
-                    self.markSuspended(pace)
-                    self.startPaceTickIfNeeded()
+                // Bounded segments use local backpressure only. The separate
+                // prefetch scheduler stops entirely when the window is full.
+                if pace.inFlight >= Self.maxInFlightBytes {
+                    self.markSuspended(pace); self.startPaceTickIfNeeded(); return .suspend
                 }
-                return decision
-            },
-            onMeta: { [weak self] meta in
+                return .now
+            }, onMeta: { [weak self] meta in
                 guard let self, !self.isStopped else { return }
-                if let total = meta.totalLength, total > 0 {
-                    self.totalLength = total
-                }
-                let total = self.totalLength
-                let upper: Int64
-                if let end {
-                    upper = end
-                } else if total > 0 {
-                    upper = total
-                } else {
-                    upper = 0
-                }
-
-                var head = "HTTP/1.1 206 Partial Content\r\n"
-                head += "Content-Type: video/mp4\r\n"
-                if total > 0, upper > start {
-                    head += "Content-Range: bytes \(start)-\(upper - 1)/\(total)\r\n"
-                    head += "Content-Length: \(upper - start)\r\n"
-                }
-                // 拿不到总长度时不写 Content-Length，让 FFmpeg 读到连接关闭为止。
-                head += "Accept-Ranges: bytes\r\n"
-                head += "Connection: close\r\n\r\n"
+                if let total = meta.totalLength, total > 0 { self.totalLength = total }
+                if meta.status == 200 { pace.writeOffset = 0 }
+                var head = "HTTP/1.1 \(meta.status) \(meta.status == 206 ? "Partial Content" : "OK")\r\n"
+                head += "Content-Type: \(meta.headers["content-type"] ?? "application/octet-stream")\r\n"
+                if let range = meta.headers["content-range"] { head += "Content-Range: \(range)\r\n" }
+                if let length = meta.headers["content-length"] { head += "Content-Length: \(length)\r\n" }
+                head += "Accept-Ranges: bytes\r\nConnection: close\r\n\r\n"
                 headSent = true
                 connection.send(content: Data(head.utf8), completion: .contentProcessed { _ in })
-                D.log("cache", "回源 @\(start) total=\(total)")
-            },
-            onData: { [weak self] data in
+                self.prefetch(after: min(upper, self.totalLength))
+            }, onData: { [weak self] data in
                 guard let self, !self.isStopped else { return }
                 let count = Int64(data.count)
                 if headSent {
                     pace.inFlight += count
                     connection.send(content: data, completion: .contentProcessed { error in
                         pace.inFlight -= count
-                        // FFmpeg 关掉连接后立刻停掉回源，别继续白下载。
                         if error != nil { self.cancelOrigin(for: connection) }
                     })
                 }
                 self.throughput.add(count)
-                self.store.write(data, at: pace.writeOffset)
-                pace.writeOffset += count
-                forwarded += count
-            },
-            onEnd: { [weak self] error in
+                self.store.write(data, at: pace.writeOffset); pace.writeOffset += count
+            }, onEnd: { [weak self] error in
                 guard let self else { connection.cancel(); return }
-                self.origins.removeValue(forKey: key)
-                self.pacing.removeValue(forKey: key)
-                if let error {
-                    D.log("cache", "回源中断：\(error.localizedDescription)")
-                } else {
-                    D.log("cache", "回源完成 共 \(Self.mb(forwarded)) 已存 \(Self.mb(self.store.storedBytes))")
-                }
-                connection.cancel()
+                self.origins.removeValue(forKey: key); self.pacing.removeValue(forKey: key)
+                if let error { D.log("cache", "回源中断：\(error.localizedDescription)") }
+                // Queue a final marker: cancel() here can discard queued body bytes.
+                connection.send(content: nil, isComplete: true, completion: .contentProcessed { _ in connection.cancel() })
+                self.wakeReaders()
+                self.prefetch()
+            })
+        origins[key] = request
+    }
+
+    private func cancelSpeculation() {
+        speculation.values.forEach { $0.cancel() }
+        speculation.removeAll(); reservations.removeAll()
+    }
+
+    private func prefetch(after lower: Int64? = nil) {
+        guard !isStopped, originSession.supportsRanges, totalLength > 0, targetAheadBytes > 0, store.capacity > 0 else { return }
+        let focus = max(focusOffset, consumedBytes)
+        let target = min(totalLength, focus + min(targetAheadBytes, store.capacity))
+        let reserved = reservations.values.reduce(Int64(0)) { $0 + ($1.upperBound - $1.lowerBound) }
+        var pendingBytes = reserved
+        var cursor = max(lower ?? focus, store.cachedEnd(from: focus))
+        let limit = max(0, originSession.policy.concurrency - 1)
+        while cursor < target && speculation.count < limit {
+            let cached = store.cachedEnd(from: cursor)
+            if cached > cursor { cursor = cached; continue }
+            if let pending = reservations.values.first(where: { $0.contains(cursor) }) { cursor = pending.upperBound; continue }
+            // Avoid overlapping a decoder read or another speculative request.
+            if let demand = origins.values.first(where: { cursor >= $0.start && cursor < min($0.end ?? totalLength, totalLength) }) {
+                cursor = min(demand.end ?? target, target); continue
             }
-        )
+            var upper = min(target, cursor + min(originSession.policy.segmentBytes, store.capacity))
+            for boundary in store.snapshot().map(\.lowerBound) + reservations.values.map(\.lowerBound) {
+                if boundary > cursor { upper = min(upper, boundary) }
+            }
+            let size = upper - cursor
+            guard size > 0, store.reserve(pendingBytes + size, before: focus) else { break }
+            let start = cursor
+            reservations[start] = start..<upper; pendingBytes += size
+            var position = start
+            let request = originSession.fetch(start: start, end: upper, pace: { _ in .now }, onMeta: { _ in },
+                onData: { [weak self] data in
+                    guard let self, !self.isStopped else { return }
+                    self.throughput.add(Int64(data.count)); self.store.write(data, at: position)
+                    position += Int64(data.count)
+                }, onEnd: { [weak self] error in
+                    guard let self else { return }
+                    self.speculation.removeValue(forKey: start); self.reservations.removeValue(forKey: start)
+                    self.wakeReaders()
+                    if error == nil { self.prefetch() }
+                })
+            speculation[start] = request; cursor = upper
+        }
+    }
+
+    func seek() {
+        queue.async {
+            self.cancelSpeculation()
+            self.origins.values.forEach { $0.cancel() }; self.origins.removeAll(); self.pacing.removeAll()
+            self.waiting.values.forEach { $0.0.cancel() }; self.waiting.removeAll()
+        }
+    }
+
+    private func wakeReaders() {
+        for (key, pending) in waiting {
+            if !reservations.values.contains(where: { $0.contains(pending.1) }) &&
+                !origins.values.contains(where: { pending.1 >= $0.start && pending.1 < min($0.end ?? totalLength, totalLength) }) {
+                waiting.removeValue(forKey: key)
+                let cached = store.cachedEnd(from: pending.1)
+                if cached > pending.1 { serveFromDisk(pending.0, start: pending.1, end: pending.2, cachedEnd: cached) }
+                else { serveFromOrigin(pending.0, start: pending.1, end: pending.2) }
+            }
+        }
     }
 
     private func cancelOrigin(for connection: NWConnection) {
         let key = ObjectIdentifier(connection)
+        waiting.removeValue(forKey: key)
         pacing.removeValue(forKey: key)
         if let origin = origins.removeValue(forKey: key) {
             origin.cancel()
@@ -587,6 +650,8 @@ final class MediaCacheSession {
     func updateTarget(aheadMb: Int, seconds: Double) {
         server.updateTarget(aheadMb: aheadMb, seconds: seconds)
     }
+
+    func seek() { server.seek() }
 
     func stop() {
         directory.remove { server.stop(); store.removeFiles() }

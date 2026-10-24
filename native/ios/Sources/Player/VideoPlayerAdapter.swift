@@ -84,7 +84,7 @@ public final class VideoPlayerController: ObservableObject {
     /// FFmpeg 缓冲上限相对用户设置留的余量，避免它成为流量控制的主控（见 `refreshBufferTarget`）。
     private static let maxBufferHeadroom: Double = 1.2
     private static let connectTimeoutSeconds: UInt64 = 20
-    private static let metricsIntervalNanos: UInt64 = 1_000_000_000
+    private static let metricsIntervalNanos: UInt64 = 500_000_000
 
     public init() {}
 
@@ -212,6 +212,7 @@ public final class VideoPlayerController: ObservableObject {
     public func seek(toMs: Int64) {
         let upper = durationMs > 0 ? durationMs : toMs
         let target = max(0, min(toMs, upper))
+        cacheSession?.seek()
         currentPositionMs = target
         ksCoordinator.seek(time: TimeInterval(target) / 1000.0)
     }

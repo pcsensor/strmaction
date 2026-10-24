@@ -9,6 +9,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../core/app_logger.dart';
 import '../models/playback_payload.dart';
 import '../services/bounded_media_cache.dart';
+import '../services/download_policy.dart';
 import 'playback_engine.dart';
 
 class MediaKitEngine extends PlaybackEngine {
@@ -17,6 +18,12 @@ class MediaKitEngine extends PlaybackEngine {
   late final VideoController _videoController;
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Timer? _cacheTimer;
+  Timer? _networkTimer;
+  bool _readingCache = false;
+  int _cacheEpoch = 0;
+  NetworkRate _fallbackRate = NetworkRate();
+  final Stopwatch _pollClock = Stopwatch()..start();
+  Duration _lastRateSample = Duration.zero;
 
   double _position = 0;
   double _duration = 0;
@@ -98,6 +105,11 @@ class MediaKitEngine extends PlaybackEngine {
 
   @override
   double? get networkSpeed => _networkSpeed;
+
+  @override
+  String? get networkStatus => (_networkSpeed ?? 0) == 0 &&
+      !_loading && !_buffering && _diskCache?.cacheReady == true
+      ? '缓存充足' : super.networkStatus;
 
   @override
   List<BufferedRange> get bufferedRanges => _bufferedRanges;
@@ -246,6 +258,9 @@ class MediaKitEngine extends PlaybackEngine {
     required int cacheLimitMb,
     required bool tlsVerify,
   }) async {
+    _cacheEpoch++;
+    _fallbackRate = NetworkRate();
+    _lastRateSample = _pollClock.elapsed;
     _error = null;
     _completed = false;
     _loading = true;
@@ -261,7 +276,8 @@ class MediaKitEngine extends PlaybackEngine {
     _diskCache = null;
     if (cacheDirectory != null && diskLimitMb > 0) {
       _diskCache = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
-        trustedCaPem: trustedCaPem, directory: cacheDirectory!, budgetBytes: diskLimitMb * 1024 * 1024);
+        trustedCaPem: trustedCaPem, directory: cacheDirectory!, budgetBytes: diskLimitMb * 1024 * 1024,
+        prefetchBytes: cacheLimitMb * 1024 * 1024);
     }
     final media = Media(
       _diskCache?.localUrl.toString() ?? payload.playUrl,
@@ -306,6 +322,7 @@ class MediaKitEngine extends PlaybackEngine {
     required int cacheLimitMb,
     required bool tlsVerify,
   }) async {
+    _diskCache?.prefetchBytes = cacheLimitMb * 1024 * 1024;
     final platform = _player.platform;
     if (platform is! NativePlayer) return;
     try {
@@ -336,13 +353,23 @@ class MediaKitEngine extends PlaybackEngine {
       const Duration(milliseconds: 500),
       (_) => unawaited(_readCacheState()),
     );
+    _networkTimer?.cancel();
+    _networkTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+      // Independent of MPV property latency and loopback/disk read throughput.
+      _networkSpeed = _diskCache?.networkSpeed ?? _fallbackRate.bytesPerSecond;
+      _notify();
+    });
   }
 
   Future<void> _readCacheState() async {
+    if (_readingCache || _disposed) return;
     final platform = _player.platform;
     if (platform is! NativePlayer) return;
+    _readingCache = true;
+    final epoch = _cacheEpoch;
     try {
-      final raw = await platform.getProperty('demuxer-cache-state');
+      final raw = await platform.getProperty('demuxer-cache-state').timeout(const Duration(seconds: 2));
+      if (_disposed || epoch != _cacheEpoch) return;
       if (raw.trim().isEmpty) return;
       final decoded = jsonDecode(raw);
       if (decoded is! Map) return;
@@ -373,14 +400,17 @@ class MediaKitEngine extends PlaybackEngine {
         final diskRanges = disk.ranges.map((r) => BufferedRange(r.$1 / disk.length * _duration, r.$2 / disk.length * _duration));
         _bufferedRanges = _mergeRanges([...merged, ...diskRanges]);
       }
-      final speed = disk?.networkSpeed ?? _asDouble(decoded['raw-input-rate']);
-      if (speed != null && speed >= 0 && speed != _networkSpeed) {
-        _networkSpeed = speed;
-        _notify();
+      if (disk == null) {
+        final speed = _asDouble(decoded['raw-input-rate']);
+        final now = _pollClock.elapsed;
+        if (speed != null && speed >= 0) {
+          _fallbackRate.add((speed * (now - _lastRateSample).inMicroseconds / 1000000).round());
+        }
+        _lastRateSample = now;
       }
     } on Object {
       // The property is unavailable while idle or before the file is loaded.
-    }
+    } finally { _readingCache = false; }
   }
 
   void _refreshBufferFallback() {
@@ -445,6 +475,9 @@ class MediaKitEngine extends PlaybackEngine {
     var target = relative ? _position + seconds : seconds;
     target = math.max(0, target);
     if (_duration > 0) target = math.min(target, _duration);
+    if (_duration > 0 && _diskCache != null) {
+      _diskCache!.seek((_diskCache!.length * target / _duration).round());
+    }
     await _player.seek(Duration(milliseconds: (target * 1000).round()));
   }
 
@@ -533,6 +566,8 @@ class MediaKitEngine extends PlaybackEngine {
 
   @override
   Future<void> stop() async {
+    _cacheEpoch++;
+    _networkTimer?.cancel();
     _cacheTimer?.cancel();
     _cacheTimer = null;
     _bufferedRanges = const [];
@@ -544,6 +579,8 @@ class MediaKitEngine extends PlaybackEngine {
     _notify();
     try {
       await _player.stop();
+      await _diskCache?.close();
+      _diskCache = null;
     } on Object {
       // Stopping is best-effort.
     }
@@ -572,6 +609,8 @@ class MediaKitEngine extends PlaybackEngine {
 
   @override
   Future<void> shutdown() async {
+    _cacheEpoch++;
+    _networkTimer?.cancel();
     if (_disposed) return;
     _disposed = true;
     _cacheTimer?.cancel();

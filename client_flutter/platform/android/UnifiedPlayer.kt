@@ -26,6 +26,7 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import io.flutter.plugin.common.EventChannel
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.util.concurrent.TimeUnit
 
 /** Only transport, decoding, tracks and platform lifecycle live here. */
@@ -42,6 +43,8 @@ class UnifiedPlayer(private val activity: MainActivity) {
         private set
     private val handler = Handler(Looper.getMainLooper())
     private var prefetch: PlaybackPrefetcher? = null
+    private var transport: OkHttpClient? = null
+    private var transferSession: MediaTransferSession? = null
     private var error: String? = null
     private var diskLimit = 0
     private val audio = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -59,7 +62,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
                 exo?.play(); startService()
             }
             "pause" -> exo?.pause()
-            "seek" -> exo?.seekTo((value as Number).toLong().coerceAtLeast(0))
+            "seek" -> { prefetch?.onSeek(); exo?.seekTo((value as Number).toLong().coerceAtLeast(0)) }
             "speed" -> exo?.setPlaybackSpeed((value as Number).toFloat().coerceIn(0.25f, 4f))
             "volume" -> {
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
@@ -92,19 +95,17 @@ class UnifiedPlayer(private val activity: MainActivity) {
         diskLimit = (data["disk_cache_limit_mb"] as? Number)?.toInt()?.coerceIn(0, 32768) ?: 2048
         val buffer = (data["buffer_limit_mb"] as? Number)?.toInt()?.coerceIn(0, 8192) ?: 512
         val cache = PlaybackDiskCache.open(activity, diskLimit)
-        prefetch = PlaybackPrefetcher { PlaybackDiskCache.current() }.also {
+        val session = MediaTransferSession(uri.toString().toHttpUrl())
+        transferSession = session
+        prefetch = PlaybackPrefetcher({ PlaybackDiskCache.current() }, session.policy).also {
             it.setWindowMb(if (cache == null) 0 else buffer.coerceAtMost(PlaybackDiskCache.limitMb()))
         }
         val client = PrivateCa.configure(OkHttpClient.Builder())
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
             .followRedirects(true).followSslRedirects(true)
-            .addInterceptor { chain ->
-                val response = chain.proceed(chain.request())
-                val total = response.header("Content-Range")?.substringAfterLast('/')?.toLongOrNull()
-                    ?: response.header("Content-Length")?.toLongOrNull()?.takeIf { response.code == 200 }
-                if (total != null) prefetch?.setContentLength(total)
-                response
-            }.build()
+            .addInterceptor(session)
+            .build()
+        transport = client
         val http = OkHttpDataSource.Factory(client).setDefaultRequestProperties(headers).setTransferListener(NetworkSpeedMeter)
         headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.let { http.setUserAgent(it.value) }
         val upstream = DefaultDataSource.Factory(activity, http)
@@ -115,7 +116,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
             .setTargetBufferBytes(PlaybackCache.targetBufferBytes())
             .setBufferDurationsMs(PlaybackCache.bufferTimeCapMs(), PlaybackCache.bufferTimeCapMs(), 2000, 3000)
             .setPrioritizeTimeOverSizeThresholds(false).build()
-        val player = ExoPlayer.Builder(activity).setMediaSourceFactory(DefaultMediaSourceFactory(factory))
+        val player = ExoPlayer.Builder(activity).setMediaSourceFactory(DefaultMediaSourceFactory(DataSource.Factory { SegmentedDataSource(factory, session) }))
             .setLoadControl(loadControl).build()
         exo = player
         surface?.player = player
@@ -176,6 +177,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
     fun emit() {
         val player = exo
         val duration = player?.duration?.coerceAtLeast(0) ?: 0
+        transferSession?.takeIf { it.supportsRanges }?.let { prefetch?.setContentLength(it.contentLength) }
         prefetch?.onTick(player?.currentPosition ?: 0, player?.bufferedPosition ?: 0, duration, player?.playbackState == Player.STATE_BUFFERING)
         val tracks = trackState(C.TRACK_TYPE_AUDIO)
         val subtitles = trackState(C.TRACK_TYPE_TEXT)
@@ -197,8 +199,10 @@ class UnifiedPlayer(private val activity: MainActivity) {
     private fun clear() {
         loaded = false
         surface?.player = null
+        transport?.dispatcher?.cancelAll()
         exo?.release(); exo = null
         prefetch?.stop(); prefetch = null
+        transport?.connectionPool?.evictAll(); transport = null; transferSession = null
         PlaybackDiskCache.close(clear = true)
         NetworkSpeedMeter.reset()
         activity.stopService(Intent(activity, PlaybackService::class.java))

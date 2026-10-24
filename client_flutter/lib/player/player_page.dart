@@ -711,6 +711,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   fullscreen: _fullscreen,
                   loading: _engine.isLoading || _engine.isBuffering,
                   networkSpeed: _engine.networkSpeed,
+                  networkStatus: _engine.networkStatus,
                   hasPrevious: _hasPrevious,
                   hasNext: _hasNext,
                   speedBoost: _speedBoost,

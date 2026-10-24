@@ -27,6 +27,7 @@ class ControlsOverlay extends StatelessWidget {
   final bool fullscreen;
   final bool loading;
   final double? networkSpeed;
+  final String? networkStatus;
   final bool hasPrevious;
   final bool hasNext;
   final bool speedBoost;
@@ -61,6 +62,7 @@ class ControlsOverlay extends StatelessWidget {
     required this.fullscreen,
     required this.loading,
     required this.networkSpeed,
+    this.networkStatus,
     required this.hasPrevious,
     required this.hasNext,
     required this.speedBoost,
@@ -176,6 +178,7 @@ class ControlsOverlay extends StatelessWidget {
                       paused: paused,
                       fullscreen: fullscreen,
                       networkSpeed: networkSpeed,
+                      networkStatus: networkStatus,
                       hasPrevious: hasPrevious,
                       hasNext: hasNext,
                       onPlayPause: onPlayPause,
@@ -317,6 +320,7 @@ class _BottomBar extends StatelessWidget {
   final bool paused;
   final bool fullscreen;
   final double? networkSpeed;
+  final String? networkStatus;
   final bool hasPrevious;
   final bool hasNext;
   final VoidCallback onPlayPause;
@@ -339,6 +343,7 @@ class _BottomBar extends StatelessWidget {
     required this.paused,
     required this.fullscreen,
     required this.networkSpeed,
+    this.networkStatus,
     required this.hasPrevious,
     required this.hasNext,
     required this.onPlayPause,
@@ -358,7 +363,8 @@ class _BottomBar extends StatelessWidget {
       '${formatTime(position)} / ${formatTime(duration)}',
       style: const TextStyle(color: Color(0xFFD1D5DB), fontSize: 13),
     );
-    final network = Text(formatNetworkSpeed(networkSpeed),
+    final networkText = networkStatus ?? formatNetworkSpeed(networkSpeed);
+    final network = Text(networkText,
       style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 12));
     return Container(
       key: const ValueKey('player-bottom-bar'),
@@ -382,7 +388,7 @@ class _BottomBar extends StatelessWidget {
           _ToolButton(iconPath: AppIcons.next, size: 20, onTap: hasNext ? onNext : null),
           if (!compact) ...[
             const SizedBox(width: 4), time,
-            if (formatNetworkSpeed(networkSpeed).isNotEmpty) ...[const SizedBox(width: 10), network],
+            if (networkText.isNotEmpty) ...[const SizedBox(width: 10), network],
           ],
           const Spacer(),
           _SpeedChip(speed: speed, onTap: onSpeed),

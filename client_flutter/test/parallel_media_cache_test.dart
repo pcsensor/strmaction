@@ -1,0 +1,176 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:strmaction_desktop/services/bounded_media_cache.dart';
+import 'package:strmaction_desktop/services/download_policy.dart';
+
+const mib = 1024 * 1024;
+
+class OriginFixture {
+  late final HttpServer server;
+  int entries = 0;
+  int ticket = 0;
+  int active = 0;
+  int peak = 0;
+  int length = 40 * mib;
+  bool expire = false;
+  bool wrongRange = false;
+  bool changed = false;
+  final sizes = <int>[];
+  Future<void> start() async {
+    server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    server.listen((request) async {
+      try {
+        expect(request.headers.value('User-Agent'), 'pan-fixture');
+        expect(request.headers.value('Referer'), 'https://pan.example/');
+        if (request.uri.path == '/entry') {
+          entries++; ticket++; expire = false;
+          request.response.statusCode = 302;
+          request.response.headers.set('Location', '/media?ticket=$ticket');
+          await request.response.close(); return;
+        }
+        if (expire || request.uri.queryParameters['ticket'] != '$ticket') {
+          request.response.statusCode = 403; await request.response.close(); return;
+        }
+        final range = RegExp(r'bytes=(\d+)-(\d+)').firstMatch(request.headers.value('Range')!)!;
+        final start = int.parse(range[1]!);
+        final end = min(length - 1, int.parse(range[2]!));
+        final probe = start == 0 && end == 0;
+        if (!probe) {
+          active++; peak = max(peak, active); sizes.add(end - start + 1);
+          await Future<void>.delayed(const Duration(milliseconds: 30));
+        }
+        request.response.statusCode = 206;
+        request.response.headers.set('Content-Type', 'video/mp4');
+        request.response.headers.set('ETag', changed ? '"changed"' : '"original"');
+        request.response.headers.set('Content-Range', 'bytes ${wrongRange && !probe ? start + 1 : start}-$end/$length');
+        request.response.contentLength = end - start + 1;
+        for (var cursor = start; cursor <= end; cursor += 256 * 1024) {
+          request.response.add(Uint8List.fromList(List<int>.generate(
+            min(256 * 1024, end - cursor + 1), (index) => (cursor + index) % 251)));
+        }
+        await request.response.close();
+        if (!probe) active--;
+      } on Object { unawaited(request.response.close().then<void>((_) {}, onError: (Object _) {})); }
+    });
+  }
+  String get url => 'http://127.0.0.1:${server.port}/entry';
+  Future<void> close() async { await server.close(force: true); }
+}
+
+Future<List<int>> read(HttpClient client, BoundedMediaCache cache, int start, int end) async {
+  final request = await client.getUrl(cache.localUrl);
+  request.headers.set('Range', 'bytes=$start-$end');
+  final response = await request.close();
+  expect(response.statusCode, 206);
+  return response.fold<List<int>>([], (all, bytes) => all..addAll(bytes))
+      .timeout(const Duration(seconds: 10));
+}
+
+void main() {
+  test('signed URL is reused; bounded workers coalesce Range reads and preserve data', () async {
+    final origin = OriginFixture(); await origin.start();
+    final root = await Directory.systemTemp.createTemp('parallel-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    expect(await read(client, cache, 0, 99), List.generate(100, (index) => index % 251));
+    for (var i = 0; i < 300 && cache.activeDownloads > 0; i++) {
+      expect(cache.storedBytes + cache.reservedBytes, lessThanOrEqualTo(16 * mib));
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(origin.entries, 1);
+    expect(origin.peak, inInclusiveRange(2, 4));
+    expect(origin.sizes.any((size) => size >= 4 * mib), isTrue);
+    expect(origin.sizes.every((size) => size <= 8 * mib), isTrue);
+    final requests = origin.sizes.length;
+    expect(await read(client, cache, 10, 50), List.generate(41, (index) => (index + 10) % 251));
+    expect(origin.sizes.length, requests);
+    final diskBytes = Directory('${root.path}/cache').listSync().whereType<File>()
+        .fold<int>(0, (sum, file) => sum + file.lengthSync());
+    expect(diskBytes, lessThanOrEqualTo(16 * mib));
+  });
+
+  test('concurrent expired readers share one refresh and do not loop', () async {
+    final origin = OriginFixture(); await origin.start();
+    final root = await Directory.systemTemp.createTemp('expired-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    origin.expire = true;
+    final bytes = await read(client, cache, 0, 199);
+    expect(bytes, List.generate(200, (index) => index % 251));
+    for (var i = 0; i < 300 && cache.activeDownloads > 0; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(origin.entries, 2);
+  });
+
+  test('rejects a wrong Content-Range instead of corrupting the cached file', () async {
+    final origin = OriginFixture(); await origin.start();
+    final root = await Directory.systemTemp.createTemp('invalid-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 4 * mib))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    origin.wrongRange = true;
+    await expectLater(read(client, cache, 0, 99), throwsA(isA<HttpException>()));
+    expect(cache.storedBytes, 0);
+  });
+
+  test('seek cancels speculation; close removes files and all reservations', () async {
+    final origin = OriginFixture(); await origin.start();
+    final root = await Directory.systemTemp.createTemp('seek-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 8 * mib))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    await read(client, cache, 0, 10);
+    cache.seek(30 * mib);
+    final bytes = await read(client, cache, 30 * mib, 30 * mib + 20);
+    expect(bytes, List.generate(21, (index) => (30 * mib + index) % 251));
+    await cache.close();
+    expect(cache.activeDownloads, 0); expect(cache.reservedBytes, 0);
+    expect(Directory('${root.path}/cache').existsSync(), isFalse);
+  });
+
+  test('refresh rejects a different file identity', () async {
+    final origin = OriginFixture(); await origin.start();
+    final root = await Directory.systemTemp.createTemp('changed-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 4 * mib))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    origin.expire = true; origin.changed = true;
+    await expectLater(read(client, cache, 0, 99), throwsA(isA<HttpException>()));
+    expect(cache.storedBytes, 0); expect(origin.entries, 2);
+  });
+
+  test('rolling rate spans burst gaps and becomes zero after a real stall', () {
+    var time = Duration.zero;
+    final rate = NetworkRate(now: () => time);
+    time = const Duration(milliseconds: 500); rate.add(3 * mib);
+    time = const Duration(seconds: 1); expect(rate.bytesPerSecond, 3 * mib);
+    time = const Duration(seconds: 2); expect(rate.bytesPerSecond, 1.5 * mib);
+    time = const Duration(milliseconds: 3500); expect(rate.bytesPerSecond, 0);
+  });
+  test('automatic policy increases gradually, backs off and never exceeds four', () {
+    final policy = DownloadPolicy();
+    expect(policy.concurrency, 2); expect(policy.segmentBytes, 4 * mib);
+    for (var i = 0; i < 20; i++) { policy.completed(4 * mib, const Duration(seconds: 1)); }
+    expect(policy.concurrency, 4); expect(policy.segmentBytes, 8 * mib);
+    policy.failed(); expect(policy.concurrency, 3); expect(policy.segmentBytes, 4 * mib);
+    for (var i = 0; i < 10; i++) { policy.failed(); }
+    expect(policy.concurrency, 1);
+  });
+}

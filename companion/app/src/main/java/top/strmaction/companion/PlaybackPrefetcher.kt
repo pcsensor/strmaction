@@ -8,6 +8,8 @@ import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.SimpleCache
 import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * 后台磁盘预取：内存缓冲之外，把后续内容提前读到 [SimpleCache]。
@@ -23,6 +25,7 @@ import java.util.concurrent.Executors
 @UnstableApi
 class PlaybackPrefetcher(
     private val cacheProvider: () -> SimpleCache?,
+    private val policy: AutoDownloadPolicy = AutoDownloadPolicy(),
 ) {
     private companion object {
         const val TAG = "StrmActionPrefetch"
@@ -35,7 +38,12 @@ class PlaybackPrefetcher(
     private val executor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "strmaction-prefetch").apply { isDaemon = true }
     }
-    private val buffer = ByteArray(READ_BUFFER_BYTES)
+    private val workers = Executors.newFixedThreadPool(3) { runnable ->
+        Thread(runnable, "strmaction-range").apply { isDaemon = true }
+    }
+    private data class Work(val start: Long, val end: Long, val source: DataSource, val generation: Long)
+    private val jobs = ConcurrentHashMap<Long, Work>()
+    private val sequence = AtomicLong()
 
     @Volatile private var factory: DataSource.Factory? = null
     @Volatile private var mediaUri: Uri? = null
@@ -60,6 +68,8 @@ class PlaybackPrefetcher(
         running = false
         generation++
         working = false
+        cancelDownloads()
+        workers.shutdownNow()
         executor.shutdownNow()
     }
 
@@ -81,7 +91,9 @@ class PlaybackPrefetcher(
     }
 
     fun setWindowMb(mb: Int) {
-        windowBytes = mb.coerceAtLeast(0) * 1024L * 1024L
+        val next = mb.coerceAtLeast(0) * 1024L * 1024L
+        if (next < windowBytes) onSeek()
+        windowBytes = next
     }
 
     fun onTick(positionMs: Long, bufferedMs: Long, durationMs: Long, buffering: Boolean) {
@@ -91,7 +103,14 @@ class PlaybackPrefetcher(
         playerBuffering = buffering
     }
 
-    fun isWorking(): Boolean = working
+    fun isWorking(): Boolean = jobs.isNotEmpty()
+
+    fun onSeek() { generation++; cancelDownloads() }
+
+    private fun cancelDownloads() {
+        jobs.values.toList().forEach { runCatching { it.source.close() } }
+        jobs.clear()
+    }
 
     fun enabled(): Boolean =
         windowBytes > 0 && factory != null && mediaUri != null && contentLength > 0 && durationMs > 0
@@ -181,70 +200,62 @@ class PlaybackPrefetcher(
                 val sourceFactory = factory
                 val uri = mediaUri
                 val ratio = bytesPerMs()
-                if (cache == null || sourceFactory == null || uri == null ||
-                    ratio <= 0 || windowBytes <= 0 || eofReached
-                ) {
-                    sleep(IDLE_POLL_MS)
-                    continue
-                }
-                if (playerBuffering) {
-                    // 让路给播放器，别和起播/追帧抢带宽。
-                    sleep(IDLE_POLL_MS)
-                    continue
-                }
-
-                val gen = generation
-                val start = cachedEndBytes(cache, uri.toString(), ratio)
-                val target = minOf(contentLength, (positionMs * ratio).toLong() + windowBytes)
-                if (start <= 0 || target - start < MIN_CHUNK_BYTES) {
-                    sleep(IDLE_POLL_MS)
-                    continue
-                }
-
-                working = true
-                var position = start
-                val dataSource = sourceFactory.createDataSource()
-                try {
-                    dataSource.open(
-                        DataSpec.Builder()
-                            .setUri(uri)
-                            .setPosition(position)
-                            // 一次打开覆盖剩余全部内容，由下面的循环按“窗口”随时停；
-                            // 避免每秒重开一个 Range 请求。
-                            .setLength((contentLength - start).coerceAtLeast(0L))
-                            .build(),
-                    )
-                    while (running && gen == generation) {
-                        if (playerBuffering) break
-                        val liveTarget = minOf(
-                            contentLength,
-                            (positionMs * ratio).toLong() + windowBytes,
-                        )
-                        if (position >= liveTarget) break
-                        val read = dataSource.read(buffer, 0, buffer.size)
-                        if (read == C.RESULT_END_OF_INPUT) {
-                            eofReached = true
-                            break
-                        }
-                        if (read <= 0) break
-                        position += read
+                if (cache != null && sourceFactory != null && uri != null && ratio > 0 && windowBytes > 0) {
+                    val key = uri.toString()
+                    val target = minOf(contentLength, (positionMs * ratio).toLong() + windowBytes)
+                    var cursor = cachedEndBytes(cache, key, ratio)
+                    // Reserve one transport slot for the decoder; total is at most four.
+                    val limit = (policy.concurrency - 1).coerceIn(0, 3)
+                    while (running && cursor < target && jobs.size < limit) {
+                        val covering = jobs.values.firstOrNull { cursor >= it.start && cursor < it.end }
+                        if (covering != null) { cursor = covering.end; continue }
+                        val cached = cache.getCachedLength(key, cursor, target - cursor)
+                        if (cached > 0) { cursor += cached; continue }
+                        val end = minOf(target, cursor + policy.segmentBytes, cursor - cached)
+                        if (end <= cursor) break
+                        // Do not queue behind the decoder's active cache-hole lock.
+                        val span = cache.startReadWriteNonBlocking(key, cursor, end - cursor)
+                        if (span == null) { cursor = end; continue }
+                        if (span.isHoleSpan) cache.releaseHoleSpan(span)
+                        else { cursor = end; continue }
+                        val id = sequence.incrementAndGet()
+                        val work = Work(cursor, end, sourceFactory.createDataSource(), generation)
+                        jobs[id] = work
+                        workers.execute { download(id, work, uri) }
+                        cursor = end
                     }
-                } catch (error: Exception) {
-                    if (gen == generation) {
-                        Log.w(TAG, "prefetch failed at $position", error)
-                        sleep(ERROR_BACKOFF_MS)
-                    }
-                } finally {
-                    runCatching { dataSource.close() }
-                    working = false
                 }
-                sleep(IDLE_POLL_MS)
-            } catch (interrupted: InterruptedException) {
-                return
-            } catch (error: Exception) {
-                Log.w(TAG, "prefetch loop error", error)
+                sleep(100)
+            } catch (interrupted: InterruptedException) { return }
+            catch (error: Exception) {
+                Log.w(TAG, "prefetch scheduler failed", error)
                 runCatching { sleep(ERROR_BACKOFF_MS) }
             }
+        }
+    }
+
+    private fun download(id: Long, work: Work, uri: Uri) {
+        val buffer = ByteArray(READ_BUFFER_BYTES)
+        try {
+            if (!running || work.generation != generation) return
+            work.source.open(DataSpec.Builder().setUri(uri).setPosition(work.start)
+                .setLength(work.end - work.start).setFlags(DataSpec.FLAG_ALLOW_CACHE_FRAGMENTATION).build())
+            var position = work.start
+            while (running && work.generation == generation && position < work.end) {
+                val read = work.source.read(buffer, 0, minOf(buffer.size.toLong(), work.end - position).toInt())
+                if (read == C.RESULT_END_OF_INPUT) break
+                if (read <= 0) break
+                position += read
+            }
+        } catch (error: Exception) {
+            if (running && work.generation == generation) {
+                policy.failed()
+                Log.w(TAG, "range prefetch failed", error)
+                runCatching { sleep(ERROR_BACKOFF_MS) }
+            }
+        } finally {
+            runCatching { work.source.close() }
+            jobs.remove(id)
         }
     }
 

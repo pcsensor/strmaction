@@ -22,7 +22,7 @@ def android():
         shutil.copy2(source, kotlin / source.name)
     old = CLIENT / 'android/app/src/main/kotlin/top/strmaction/strmaction_desktop/MainActivity.kt'
     old.unlink(missing_ok=True)
-    for name in ['PlaybackCache', 'PlaybackDiskCache', 'PlaybackPrefetcher', 'NetworkSpeedMeter']:
+    for name in ['PlaybackCache', 'PlaybackDiskCache', 'PlaybackPrefetcher', 'NetworkSpeedMeter', 'AutoDownloadPolicy', 'RollingNetworkRate']:
         shutil.copy2(ROOT / f'companion/app/src/main/java/top/strmaction/companion/{name}.kt', kotlin / f'{name}.kt')
     tests = app / 'src/test/kotlin/top/strmaction/companion'
     tests.mkdir(parents=True, exist_ok=True)
