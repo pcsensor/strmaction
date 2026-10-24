@@ -71,7 +71,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   String? _lastError;
   String? _lastNotice;
   bool _closing = false;
-  bool _shutdownDone = false;
+  Future<void>? _shutdownFuture;
 
   String _cardTitle = '';
   String _cardDescription = '';
@@ -138,6 +138,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   Future<void> _load() async {
+    if (_shutdownFuture != null) return;
     _watchdog?.cancel();
     _watchdog = Timer(const Duration(seconds: 30), () {
       if (!mounted || !_engine.isLoading) return;
@@ -147,6 +148,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       final publicRoots = await rootBundle.loadString('assets/public-roots.pem');
       await File('${widget.app.paths.baseDir}/media-ca.pem').writeAsString('$publicRoots\n${widget.app.config.trustedCaPem}');
     }
+    if (!mounted || _shutdownFuture != null) return;
     await _engine.load(
       widget.payload,
       cacheLimitMb: _bufferLimit,
@@ -154,7 +156,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
     _watchdog?.cancel();
     _watchdog = null;
-    if (!mounted) return;
+    if (!mounted || _shutdownFuture != null) return;
     if (_engine.errorMessage == null) {
       _reporter.start();
       _reporter.update(
@@ -179,7 +181,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _onEngineChanged() {
-    if (!mounted) return;
+    if (!mounted || _shutdownFuture != null) return;
     setState(() {});
     _reporter.update(
       (_engine.position * 1000).round(),
@@ -280,37 +282,52 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     await _load();
   }
 
-  Future<void> _shutdownPlayback() async {
-    if (_shutdownDone) return;
-    _shutdownDone = true;
+  Future<void> _cleanupStep(String name, Future<void> Function() action,
+      {Duration timeout = const Duration(seconds: 3)}) async {
+    try {
+      await action().timeout(timeout);
+    } on Object catch (error) {
+      widget.app.logger.warning('播放器退出：$name 失败：$error');
+    }
+  }
+
+  Future<void> _shutdownPlayback() =>
+      _shutdownFuture ??= Future<void>.microtask(_performShutdown);
+
+  Future<void> _performShutdown() async {
     _watchdog?.cancel();
     _hideTimer?.cancel();
     _badgeTimer?.cancel();
-    await _engine.pause();
+    await _cleanupStep('暂停', _engine.pause);
     _reporter.update((_engine.position * 1000).round(), durationMs: (_engine.duration * 1000).round());
-    await _reporter.stop(flush: true);
+    // Stop owns the bounded final upload and persists it before sending.
+    await _cleanupStep('保存进度', () => _reporter.stop(flush: true),
+        timeout: const Duration(seconds: 13));
+    await _cleanupStep('释放引擎', _engine.shutdown);
     if (widget.app.activeProgress == _reporter) {
       widget.app.activeProgress = null;
+      widget.app.setPlaybackShutdown(null);
     }
-    await _engine.shutdown();
-    widget.app.setPlaybackShutdown(null);
   }
 
-  Future<void> _back() async {
-    if (_closing) return;
-    _closing = true;
-    await _shutdownPlayback();
-    await _exitFullscreenIfNeeded();
-    if (mounted) Navigator.of(context).pop();
-  }
+  Future<void> _back() => _close();
 
-  Future<void> _requestItem(int itemId) async {
+  Future<void> _requestItem(int itemId) => _close(itemId: itemId);
+
+  Future<void> _close({int? itemId}) async {
     if (_closing) return;
     _closing = true;
-    await _shutdownPlayback();
-    await _exitFullscreenIfNeeded();
-    widget.onRequestItem?.call(itemId);
-    if (mounted) Navigator.of(context).pop();
+    try {
+      await _shutdownPlayback();
+    } on Object catch (error) {
+      widget.app.logger.warning('播放器退出失败：$error');
+    } finally {
+      await _cleanupStep('恢复窗口', _exitFullscreenIfNeeded);
+      if (mounted) {
+        if (itemId != null) widget.onRequestItem?.call(itemId);
+        Navigator.of(context).pop();
+      }
+    }
   }
 
   Future<void> _exitFullscreenIfNeeded() async {
@@ -318,12 +335,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await setMobileFullscreen(false);
       return;
     }
-    try {
-      if (await windowManager.isFullScreen()) {
-        await windowManager.setFullScreen(false);
-      }
-    } on Object {
-      // Best effort during teardown.
+    if (await windowManager.isFullScreen()) {
+      await windowManager.setFullScreen(false);
     }
   }
 
@@ -615,7 +628,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _badgeTimer?.cancel();
     _keyboard.dispose();
     _focusNode.dispose();
-    if (!_shutdownDone) {
+    if (_shutdownFuture == null) {
       unawaited(_shutdownPlayback());
     }
     WidgetsBinding.instance.removeObserver(this);
