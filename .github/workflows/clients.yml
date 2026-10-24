@@ -173,6 +173,9 @@ jobs:
         run: |
           New-Item -ItemType Directory -Force dist | Out-Null
           Copy-Item client_flutter/build/windows/x64/runner/Release dist/StrmAction-Windows -Recurse -Force
+          if (Test-Path dist/StrmAction-Windows/strmaction_desktop.exe) {
+            Rename-Item dist/StrmAction-Windows/strmaction_desktop.exe StrmAction.exe
+          }
           Compress-Archive -Path dist/StrmAction-Windows -DestinationPath dist/StrmAction-Windows.zip -Force
           Remove-Item -Recurse -Force dist/StrmAction-Windows
           python ci/artifacts.py windows dist --signing unsigned

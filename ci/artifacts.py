@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import platform
+import re
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
@@ -21,6 +22,7 @@ metadata = {
     'run_url': f"https://github.com/{os.environ.get('GITHUB_REPOSITORY', '')}/actions/runs/{os.environ.get('GITHUB_RUN_ID', '')}",
     'runner': platform.platform(),
     'flutter_version': os.environ.get('FLUTTER_VERSION'),
+    'app_version': re.search(r'^version: ([^\n]+)', (Path(__file__).resolve().parents[1] / 'client_flutter/pubspec.yaml').read_text(), re.M).group(1),
     'signing': args.signing,
     'packages': [{'name': p.name, 'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in packages],
 }
