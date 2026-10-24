@@ -122,7 +122,7 @@ void main() {
 
     testWidgets('$platform control buttons and drawer taps do not toggle the screen', (tester) async {
       await mountPlayer(tester);
-      await tester.tap(find.text('1x'));
+      await tester.tap(find.descendant(of: find.byType(ControlsOverlay), matching: find.text('1x')));
       await tester.pump(const Duration(milliseconds: 300));
       expect(tester.widget<PlayerDrawer>(find.byType(PlayerDrawer)).visible, isTrue);
       expect(controlsVisible(tester), isTrue);
