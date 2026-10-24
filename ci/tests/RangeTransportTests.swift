@@ -95,6 +95,20 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         try await Task.sleep(nanoseconds: 500_000_000)
         try require(cacheStore.storedBytes <= 8 * 1_048_576, "proxy prefetch exceeded capacity")
         cache.seek(); cache.stop(); cacheStore.removeFiles(); try? FileManager.default.removeItem(at: root)
+        let slowStore = RangeStore(directory: root, limitBytes: 8 * 1_048_576); try slowStore.prepare()
+        let slowCache = try CacheServer(sourceURL: base.appendingPathComponent("slow"), headers: headers,
+            store: slowStore, token: "slow-token", targetAheadMb: 8, targetAheadSeconds: 10)
+        let slowPort = try await slowCache.start()
+        var slowRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(slowPort)/slow-token")!)
+        slowRequest.setValue("bytes=0-999", forHTTPHeaderField: "Range"); slowRequest.timeoutInterval = 5
+        let pending = Task { try await URLSession.shared.data(for: slowRequest) }
+        try await Task.sleep(nanoseconds: 100_000_000)
+        let stoppedAt = ProcessInfo.processInfo.systemUptime
+        slowCache.stop(); slowStore.removeFiles()
+        var cancelled = false
+        do { _ = try await pending.value } catch { cancelled = true }
+        try require(cancelled && ProcessInfo.processInfo.systemUptime - stoppedAt < 2, "exit left an active local socket")
+        try? FileManager.default.removeItem(at: root)
         print("Swift Range transport: URL reuse, shared refresh, pooled connections, parallelism, validation, fallback, LRU, rate and proxy passed")
     }
 }

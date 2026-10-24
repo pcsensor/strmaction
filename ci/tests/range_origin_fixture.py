@@ -75,7 +75,7 @@ class Handler(BaseHTTPRequestHandler):
                 state["peak"] = max(state["peak"], state["active"])
         try:
             if not probe:
-                time.sleep(0.04)
+                time.sleep(2 if self.path.startswith("/slow") else 0.04)
             self.send_response(206)
             bad = self.path.startswith("/bad-range") and not probe
             self.send_header("Content-Range", f"bytes {start + 1 if bad else start}-{end}/{length}")

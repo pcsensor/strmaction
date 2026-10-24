@@ -34,6 +34,7 @@ final class CacheServer {
     private var focusOffset: Int64 = 0
     private var waiting: [ObjectIdentifier: (NWConnection, Int64, Int64?)] = [:]
     private var isStopped = false
+    private var connections: [ObjectIdentifier: NWConnection] = [:]
 
     // Prefetch has a hard byte window; local writes separately apply bounded
     // backpressure so a paused decoder cannot accumulate an unlimited send queue.
@@ -129,9 +130,10 @@ final class CacheServer {
     }
 
     func stop() {
-        queue.async { [weak self] in
-            guard let self, !self.isStopped else { return }
+        queue.async {
+            guard !self.isStopped else { return }
             self.isStopped = true
+            self.closeConnections()
             self.listener.cancel()
             for (_, origin) in self.origins { origin.cancel() }
             self.origins.removeAll()
@@ -226,6 +228,8 @@ final class CacheServer {
     // MARK: 连接处理
 
     private func accept(_ connection: NWConnection) {
+        guard !isStopped else { connection.cancel(); return }
+        connections[ObjectIdentifier(connection)] = connection
         let buffer = RequestBuffer()
         connection.stateUpdateHandler = { [weak self] state in
             guard let self else { connection.cancel(); return }
@@ -234,6 +238,9 @@ final class CacheServer {
                 self.readRequest(connection, buffer: buffer)
             case .failed, .cancelled:
                 self.cancelOrigin(for: connection)
+                self.connections.removeValue(forKey: ObjectIdentifier(connection))
+                connection.stateUpdateHandler = nil
+                connection.cancel()
             default:
                 break
             }
@@ -437,10 +444,19 @@ final class CacheServer {
 
     func seek() {
         queue.async {
+            self.closeConnections()
             self.cancelSpeculation()
             self.origins.values.forEach { $0.cancel() }; self.origins.removeAll(); self.pacing.removeAll()
             self.waiting.values.forEach { $0.0.cancel() }; self.waiting.removeAll()
         }
+    }
+
+    private func closeConnections() {
+        for connection in connections.values {
+            connection.stateUpdateHandler = nil
+            connection.cancel()
+        }
+        connections.removeAll()
     }
 
     private func wakeReaders() {
