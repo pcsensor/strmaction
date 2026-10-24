@@ -1,4 +1,6 @@
 export interface StrmActionNativeBridge {
+  requestPlayback?: (request: string) => Promise<{ ok: boolean; error?: string } | void>
+  playV2?: (request: string) => void
   /** 内置 Media3 播放器（v0.8 默认路径） */
   play?: (itemId: number) => void
   /** 打开伴侣 App 的服务器设置 / 桌面端设置 */

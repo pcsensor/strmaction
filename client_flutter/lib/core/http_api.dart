@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'config.dart';
+import 'trust.dart';
 
 class HealthCheckResult {
   final bool ok;
@@ -17,12 +18,30 @@ class ApiClient {
   const ApiClient(this.config);
 
   HttpClient _createClient() {
-    final client = HttpClient()
-      ..connectionTimeout = const Duration(seconds: 3);
-    if (config.allowSelfSignedHttps) {
-      client.badCertificateCallback = (cert, host, port) => true;
+    return trustedClient(config);
+  }
+
+  Future<Map<String, dynamic>> request(String path, {String cookie = '', Map<String, dynamic>? body}) async {
+    final client = _createClient();
+    try {
+      final request = await client.openUrl(body == null ? 'GET' : 'POST', Uri.parse('${config.serverUrl}$path')).timeout(const Duration(seconds: 10));
+      request.headers.set('X-StrmAction-Companion', '1');
+      request.headers.set('User-Agent', 'StrmActionCompanion/2.0');
+      if (cookie.isNotEmpty) request.headers.set(HttpHeaders.cookieHeader, cookie);
+      if (body != null) {
+        request.headers.contentType = ContentType.json;
+        request.add(utf8.encode(jsonEncode(body)));
+      }
+      final response = await request.close().timeout(const Duration(seconds: 15));
+      final text = await response.transform(utf8.decoder).join().timeout(const Duration(seconds: 15));
+      final data = jsonDecode(text) as Map<String, dynamic>;
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ConfigException((data['error'] is Map ? data['error']['message'] : null)?.toString() ?? '服务器返回 HTTP ${response.statusCode}');
+      }
+      return data;
+    } finally {
+      client.close(force: true);
     }
-    return client;
   }
 
   Future<HealthCheckResult> checkHealth() async {
@@ -58,7 +77,7 @@ class ApiClient {
     } on HandshakeException {
       return const HealthCheckResult(
         false,
-        'HTTPS 证书校验失败。请在桌面端设置中开启“允许自签名 HTTPS 证书”。',
+        'HTTPS 证书校验失败。请在设置中导入私有根 CA，并检查主机名。',
       );
     } on SocketException {
       return const HealthCheckResult(false, '无法连接服务器，请检查地址、端口和服务器状态。');

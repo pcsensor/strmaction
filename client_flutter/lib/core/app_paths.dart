@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:path/path.dart' as p;
+import 'package:flutter/services.dart';
 
 import 'version.dart';
 
@@ -9,6 +10,15 @@ import 'version.dart';
 /// The paths intentionally match the old Python desktop app so that existing
 /// users keep their server address, cache setting and log files.
 class AppPaths {
+  static Future<AppPaths> forPlatform() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      final directory = await const MethodChannel('strmaction/native')
+          .invokeMethod<String>('configDirectory');
+      if (directory == null || directory.isEmpty) throw StateError('应用数据目录不可用');
+      return AppPaths(directory);
+    }
+    return AppPaths.forCurrentUser();
+  }
   final String baseDir;
 
   const AppPaths(this.baseDir);

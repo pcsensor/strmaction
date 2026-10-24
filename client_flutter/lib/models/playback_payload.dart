@@ -44,6 +44,15 @@ class PlaylistEntry {
 }
 
 class PlaybackPayload {
+  Map<String, dynamic> toNativeJson() => {
+    'item_id': itemId, 'play_url': playUrl, 'headers': headers,
+    'resume_ms': resumeMs, 'duration_ms': durationMs, 'title': title,
+    'subtitles': subtitles.map((s) => s.toJson()).toList(),
+  };
+
+  final String mode;
+  final int? bufferLimitMb;
+  final int? diskCacheLimitMb;
   final int itemId;
   final String playUrl;
   final Map<String, String> headers;
@@ -60,6 +69,9 @@ class PlaybackPayload {
   final int? durationMs;
 
   const PlaybackPayload({
+    this.mode = 'builtin',
+    this.bufferLimitMb,
+    this.diskCacheLimitMb,
     required this.itemId,
     required this.playUrl,
     required this.headers,
@@ -122,6 +134,9 @@ class PlaybackPayload {
         : -1;
 
     return PlaybackPayload(
+      mode: raw['mode'] == 'copy' ? 'copy' : 'builtin',
+      bufferLimitMb: raw['buffer_limit_mb'] is int ? (raw['buffer_limit_mb'] as int).clamp(0, 8192) : null,
+      diskCacheLimitMb: raw['disk_cache_limit_mb'] is int ? (raw['disk_cache_limit_mb'] as int).clamp(0, 32768) : null,
       itemId: itemId,
       playUrl: playUrl,
       headers: headers,
@@ -249,7 +264,7 @@ class PlaybackPayload {
   static List<PlaylistEntry> _cleanPlaylist(dynamic raw) {
     if (raw is! List) return const [];
     final result = <PlaylistEntry>[];
-    for (final entry in raw.take(200)) {
+    for (final entry in raw) {
       if (entry is! Map) continue;
       final rawId = entry['item_id'] ?? entry['id'];
       final itemId = _positiveIntOrNull(rawId);

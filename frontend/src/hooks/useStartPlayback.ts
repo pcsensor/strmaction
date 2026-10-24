@@ -3,141 +3,54 @@ import { usePlay } from '../api/hooks'
 import { useToast } from '../store/ui'
 import { t } from '../i18n/zh-CN'
 import { copyText } from '../utils/clipboard'
-import type { PlayResponse } from '../api/types'
+import type { PlayMode, PlayResponse } from '../api/types'
 
 interface StartOptions {
-  /** auto / builtin / browser_intent / copy */
-  mode?: string
+  mode?: PlayMode
   mediaFileId?: number
   silent?: boolean
-}
-
-function downgradeCopyText(reason: PlayResponse['downgrade_reason']): {
-  title: string
-  description: string
-} {
-  switch (reason) {
-    case 'requires_companion':
-      return {
-        title: t('player.companionOnlyTitle'),
-        description: t('player.companionOnlyTip'),
-      }
-    case 'requires_android':
-      return {
-        title: t('player.intentOnlyTitle'),
-        description: t('player.intentOnlyTip'),
-      }
-    default:
-      return { title: t('player.copyTitle'), description: t('player.copyTip') }
-  }
 }
 
 export function useStartPlayback() {
   const play = usePlay()
   const toast = useToast()
-
-  return useCallback(
-    async (itemId: number, options: StartOptions = {}): Promise<PlayResponse | null> => {
-      const bridge =
-        typeof window !== 'undefined' ? window.StrmActionNative : undefined
-
-      // 桌面端：网页负责取播放数据（direct），Python 负责本机内嵌播放
-      if (bridge?.isDesktop?.()) {
-        try {
-          const result = await play.mutateAsync({
-            itemId,
-            mode: 'direct',
-            mediaFileId: options.mediaFileId,
-          })
-          if (!bridge.playItem) {
-            throw new Error(t('player.desktopBridgeMissing'))
-          }
-          const reply = await bridge.playItem(JSON.stringify(result))
-          if (reply && typeof reply === 'object' && 'ok' in reply && !reply.ok) {
-            throw new Error(reply.error || t('player.failed'))
-          }
-          toast({
-            title: t('player.desktop'),
-            description: t('player.desktopTip'),
-            tone: 'success',
-          })
-          return result
-        } catch (error) {
-          toast({
-            title: t('player.failed'),
-            description: (error as Error).message || t('player.failed'),
-            tone: 'error',
-          })
-          return null
-        }
-      }
-
-      // 伴侣 App：原生层自己请求 /api/play，网页不接触 URL 与 token（§12.8）
-      if (bridge?.play) {
-        try {
-          bridge.play(itemId)
-          return null
-        } catch (error) {
-          toast({
-            title: t('player.failed'),
-            description: (error as Error).message || t('player.failed'),
-            tone: 'error',
-          })
-          return null
-        }
-      }
-
-      try {
-        const result = await play.mutateAsync({
-          itemId,
-          mode: options.mode,
-          mediaFileId: options.mediaFileId,
-        })
-
-        const copy = async (
-          title = t('player.copyTitle'),
-          description = t('player.copyTip'),
-        ) => {
-          const ok = await copyText(result.play_url)
-          toast({
-            title: ok ? title : t('toast.copyFailed'),
-            description: ok ? description : result.play_url,
-            tone: ok ? 'success' : 'error',
-            timeout: 7000,
-          })
-        }
-
-        if (result.mode === 'browser_intent' && result.action) {
-          toast({
-            title: t('player.intent'),
-            description: t('player.intentTip'),
-            actionLabel: t('player.copyAction'),
-            onAction: copy,
-            timeout: 8000,
-          })
-          window.location.href = result.action
-        } else if (result.mode === 'copy') {
-          if (result.downgraded) {
-            const message = downgradeCopyText(result.downgrade_reason)
-            await copy(message.title, message.description)
-          } else {
-            await copy()
-          }
-        } else {
-          // builtin 只可能出现在伴侣 App 中；浏览器拿不到原生播放器
-          toast({
-            title: t('player.backend'),
-            description: t('player.externalHint'),
-            tone: 'success',
-          })
-        }
-        return result
-      } catch (error) {
-        const message = (error as Error).message || t('player.failed')
-        toast({ title: t('player.failed'), description: message, tone: 'error' })
+  return useCallback(async (itemId: number, options: StartOptions = {}): Promise<PlayResponse | null> => {
+    const bridge = window.StrmActionNative
+    try {
+      const request = JSON.stringify({ itemId, mediaFileId: options.mediaFileId, mode: options.mode })
+      if (bridge?.requestPlayback) {
+        const reply = await bridge.requestPlayback(request)
+        if (reply && !reply.ok) throw new Error(reply.error || t('player.failed'))
         return null
       }
-    },
-    [play, toast],
-  )
+      if (bridge?.playV2) {
+        bridge.playV2(request)
+        return null
+      }
+      if (bridge?.play && options.mode !== 'copy') {
+        bridge.play(itemId)
+        return null
+      }
+      const result = await play.mutateAsync({ itemId, mode: options.mode, mediaFileId: options.mediaFileId })
+      if (result.mode === 'copy') {
+        const ok = await copyText(result.play_url)
+        toast({
+          title: ok ? t('player.copyTitle') : t('toast.copyFailed'),
+          description: ok
+            ? result.downgraded ? '内部播放需要使用 StrmAction App，已复制所选版本的链接。' : '已复制所选版本的播放链接。'
+            : result.play_url,
+          tone: ok ? 'success' : 'error',
+        })
+      } else if (bridge?.playItem) {
+        const reply = await bridge.playItem(JSON.stringify(result))
+        if (reply && !reply.ok) throw new Error(reply.error || t('player.failed'))
+      } else {
+        throw new Error('内部播放需要使用 StrmAction App。')
+      }
+      return result
+    } catch (error) {
+      toast({ title: t('player.failed'), description: (error as Error).message, tone: 'error' })
+      return null
+    }
+  }, [play, toast])
 }

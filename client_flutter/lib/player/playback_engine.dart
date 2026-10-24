@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import 'package:flutter/widgets.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../models/playback_payload.dart';
@@ -45,6 +46,17 @@ bool areBufferedRangesEqual(List<BufferedRange> a, List<BufferedRange> b) {
 }
 
 abstract class PlaybackEngine extends ChangeNotifier {
+  Widget buildVideo() {
+    final controller = videoController;
+    return controller == null ? const SizedBox.expand() : Video(
+      controller: controller, fit: BoxFit.contain,
+      controls: null, wakelock: true,
+    );
+  }
+
+  Future<void> enterPiP() async {}
+  Future<void> setBrightness(double value) async {}
+
   VideoController? get videoController;
 
   double get position;

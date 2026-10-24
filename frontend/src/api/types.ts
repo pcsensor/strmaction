@@ -195,11 +195,11 @@ export interface PlaySubtitle {
   url: string
 }
 
-export type PlayMode = 'builtin' | 'browser_intent' | 'copy'
+export type PlayMode = 'builtin' | 'copy'
 
 export interface PlayResponse {
-  mode: PlayMode | 'direct'
-  requested_mode: PlayMode | 'auto' | 'direct'
+  mode: PlayMode
+  requested_mode: PlayMode
   downgraded: boolean
   downgrade_reason: 'requires_companion' | 'requires_android' | null
   target: string
@@ -221,7 +221,6 @@ export interface PlayResponse {
   play_token_expires_at: string
   progress_interval_ms: number
   cache_limit_mb: number
-  fallback_on_error: boolean
   subtitles: PlaySubtitle[]
   media_file_id: number
   progress_updated_at: string | null
@@ -315,12 +314,13 @@ export interface AppSettings {
   }
   scanner: { ignore: string[]; follow_symlinks: boolean; max_depth: number }
   player: {
-    mode: PlayMode | 'auto'
+    mode: PlayMode
     progress_interval_ms: number
     play_token_ttl_hours: number
     cache_limit_mb: number
-    fallback_on_error: boolean
-    play_headers: Record<string, string>
+    buffer_limit_mb: number | null
+    disk_cache_limit_mb: number | null
+      play_headers: Record<string, string>
   }
   ui: { default_language: string; hero_rotate_ms: number }
 }
@@ -333,13 +333,11 @@ export interface SettingsResponse {
 
 /** v1.2 用户级播放偏好；null 表示跟随全局默认。 */
 export interface PlayerPreference {
-  mode: PlayMode | 'auto' | null
-  fallback_on_error: boolean | null
+  mode: PlayMode | null
 }
 
 export interface PlayerPreferenceSummary {
-  mode: PlayMode | 'auto'
-  fallback_on_error: boolean
+  mode: PlayMode
 }
 
 export interface MyPlayerResponse {
@@ -347,16 +345,16 @@ export interface MyPlayerResponse {
   defaults: PlayerPreferenceSummary
   effective: PlayerPreferenceSummary
   /** 当前账号可选的播放方式。 */
-  allowed_modes: Array<PlayMode | 'auto'>
+  allowed_modes: Array<PlayMode>
   /** 当前客户端实际能执行的播放方式。 */
-  available_modes: Array<PlayMode | 'auto'>
+  available_modes: Array<PlayMode>
   client: {
     is_companion: boolean
     is_android: boolean
     is_browser: boolean
   }
   /** 当前客户端按偏好解析后的实际播放方式。 */
-  resolved_mode: PlayMode | 'auto'
+  resolved_mode: PlayMode
 }
 
 export interface AboutInfo {

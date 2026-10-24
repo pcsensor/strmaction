@@ -1,7 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:media_kit_video/media_kit_video.dart';
+import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../app_controller.dart';
@@ -9,6 +10,8 @@ import '../models/playback_payload.dart';
 import '../services/progress_reporter.dart';
 import 'input/player_keyboard.dart';
 import 'media_kit_engine.dart';
+import 'native_player_engine.dart';
+import 'playback_engine.dart';
 import 'widgets/app_icons.dart';
 import 'widgets/controls_overlay.dart';
 import 'widgets/message_card.dart';
@@ -30,8 +33,16 @@ class PlayerPage extends StatefulWidget {
   State<PlayerPage> createState() => _PlayerPageState();
 }
 
-class _PlayerPageState extends State<PlayerPage> {
-  late final MediaKitEngine _engine;
+class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
+  late final PlaybackEngine _engine;
+  bool _wasPaused = true;
+  bool _locked = false;
+  double _tapX = 0;
+  double _dragX = 0;
+  double _dragY = 0;
+  double _dragPosition = 0;
+  bool get _mobile => Platform.isAndroid || Platform.isIOS;
+  int get _bufferLimit => widget.payload.bufferLimitMb ?? (_mobile && Platform.isAndroid ? 512 : widget.app.config.cacheLimitMb);
   late final ProgressReporter _reporter;
   late final PlayerKeyboardHandler _keyboard;
   final FocusNode _focusNode = FocusNode(debugLabel: 'player');
@@ -70,7 +81,11 @@ class _PlayerPageState extends State<PlayerPage> {
   void initState() {
     super.initState();
     _boostSpeed = widget.app.config.boostSpeed;
-    _engine = MediaKitEngine(
+    WidgetsBinding.instance.addObserver(this);
+    _engine = _mobile ? NativePlayerEngine() : MediaKitEngine(
+      caBundlePath: '${widget.app.paths.baseDir}/media-ca.pem',
+      cacheDirectory: '${widget.app.paths.baseDir}/playback-${DateTime.now().microsecondsSinceEpoch}',
+      diskLimitMb: widget.payload.diskCacheLimitMb ?? widget.app.config.diskCacheLimitMb,
       logger: widget.app.logger,
       hardwareAcceleration: widget.app.config.playerHardwareAcceleration,
     );
@@ -80,7 +95,8 @@ class _PlayerPageState extends State<PlayerPage> {
       itemId: widget.payload.itemId,
       playToken: widget.payload.playToken,
       intervalMs: widget.payload.progressIntervalMs,
-      verifySsl: !widget.app.config.allowSelfSignedHttps,
+      verifySsl: true,
+      trustedCaPem: widget.app.config.trustedCaPem,
       onAuthError: _onProgressAuthError,
       logger: widget.app.logger,
     );
@@ -118,9 +134,13 @@ class _PlayerPageState extends State<PlayerPage> {
       if (!mounted || !_engine.isLoading) return;
       _showError('打开片源超时，请检查网络、链接或证书设置。');
     });
+    if (!_mobile) {
+      final publicRoots = await rootBundle.loadString('assets/public-roots.pem');
+      await File('${widget.app.paths.baseDir}/media-ca.pem').writeAsString('$publicRoots\n${widget.app.config.trustedCaPem}');
+    }
     await _engine.load(
       widget.payload,
-      cacheLimitMb: widget.app.config.cacheLimitMb,
+      cacheLimitMb: _bufferLimit,
       tlsVerify: !widget.app.config.allowSelfSignedHttps,
     );
     _watchdog?.cancel();
@@ -138,7 +158,7 @@ class _PlayerPageState extends State<PlayerPage> {
 
   void _onConfigChanged() {
     _engine.applySettings(
-      cacheLimitMb: widget.app.config.cacheLimitMb,
+      cacheLimitMb: _bufferLimit,
       tlsVerify: !widget.app.config.allowSelfSignedHttps,
     );
     if ((_boostSpeed - widget.app.config.boostSpeed).abs() > 0.001) {
@@ -156,6 +176,8 @@ class _PlayerPageState extends State<PlayerPage> {
       (_engine.position * 1000).round(),
       durationMs: _engine.duration > 0 ? (_engine.duration * 1000).round() : null,
     );
+    if (!_wasPaused && _engine.isPaused && _engine.position > 0) _reporter.requestFlush();
+    _wasPaused = _engine.isPaused;
     if (_engine.completed && !_completionHandled) {
       _onCompleted();
     }
@@ -173,12 +195,12 @@ class _PlayerPageState extends State<PlayerPage> {
     _completionHandled = true;
     _reporter.finish();
     _reporter.requestFlush();
-    final nextId = _nextId;
+    final nextId = widget.payload.nextItemId;
     _showMessage(
       mode: 'end',
       title: '播放结束',
       description: nextId != null
-          ? (_nextTitle.isEmpty ? '即将播放下一集' : '下一集：$_nextTitle')
+          ? '下一集：${widget.payload.nextTitle}'
           : '已记录观看进度',
       primary: nextId != null ? '播放下一集' : '返回',
       secondary: nextId != null ? '返回' : null,
@@ -268,6 +290,11 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _exitFullscreenIfNeeded() async {
+    if (_mobile) {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      return;
+    }
     try {
       if (await windowManager.isFullScreen()) {
         await windowManager.setFullScreen(false);
@@ -278,6 +305,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _refreshFullscreen() async {
+    if (_mobile) return;
     try {
       final value = await windowManager.isFullScreen();
       if (mounted) setState(() => _fullscreen = value);
@@ -394,6 +422,12 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _toggleFullscreen() async {
+    if (_mobile) {
+      setState(() => _fullscreen = !_fullscreen);
+      await SystemChrome.setEnabledSystemUIMode(_fullscreen ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
+      await SystemChrome.setPreferredOrientations(_fullscreen ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight] : DeviceOrientation.values);
+      return;
+    }
     try {
       final current = await windowManager.isFullScreen();
       await windowManager.setFullScreen(!current);
@@ -419,7 +453,7 @@ class _PlayerPageState extends State<PlayerPage> {
   void _previousEpisode() {
     if (!_hasPrevious) return;
     final index = widget.payload.currentIndex;
-    if (index <= 0) return;
+    if (index <= 0 || index > widget.payload.playlist.length) return;
     final entry = widget.payload.playlist[index - 1];
     if (entry.itemId != null) _requestItem(entry.itemId!);
   }
@@ -502,22 +536,9 @@ class _PlayerPageState extends State<PlayerPage> {
     return payload.nextItemId;
   }
 
-  String get _nextTitle {
-    final payload = widget.payload;
-    final id = _nextId;
-    if (id != null) {
-      for (final entry in payload.playlist) {
-        if (entry.itemId == id) {
-          return entry.title.isNotEmpty ? entry.title : entry.code;
-        }
-      }
-    }
-    return payload.nextTitle;
-  }
-
   bool get _hasPrevious {
     final payload = widget.payload;
-    return payload.playlist.isNotEmpty && payload.currentIndex > 0;
+    return payload.playlist.isNotEmpty && payload.currentIndex > 0 && payload.currentIndex <= payload.playlist.length;
   }
 
   bool get _hasNext => _nextId != null;
@@ -532,7 +553,7 @@ class _PlayerPageState extends State<PlayerPage> {
     final mode = _cardMode;
     _hideMessage();
     if (mode == 'end') {
-      final id = _nextId;
+      final id = widget.payload.nextItemId;
       if (id != null) {
         _requestItem(id);
       } else {
@@ -560,13 +581,21 @@ class _PlayerPageState extends State<PlayerPage> {
     if (!_shutdownDone) {
       unawaited(_shutdownPlayback());
     }
+    WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed) _reporter.requestFlush();
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final video = _engine.videoController;
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) { if (!didPop) { if (_drawerVisible) { _closeDrawer(); } else { _back(); } } },
+      child: Scaffold(
       backgroundColor: Colors.black,
       body: Focus(
         focusNode: _focusNode,
@@ -577,23 +606,39 @@ class _PlayerPageState extends State<PlayerPage> {
           onHover: (_) => _showControls(),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: _showControls,
-            onDoubleTap: _toggleFullscreen,
+            onTap: () { if (!_locked) _showControls(); },
+            onDoubleTapDown: (details) => _tapX = details.localPosition.dx,
+            onDoubleTap: () {
+              if (_locked) return;
+              if (!_mobile) { _toggleFullscreen(); return; }
+              final width = MediaQuery.sizeOf(context).width;
+              if (_tapX < width * .35) { _seekRelative(-10); }
+              else if (_tapX > width * .65) { _seekRelative(10); }
+              else { _togglePlayPause(); }
+            },
+            onLongPressStart: _mobile ? (_) { if (!_locked) { HapticFeedback.mediumImpact(); _startSpeedBoost(_boostSpeed); } } : null,
+            onLongPressEnd: _mobile ? (_) { if (_speedBoost) _endSpeedBoost(); } : null,
+            onHorizontalDragStart: _mobile ? (details) { _dragX = details.localPosition.dx; _dragPosition = _engine.position; } : null,
+            onHorizontalDragUpdate: _mobile ? (details) {
+              if (_locked) return;
+              final seconds = _dragPosition + (details.localPosition.dx - _dragX) / MediaQuery.sizeOf(context).width * 120;
+              _engine.seek(seconds.clamp(0, _engine.duration > 0 ? _engine.duration : 1e12));
+            } : null,
+            onHorizontalDragEnd: _mobile ? (_) => _reporter.requestFlush() : null,
+            onVerticalDragStart: _mobile ? (details) { _dragX = details.localPosition.dx; _dragY = details.localPosition.dy; } : null,
+            onVerticalDragUpdate: _mobile ? (details) {
+              if (_locked) return;
+              final change = (_dragY - details.localPosition.dy) / MediaQuery.sizeOf(context).height;
+              _dragY = details.localPosition.dy;
+              if (_dragX < MediaQuery.sizeOf(context).width / 2) { _engine.setBrightness(change); }
+              else { _engine.setVolumeRelative((change * 100).round()); }
+            } : null,
             child: Stack(
               fit: StackFit.expand,
               children: [
-                if (video != null)
-                  Video(
-                    controller: video,
-                    fit: BoxFit.contain,
-                    fill: Colors.black,
-                    controls: null,
-                    wakelock: true,
-                  )
-                else
-                  const ColoredBox(color: Colors.black),
+                _engine.buildVideo(),
                 ControlsOverlay(
-                  visible: _controlsVisible,
+                  visible: _controlsVisible && !_locked,
                   title: widget.payload.title,
                   seriesTitle: widget.payload.seriesTitle,
                   position: _engine.position,
@@ -630,6 +675,12 @@ class _PlayerPageState extends State<PlayerPage> {
                   onTracks: () => _openDrawer('tracks'),
                   onFullscreen: _toggleFullscreen,
                 ),
+                if (_mobile && (_controlsVisible || _locked)) Positioned(
+                  right: 12, top: 48, child: Row(children: [
+                    if (!_locked) IconButton(tooltip: '画中画', icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white), onPressed: _engine.enterPiP),
+                    IconButton(tooltip: _locked ? '解锁' : '锁定', icon: Icon(_locked ? Icons.lock : Icons.lock_open, color: Colors.white), onPressed: () => setState(() => _locked = !_locked)),
+                  ]),
+                ),
                 PlayerDrawer(
                   key: _drawerKey,
                   visible: _drawerVisible,
@@ -664,6 +715,6 @@ class _PlayerPageState extends State<PlayerPage> {
           ),
         ),
       ),
-    );
+    ));
   }
 }

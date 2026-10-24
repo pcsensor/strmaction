@@ -177,7 +177,10 @@ def test_missing_mark_and_move(env, tmp_path):
         assert item.deleted_at is not None
 
     # 恢复文件 → 第四次扫描：清除 missing，清除 deleted_at，重新出现在 ready_item_ids 中
-    make_file(root, new_rel)
+        restored_file = make_file(root, new_rel)
+        # Force reparsing too: Linux and macOS have different mtime resolution.
+        import os
+        os.utime(restored_file, (1_800_000_000, 1_800_000_000))
     scanner.scan_library(lib_id)
     with Session(db.engine) as session:
         media = session.exec(select(MediaFile)).one()

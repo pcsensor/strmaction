@@ -38,7 +38,7 @@ void main() {
         'log_level': 'debug',
       });
       expect(config.cacheLimitMb, 0);
-      expect(config.allowSelfSignedHttps, isTrue);
+      expect(config.allowSelfSignedHttps, isFalse);
       expect(config.logLevel, 'DEBUG');
       expect(config.boostSpeed, defaultBoostSpeed);
       expect(config.customSpeed, isNull);

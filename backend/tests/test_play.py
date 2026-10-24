@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from urllib.parse import quote
 
 from app.config import ConfigManager, sanitize_settings
 from app.config_store import SettingsService
@@ -9,7 +8,6 @@ from app.api.play import resolve_mode
 from app.players import PlayContext, normalize_mode, select_adapter
 from app.players.base import mask_url
 from app.players.cache import normalize_cache_limit
-from app.players.web_intent import build_external_intent
 
 
 def test_cache_limit_normalization():
@@ -18,19 +16,6 @@ def test_cache_limit_normalization():
     assert normalize_cache_limit(1) == 16
     assert normalize_cache_limit(99999) == 2048
     assert normalize_cache_limit("bad") == 128
-
-
-def test_intent_encoding_handles_query_and_fragment():
-    url = "https://cdn.example.com/path/a b.m3u8?x=1&y=%23&t=中文#frag"
-    intent = build_external_intent(url, "三体 S01E01 & 第 1 集", 61_000)
-    assert intent.startswith("intent://cdn.example.com/path/a%20b.m3u8?x=1&y=%23&t=")
-    # v1.3：不再写死 mpv 包名，交给系统选择播放器
-    assert "package=" not in intent
-    assert "type=video/any" in intent
-    assert "i.position=61000" in intent
-    assert "S.title=" + quote("三体 S01E01 & 第 1 集", safe="") in intent
-    assert "%23frag" in intent
-    assert intent.endswith(";end")
 
 
 def test_mask_url_does_not_leak_path():
@@ -49,7 +34,7 @@ def test_adapter_selection(tmp_path):
 
     context = PlayContext(user_agent="Mozilla/5.0 (Linux; Android 14)", is_android=True)
     adapter = select_adapter("auto", context, settings, db.engine)
-    assert adapter.name == "web_intent"
+    assert adapter.name == "clipboard"
 
     adapter = select_adapter("copy", context, settings, db.engine)
     assert adapter.name == "clipboard"
@@ -69,13 +54,13 @@ def test_obsolete_player_settings_are_pruned():
             }
         }
     )
-    assert cleaned["player"] == {"mode": "auto", "cache_limit_mb": 64}
+    assert cleaned["player"] == {"mode": "builtin", "cache_limit_mb": 64}
 
 
 def test_deprecated_modes_normalize_to_auto():
-    assert normalize_mode("desktop_mpv") == "auto"
-    assert normalize_mode("external_mpv") == "auto"
-    assert normalize_mode("mpv_ipc") == "auto"
+    assert normalize_mode("desktop_mpv") == "builtin"
+    assert normalize_mode("external_mpv") == "builtin"
+    assert normalize_mode("mpv_ipc") == "builtin"
     assert normalize_mode("builtin") == "builtin"
 
 
@@ -91,11 +76,11 @@ def test_resolve_mode_follows_device_capabilities(tmp_path):
     companion = PlayContext(user_agent="StrmActionCompanion", is_companion=True)
 
     assert resolve_mode("auto", desktop, settings, db.engine) == "copy"
-    assert resolve_mode("auto", android, settings, db.engine) == "browser_intent"
+    assert resolve_mode("auto", android, settings, db.engine) == "copy"
     assert resolve_mode("auto", companion, settings, db.engine) == "builtin"
     assert resolve_mode("browser_intent", desktop, settings, db.engine) == "copy"
     assert resolve_mode("builtin", desktop, settings, db.engine) == "copy"
-    assert resolve_mode("direct", desktop, settings, db.engine) == "direct"
+    assert resolve_mode("direct", desktop, settings, db.engine) == "copy"
     # 已下线的模式请求按自动处理，不再尝试启动任何服务端播放器
     assert resolve_mode("desktop_mpv", desktop, settings, db.engine) == "copy"
     assert resolve_mode("desktop_mpv", companion, settings, db.engine) == "builtin"

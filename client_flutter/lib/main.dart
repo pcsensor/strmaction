@@ -34,8 +34,11 @@ Future<void> main(List<String> args) async {
     }
   }
 
+  if (Platform.isAndroid || Platform.isIOS) {
+    runApp(StrmActionApp(app: app));
+    return;
+  }
   MediaKit.ensureInitialized();
-
   await windowManager.ensureInitialized();
   final config = app.config;
   // Never create a window taller/wider than the visible desktop, otherwise
@@ -177,7 +180,7 @@ class _WindowListener extends WindowListener {
     }
 
     try {
-      await app.shutdown().timeout(const Duration(milliseconds: 1500));
+      await app.shutdown().timeout(const Duration(seconds: 15));
     } on Object {
       // ignore shutdown errors or timeout
     }

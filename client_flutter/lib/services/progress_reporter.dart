@@ -4,6 +4,7 @@ import 'dart:io';
 
 import '../core/app_logger.dart';
 import '../core/version.dart';
+import '../core/trust.dart';
 
 const double finishedRatio = 0.9;
 
@@ -17,12 +18,15 @@ class ProgressReporter {
   final String playToken;
   final int intervalMs;
   final bool verifySsl;
+  final String trustedCaPem;
   final void Function()? onAuthError;
   final AppLogger? logger;
 
   HttpClient? _client;
   Timer? _timer;
   bool _stopped = false;
+  bool _closing = false;
+  Future<bool>? _inFlight;
   bool _sending = false;
   bool _dirty = false;
   bool _finished = false;
@@ -38,6 +42,7 @@ class ProgressReporter {
     required this.playToken,
     required int intervalMs,
     required this.verifySsl,
+    this.trustedCaPem = '',
     this.onAuthError,
     this.logger,
     String? sessionId,
@@ -49,11 +54,8 @@ class ProgressReporter {
 
   void start() {
     if (_client != null) return;
-    final client = HttpClient()
+    final client = HttpClient(context: trustContext(trustedCaPem))
       ..connectionTimeout = const Duration(seconds: 3);
-    if (!verifySsl) {
-      client.badCertificateCallback = (cert, host, port) => true;
-    }
     _client = client;
     _timer = Timer.periodic(
       Duration(milliseconds: intervalMs),
@@ -62,7 +64,7 @@ class ProgressReporter {
   }
 
   void update(int positionMs, {int? durationMs}) {
-    if (_stopped) return;
+    if (_stopped || _closing) return;
     _positionMs = positionMs < 0 ? 0 : positionMs;
     if (durationMs != null) {
       _durationMs = durationMs < 0 ? 0 : durationMs;
@@ -80,9 +82,20 @@ class ProgressReporter {
     unawaited(_send(force: true));
   }
 
-  Future<bool> flushOnce({bool force = false}) => _send(force: force);
+  Future<bool> flushOnce({bool force = false}) async {
+    final pending = _inFlight;
+    if (pending != null) await pending;
+    return _send(force: force);
+  }
 
-  Future<bool> _send({required bool force}) async {
+  Future<bool> _send({required bool force}) {
+    if (_inFlight != null) return _inFlight!;
+    final sending = _sendSnapshot(force: force);
+    _inFlight = sending.whenComplete(() => _inFlight = null);
+    return _inFlight!;
+  }
+
+  Future<bool> _sendSnapshot({required bool force}) async {
     if (_stopped || _authFailed || _sending) return false;
     if (!_dirty && !force) return false;
     final client = _client;
@@ -110,7 +123,7 @@ class ProgressReporter {
       final response = await request.close().timeout(
             const Duration(seconds: 5),
           );
-      await response.drain<void>();
+      await response.drain<void>().timeout(const Duration(seconds: 5));
       if (response.statusCode == 401 || response.statusCode == 403) {
         _authFailed = true;
         _stopped = true;
@@ -157,16 +170,18 @@ class ProgressReporter {
   }
 
   Future<void> stop({bool flush = true}) async {
-    _stopped = true;
+    if (_closing || _stopped) return;
+    _closing = true;
     _timer?.cancel();
     _timer = null;
     if (flush && !_authFailed) {
       try {
-        await flushOnce(force: true).timeout(const Duration(milliseconds: 1500));
+        await flushOnce(force: true).timeout(const Duration(seconds: 12));
       } on Object {
         // Best effort on shutdown.
       }
     }
+    _stopped = true;
     _client?.close(force: true);
     _client = null;
   }

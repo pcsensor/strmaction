@@ -27,6 +27,10 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
     signal,
     headers: { Accept: 'application/json', ...headers },
   }
+  const bridge = window.StrmActionNative
+  if (bridge?.isCompanion?.() || bridge?.isDesktop?.()) {
+    init.headers = { ...init.headers, 'X-StrmAction-Companion': '1' }
+  }
   if (body instanceof FormData) {
     init.body = body
   } else if (body !== undefined) {

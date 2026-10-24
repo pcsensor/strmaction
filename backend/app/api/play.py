@@ -22,7 +22,6 @@ from ..schemas import CurrentUser
 from ..players import (
     ClipboardAdapter,
     PlayContext,
-    WebIntentAdapter,
     clean_headers,
     headers_hint,
     mask_url,
@@ -32,6 +31,7 @@ from ..players import (
 from ..players.cache import normalize_cache_limit
 from ..schemas import PlayBody
 from ..serializers import episode_code, series_of
+from ..text import natural_sort_key
 from .items import _choose_play_target, _episode_sequence
 
 router = APIRouter(tags=["play"])
@@ -127,6 +127,10 @@ def _next_unwatched(
     if not series or target.kind != "episode":
         return None, None, None
     sequence = _episode_sequence(session, series)
+    playable = set(session.exec(select(MediaFile.item_id).where(
+        MediaFile.invalid == False, MediaFile.missing == False,
+    )).all())
+    sequence = [episode for episode in sequence if episode.id in playable]
     ids = [episode.id for episode in sequence]
     if target.id not in ids:
         return None, None, None
@@ -159,21 +163,8 @@ def resolve_mode_detail(
     """返回 (实际 mode, 降级原因)；原因仅用于向用户解释，不影响播放。"""
     player = player or settings.player()
     mode = normalize_mode(requested, player)
-    if mode == "direct":
-        # 桌面端自己播放：服务端只返回 URL/headers/token，不启动任何播放器。
-        return "direct", None
-    if mode == "auto":
-        if context.is_companion:
-            return "builtin", None
-        if context.is_android:
-            return "browser_intent", None
-        return "copy", None
     if mode == "builtin" and not context.is_companion:
-        # 浏览器里没有原生播放器：Android 走 intent://，其余复制链接
-        return ("browser_intent" if context.is_android else "copy"), "requires_companion"
-    if mode == "browser_intent" and not context.is_android:
-        # intent:// 是 Android Chrome 的能力，桌面/iOS 直接复制链接
-        return "copy", "requires_android"
+        return "copy", "requires_companion"
     return mode, None
 
 
@@ -197,7 +188,7 @@ def _pick_media(session: Session, item_id: int, media_file_id: int | None) -> Me
     row = None
     if media_file_id:
         row = session.get(MediaFile, media_file_id)
-        if row is None or row.item_id != item_id or row.invalid:
+        if row is None or row.item_id != item_id or row.invalid or row.missing:
             raise APIError(404, "MEDIA_NOT_FOUND", "指定的媒体文件不存在")
     else:
         rows = session.exec(
@@ -340,7 +331,7 @@ async def play(
                     v for v in sibling_videos
                     if v.id in playable_ids or v.id == target.id
                 ]
-                sibling_videos.sort(key=lambda x: (x.episode_no or 0, x.title))
+                sibling_videos.sort(key=lambda x: natural_sort_key(x.title))
                 progress_rows = session.exec(
                     select(PlayProgress).where(
                         PlayProgress.user_id == user.id,
@@ -414,7 +405,7 @@ async def play(
             "mime": SUBTITLE_MIME.get(
                 Path(entry["filename"]).suffix.lower(), "text/plain"
             ),
-            "url": f"/api/items/{target_id}/subtitles/{index}?pt={token}",
+            "url": f"/api/items/{target_id}/subtitles/{index}?pt={token}&media_file_id={media_id}",
         }
         for index, entry in enumerate(subtitles)
     ]
@@ -442,7 +433,8 @@ async def play(
         "play_token_expires_at": expires_at,
         "progress_interval_ms": int(player.get("progress_interval_ms") or 5000),
         "cache_limit_mb": cache_limit_mb(player),
-        "fallback_on_error": bool(player.get("fallback_on_error", True)),
+        "buffer_limit_mb": player.get("buffer_limit_mb"),
+        "disk_cache_limit_mb": player.get("disk_cache_limit_mb"),
         "subtitles": subtitle_payload,
         "media_file_id": media_id,
         "progress_updated_at": progress_updated_at,
@@ -452,27 +444,11 @@ async def play(
         "series_title": series_obj.title if series_obj else (parent_folder.title if parent_folder else None),
         "playlist": playlist,
         "current_index": current_index,
+        "previous_item_id": playlist[current_index - 1]["id"] if current_index > 0 else None,
+        "manual_next_item_id": playlist[current_index + 1]["id"] if 0 <= current_index < len(playlist) - 1 else None,
     }
 
-    # 非原生路径：让服务端适配器生成 intent / spawn / 复制提示
-    if mode == "browser_intent":
-        adapter = WebIntentAdapter()
-        result.update(
-            await adapter.build(
-                item=target,
-                media=media,
-                title=play_title,
-                resume_ms=resume_ms,
-                context=context,
-            )
-        )
-        result["mode"] = "browser_intent"
-        result["play_url"] = play_url
-        result["headers"] = headers
-        result["play_token"] = token
-        result["next_item_id"] = next_episode_id
-        result["subtitles"] = subtitle_payload
-    elif mode == "copy":
+    if mode == "copy":
         adapter = ClipboardAdapter()
         result.update(
             await adapter.build(
@@ -502,6 +478,7 @@ def download_subtitle(
     item_id: int,
     index: int,
     request: Request,
+    media_file_id: int | None = None,
     engine=Depends(get_engine),
 ):
     """v0.9: 外挂字幕下载：Cookie 或 `?pt=play_token`，支持多用户权限检查。"""
@@ -520,7 +497,7 @@ def download_subtitle(
             raise APIError(403, "FORBIDDEN", "无权访问该条目")
 
         target = _choose_play_target(session, item, current_user.id)
-        media = _pick_media(session, target.id, None)
+        media = _pick_media(session, target.id, media_file_id)
         subtitles = list_subtitles(media)
         if index < 0 or index >= len(subtitles):
             raise APIError(404, "SUBTITLE_NOT_FOUND", "字幕不存在")

@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 
 import '../../core/config.dart';
+import '../../core/trust.dart';
 
 class SettingsDialog extends StatefulWidget {
   final AppConfig initial;
   final bool allowCancel;
+  final String? accountKey;
 
   const SettingsDialog({
     super.key,
     required this.initial,
     required this.allowCancel,
+    this.accountKey,
   });
 
   @override
@@ -20,7 +23,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController _server;
   late final TextEditingController _cache;
   late final TextEditingController _boostSpeed;
-  late bool _allowSelfSigned;
+  late final TextEditingController _ca;
+  late final TextEditingController _disk;
+  late bool _inheritCache;
+  late bool _inheritMode;
+  late String _mode;
   String? _error;
 
   @override
@@ -29,11 +36,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
     _server = TextEditingController(text: widget.initial.serverUrl);
     _cache = TextEditingController(text: '${widget.initial.cacheLimitMb}');
     _boostSpeed = TextEditingController(text: '${widget.initial.boostSpeed}');
-    _allowSelfSigned = widget.initial.allowSelfSignedHttps;
+    _ca = TextEditingController(text: widget.initial.trustedCaPem);
+    _disk = TextEditingController(text: '${widget.initial.diskCacheLimitMb}');
+    _inheritCache = widget.initial.inheritCacheDefaults;
+    _inheritMode = !widget.initial.playbackOverrides.containsKey(widget.accountKey);
+    _mode = widget.initial.playbackOverrides[widget.accountKey] ?? 'builtin';
   }
 
   @override
   void dispose() {
+    _ca.dispose();
+    _disk.dispose();
     _server.dispose();
     _cache.dispose();
     _boostSpeed.dispose();
@@ -45,10 +58,19 @@ class _SettingsDialogState extends State<SettingsDialog> {
       final server = normalizeServerUrl(_server.text);
       final cache = normalizeCacheLimit(int.tryParse(_cache.text.trim()) ?? 0);
       final boostSpeed = double.tryParse(_boostSpeed.text.trim()) ?? defaultBoostSpeed;
+      validateCaBundle(_ca.text);
+      final overrides = Map<String, String>.from(widget.initial.playbackOverrides);
+      if (widget.accountKey != null) {
+        if (_inheritMode) { overrides.remove(widget.accountKey); }
+        else { overrides[widget.accountKey!] = _mode; }
+      }
       final next = widget.initial.copyWith(
         serverUrl: server,
         cacheLimitMb: cache,
-        allowSelfSignedHttps: _allowSelfSigned,
+        trustedCaPem: _ca.text,
+        inheritCacheDefaults: _inheritCache,
+        diskCacheLimitMb: int.tryParse(_disk.text) ?? 2048,
+        playbackOverrides: overrides,
         boostSpeed: boostSpeed,
       ).normalized();
       Navigator.of(context).pop(next);
@@ -100,7 +122,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               const SizedBox(height: 8),
               const Text(
-                '范围 16–2048 MB；0 表示不启用 demuxer 缓存。',
+                '本机覆盖生效时使用以上容量；0 关闭预读。磁盘容量单独设置。',
                 style: TextStyle(color: Color(0xFF7C8698), fontSize: 11),
               ),
               const SizedBox(height: 14),
@@ -117,22 +139,40 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 style: TextStyle(color: Color(0xFF7C8698), fontSize: 11),
               ),
               const SizedBox(height: 12),
-              Row(
-                children: [
-                  Checkbox(
-                    value: _allowSelfSigned,
-                    activeColor: const Color(0xFFE8B06A),
-                    checkColor: const Color(0xFF17120B),
-                    onChanged: (value) => setState(() => _allowSelfSigned = value ?? false),
-                  ),
-                  const Expanded(
-                    child: Text(
-                      '允许自签名 HTTPS 证书',
-                      style: TextStyle(color: Color(0xFFC9CFDA), fontSize: 12.5),
-                    ),
-                  ),
-                ],
+              SwitchListTile(
+                contentPadding: EdgeInsets.zero,
+                title: const Text('使用云端缓存默认值'),
+                value: _inheritCache,
+                onChanged: (value) => setState(() => _inheritCache = value),
               ),
+              const _Label('磁盘缓存上限（MB，0 = 关闭，退出播放清空）'),
+              _field(controller: _disk, hintText: '2048', keyboardType: TextInputType.number),
+              const SizedBox(height: 14),
+              if (widget.accountKey != null) ...[
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: const Text('使用账号默认播放方式'),
+                  value: _inheritMode,
+                  onChanged: (value) => setState(() => _inheritMode = value),
+                ),
+                DropdownButtonFormField<String>(
+                  initialValue: _mode,
+                  items: const [
+                    DropdownMenuItem(value: 'builtin', child: Text('内部播放')),
+                    DropdownMenuItem(value: 'copy', child: Text('复制链接')),
+                  ],
+                  onChanged: _inheritMode ? null : (value) => setState(() => _mode = value ?? 'builtin'),
+                ),
+                const SizedBox(height: 14),
+              ],
+              const _Label('私有根 CA（PEM，可粘贴多张证书）'),
+              TextField(
+                controller: _ca, minLines: 3, maxLines: 8,
+                autocorrect: false,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 11),
+                decoration: const InputDecoration(hintText: '-----BEGIN CERTIFICATE-----'),
+              ),
+              const Text('公共证书自动验证；私有 CA 同样校验主机名。旧版放行开关需改为导入根 CA。', style: TextStyle(fontSize: 11)),
               if (_error != null) ...[
                 const SizedBox(height: 8),
                 Text(

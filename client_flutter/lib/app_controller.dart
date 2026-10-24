@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 
 import 'core/app_logger.dart';
 import 'core/app_paths.dart';
@@ -10,6 +12,7 @@ import 'core/version.dart';
 import 'services/progress_reporter.dart';
 
 class AppController {
+  String? accountKey;
   final AppPaths paths;
   final ConfigStore configStore;
   final AppLogger logger;
@@ -35,7 +38,7 @@ class AppController {
   String get lastError => lastErrorNotifier.value;
 
   static Future<AppController> create(CliOptions options) async {
-    final paths = AppPaths.forCurrentUser();
+    final paths = await AppPaths.forPlatform();
     paths.ensureDirectories();
     final logger = AppLogger(paths, debugEnabled: options.debug);
     await logger.initialize();
@@ -43,6 +46,14 @@ class AppController {
     AppConfig config;
     try {
       config = await store.load();
+      if (!config.isConfigured && (Platform.isAndroid || Platform.isIOS)) {
+        final legacy = await const MethodChannel('strmaction/native')
+            .invokeMapMethod<String, dynamic>('legacySettings');
+        if (legacy != null && '${legacy['server_url'] ?? ''}'.isNotEmpty) {
+          config = AppConfig.fromJson(Map<String, dynamic>.from(legacy));
+          await store.save(config);
+        }
+      }
     } on Object catch (error) {
       logger.warning('配置读取失败，使用默认配置：$error');
       config = const AppConfig();

@@ -260,7 +260,7 @@ class ScannerService:
                         stats.moved_files += 1
 
                 moved_item = None
-                if moved and old is not None and old.item_id:
+                if old is not None and (moved or old.missing) and old.item_id:
                     candidate_item = session.get(Item, old.item_id)
                     if candidate_item is not None and self._compatible_item(
                         candidate_item, parsed

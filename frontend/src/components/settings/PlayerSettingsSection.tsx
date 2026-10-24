@@ -8,9 +8,7 @@ import { Section, Field, headersToText, textToHeaders } from './common'
 
 const MODE_OPTIONS: Array<{ value: string; label: string }> = [
   { value: 'builtin', label: t('settings.player.builtin') },
-  { value: 'browser_intent', label: t('settings.player.browserIntent') },
   { value: 'copy', label: t('settings.player.copy') },
-  { value: 'auto', label: t('settings.player.auto') },
 ]
 
 export function PlayerSettingsSection({
@@ -21,20 +19,22 @@ export function PlayerSettingsSection({
   const patchSettings = usePatchSettings()
   const toast = useToast()
 
-  const [playerMode, setPlayerMode] = useState<string>('auto')
+  const [playerMode, setPlayerMode] = useState<string>('builtin')
   const [progressInterval, setProgressInterval] = useState('5000')
   const [tokenTtl, setTokenTtl] = useState('12')
   const [cacheLimitMb, setCacheLimitMb] = useState('128')
-  const [fallbackOnError, setFallbackOnError] = useState(true)
+  const [bufferLimit, setBufferLimit] = useState('')
+  const [diskLimit, setDiskLimit] = useState('')
   const [playHeadersGlobal, setPlayHeadersGlobal] = useState('')
 
   useEffect(() => {
     if (!settings) return
-    setPlayerMode(settings.player.mode || 'auto')
+    setPlayerMode(settings.player.mode || 'builtin')
     setProgressInterval(String(settings.player.progress_interval_ms ?? 5000))
     setTokenTtl(String(settings.player.play_token_ttl_hours ?? 12))
     setCacheLimitMb(String(settings.player.cache_limit_mb ?? 128))
-    setFallbackOnError(settings.player.fallback_on_error !== false)
+    setBufferLimit(settings.player.buffer_limit_mb == null ? '' : String(settings.player.buffer_limit_mb))
+    setDiskLimit(settings.player.disk_cache_limit_mb == null ? '' : String(settings.player.disk_cache_limit_mb))
     setPlayHeadersGlobal(headersToText(settings.player.play_headers))
   }, [settings])
 
@@ -46,7 +46,8 @@ export function PlayerSettingsSection({
           progress_interval_ms: Number(progressInterval) || 5000,
           play_token_ttl_hours: Number(tokenTtl) || 12,
           cache_limit_mb: Math.min(Math.max(Number(cacheLimitMb) || 0, 0), 2048),
-          fallback_on_error: fallbackOnError,
+          buffer_limit_mb: bufferLimit.trim() === '' ? null : Number(bufferLimit),
+          disk_cache_limit_mb: diskLimit.trim() === '' ? null : Number(diskLimit),
           play_headers: textToHeaders(playHeadersGlobal),
         },
       })
@@ -115,15 +116,14 @@ export function PlayerSettingsSection({
             />
           </Field>
         </div>
-        <label className="mt-4 flex items-center gap-2.5 text-[12.5px] text-ink-200">
-          <input
-            type="checkbox"
-            checked={fallbackOnError}
-            onChange={(event) => setFallbackOnError(event.target.checked)}
-            className="h-4 w-4 accent-[#e8b06a]"
-          />
-          {t('settings.player.fallback')}
-        </label>
+        <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <Field label="预读容量默认值（MB）" hint="留空使用设备预算；0 关闭预读；本机可覆盖。">
+            <input className="input" type="number" min="0" max="8192" value={bufferLimit} onChange={e => setBufferLimit(e.target.value)} placeholder="使用设备预算" />
+          </Field>
+          <Field label="磁盘缓存默认值（MB）" hint="留空使用设备预算；0 关闭磁盘缓存；退出播放清空。">
+            <input className="input" type="number" min="0" max="32768" value={diskLimit} onChange={e => setDiskLimit(e.target.value)} placeholder="使用设备预算" />
+          </Field>
+        </div>
 
         <div className="mt-5">
           <button

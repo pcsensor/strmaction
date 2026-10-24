@@ -70,7 +70,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "progress_interval_ms": 5000,
         "play_token_ttl_hours": 12,
         "cache_limit_mb": 128,
-        "fallback_on_error": True,
+        "buffer_limit_mb": None,
+        "disk_cache_limit_mb": None,
         "play_headers": {},
     },
     "ui": {
@@ -83,8 +84,7 @@ SECRET_KEYS = {"api_key", "pin", "password_hash", "token", "secret"}
 
 # v1.3 移除了服务端 mpv（desktop_mpv）与外部 mpv（external_mpv）能力。
 # 旧配置里残留的字段与模式在这里被丢弃，避免继续出现在设置接口里。
-OBSOLETE_PLAYER_KEYS = {"mpv_path", "mpv_extra_args", "mpv_package", "enable_progress"}
-OBSOLETE_PLAYER_MODES = {"external_mpv", "desktop_mpv"}
+OBSOLETE_PLAYER_KEYS = {"mpv_path", "mpv_extra_args", "mpv_package", "enable_progress", "fallback_on_error"}
 
 
 def sanitize_settings(config: dict[str, Any]) -> dict[str, Any]:
@@ -93,8 +93,8 @@ def sanitize_settings(config: dict[str, Any]) -> dict[str, Any]:
     if isinstance(player, dict):
         for key in OBSOLETE_PLAYER_KEYS:
             player.pop(key, None)
-        if player.get("mode") in OBSOLETE_PLAYER_MODES:
-            player["mode"] = "auto"
+        if "mode" in player:
+            player["mode"] = "copy" if player["mode"] == "copy" else "builtin"
     return config
 
 

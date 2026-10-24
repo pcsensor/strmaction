@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:math' as math;
+import 'dart:io';
 
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -38,7 +39,10 @@ class MediaKitEngine extends PlaybackEngine {
   Track? _track;
   bool _disposed = false;
 
-  MediaKitEngine({this.logger, this.hardwareAcceleration = false}) {
+  final String? caBundlePath;
+  final String? cacheDirectory;
+  final int diskLimitMb;
+  MediaKitEngine({this.logger, this.hardwareAcceleration = false, this.caBundlePath, this.cacheDirectory, this.diskLimitMb = 2048}) {
     _player = Player();
     // The GPU (ANGLE/DXGI shared-handle) output registers and swaps external
     // textures from media_kit's worker thread while the Flutter raster thread
@@ -307,7 +311,18 @@ class MediaKitEngine extends PlaybackEngine {
           '${math.max(1, cacheLimitMb ~/ 4)}MiB',
         );
       }
-      await platform.setProperty('tls-verify', tlsVerify ? 'yes' : 'no');
+      await platform.setProperty('tls-verify', 'yes');
+      if (caBundlePath != null) await platform.setProperty('tls-ca-file', caBundlePath!);
+      if (cacheDirectory != null && diskLimitMb > 0) {
+        await Directory(cacheDirectory!).create(recursive: true);
+        await platform.setProperty('demuxer-cache-dir', cacheDirectory!);
+        await platform.setProperty('cache-on-disk', 'yes');
+        final forward = math.min(cacheLimitMb, diskLimitMb);
+        await platform.setProperty('demuxer-max-bytes', '${forward}MiB');
+        await platform.setProperty('demuxer-max-back-bytes', '${math.max(0, diskLimitMb - forward)}MiB');
+      } else {
+        await platform.setProperty('cache-on-disk', 'no');
+      }
       await platform.setProperty('hwdec', 'auto-safe');
       await platform.setProperty('keep-open', 'always');
     } on Object catch (error) {
@@ -564,6 +579,11 @@ class MediaKitEngine extends PlaybackEngine {
       await _player.dispose();
     } on Object {
       // Best effort.
+    }
+    if (cacheDirectory != null) {
+      final directory = Directory(cacheDirectory!);
+      try { if (await directory.exists()) await directory.delete(recursive: true); }
+      on Object catch (error) { logger?.warning('清理播放缓存失败：$error'); }
     }
   }
 

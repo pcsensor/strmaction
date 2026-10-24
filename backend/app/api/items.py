@@ -102,14 +102,14 @@ def _media_payload(media: MediaFile) -> dict[str, Any]:
 def _episode_sequence(session: Session, series: Item) -> list[Item]:
     seasons = session.exec(
         select(Item)
-        .where(Item.parent_id == series.id, Item.kind == "season")
+        .where(Item.parent_id == series.id, Item.kind == "season", Item.deleted_at == None)
         .order_by(Item.season_no)
     ).all()
     sequence: list[Item] = []
     for season in seasons:
         episodes = session.exec(
             select(Item)
-            .where(Item.parent_id == season.id, Item.kind == "episode")
+            .where(Item.parent_id == season.id, Item.kind == "episode", Item.deleted_at == None)
             .order_by(Item.episode_no)
         ).all()
         sequence.extend(episodes)
@@ -879,7 +879,7 @@ def report_progress(
         if duration:
             position = min(position, duration)
         finished = bool(body.finished)
-        if duration and position / duration > 0.9:
+        if duration and position / duration >= 0.9:
             finished = True
         if finished:
             position = 0

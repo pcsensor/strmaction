@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import '../core/version.dart';
 
@@ -7,7 +8,8 @@ import '../core/version.dart';
 /// The React app already knows `window.StrmActionNative` and the older
 /// `window.pywebview.api`. Keeping both means the web frontend needs no
 /// changes for the Flutter migration.
-String buildBridgeScript() {
+String buildBridgeScript({bool isTV = false}) {
+  final desktop = Platform.isWindows || Platform.isMacOS;
   final versionLiteral = jsonEncode(appVersion);
   return '''
 (function () {
@@ -39,7 +41,7 @@ String buildBridgeScript() {
   }
 
   var api = {
-    isDesktop: function () { return true; },
+    isDesktop: function () { return $desktop; },
     version: function () { return $versionLiteral; },
     playItem: function (payload) {
       return invoke('playItem', typeof payload === 'string' ? payload : JSON.stringify(payload));
@@ -58,7 +60,10 @@ String buildBridgeScript() {
   window.pywebview = { api: api };
   window._strmaction_api = api;
   window.StrmActionNative = {
-    isDesktop: function () { return true; },
+    isCompanion: function () { return true; },
+    isTV: function () { return $isTV; },
+    requestPlayback: function (request) { return invoke('requestPlayback', request); },
+    isDesktop: function () { return $desktop; },
     version: function () { return $versionLiteral; },
     playItem: function (payload) { return api.playItem(payload); },
     stopPlayback: function () { return api.stopPlayback(); },

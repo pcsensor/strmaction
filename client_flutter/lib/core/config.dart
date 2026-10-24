@@ -23,6 +23,10 @@ class ConfigException implements Exception {
 }
 
 class AppConfig {
+  final String trustedCaPem;
+  final bool inheritCacheDefaults;
+  final int diskCacheLimitMb;
+  final Map<String, String> playbackOverrides;
   final String serverUrl;
   final int cacheLimitMb;
   final bool allowSelfSignedHttps;
@@ -47,6 +51,10 @@ class AppConfig {
   final double? customSpeed;
 
   const AppConfig({
+    this.trustedCaPem = '',
+    this.inheritCacheDefaults = true,
+    this.diskCacheLimitMb = 2048,
+    this.playbackOverrides = const {},
     this.serverUrl = '',
     this.cacheLimitMb = defaultCacheLimitMb,
     this.allowSelfSignedHttps = false,
@@ -61,6 +69,10 @@ class AppConfig {
   bool get isConfigured => serverUrl.isNotEmpty;
 
   AppConfig copyWith({
+    String? trustedCaPem,
+    bool? inheritCacheDefaults,
+    int? diskCacheLimitMb,
+    Map<String, String>? playbackOverrides,
     String? serverUrl,
     int? cacheLimitMb,
     bool? allowSelfSignedHttps,
@@ -72,6 +84,10 @@ class AppConfig {
     double? customSpeed,
   }) {
     return AppConfig(
+      trustedCaPem: trustedCaPem ?? this.trustedCaPem,
+      inheritCacheDefaults: inheritCacheDefaults ?? this.inheritCacheDefaults,
+      diskCacheLimitMb: diskCacheLimitMb ?? this.diskCacheLimitMb,
+      playbackOverrides: playbackOverrides ?? this.playbackOverrides,
       serverUrl: serverUrl ?? this.serverUrl,
       cacheLimitMb: cacheLimitMb ?? this.cacheLimitMb,
       allowSelfSignedHttps:
@@ -88,10 +104,14 @@ class AppConfig {
 
   AppConfig normalized() {
     return AppConfig(
+      trustedCaPem: trustedCaPem.trim(),
+      inheritCacheDefaults: inheritCacheDefaults,
+      diskCacheLimitMb: diskCacheLimitMb.clamp(0, 32768),
+      playbackOverrides: Map.unmodifiable(Map.fromEntries(playbackOverrides.entries.where((e) => e.value == 'builtin' || e.value == 'copy'))),
       serverUrl:
           serverUrl.trim().isEmpty ? '' : normalizeServerUrl(serverUrl),
       cacheLimitMb: normalizeCacheLimit(cacheLimitMb),
-      allowSelfSignedHttps: allowSelfSignedHttps,
+      allowSelfSignedHttps: false,
       windowWidth: _clamp(windowWidth, minWidth, 3840, defaultWidth),
       windowHeight: _clamp(windowHeight, minHeight, 2160, defaultHeight),
       logLevel: (logLevel.isEmpty ? 'INFO' : logLevel).toUpperCase(),
@@ -104,9 +124,12 @@ class AppConfig {
   }
 
   Map<String, dynamic> toJson() => {
+        'trusted_ca_pem': trustedCaPem,
+        'inherit_cache_defaults': inheritCacheDefaults,
+        'disk_cache_limit_mb': diskCacheLimitMb,
+        'playback_overrides': playbackOverrides,
         'server_url': serverUrl,
         'cache_limit_mb': cacheLimitMb,
-        'allow_self_signed_https': allowSelfSignedHttps,
         'window_width': windowWidth,
         'window_height': windowHeight,
         'log_level': logLevel,
@@ -117,9 +140,15 @@ class AppConfig {
 
   factory AppConfig.fromJson(Map<String, dynamic> json) {
     return AppConfig(
+      trustedCaPem: (json['trusted_ca_pem'] ?? '').toString(),
+      inheritCacheDefaults: json['inherit_cache_defaults'] as bool? ?? !json.containsKey('cache_limit_mb'),
+      diskCacheLimitMb: _asInt(json['disk_cache_limit_mb'], 2048),
+      playbackOverrides: json['playback_overrides'] is Map
+          ? (json['playback_overrides'] as Map).map((k, v) => MapEntry('$k', '$v'))
+          : const {},
       serverUrl: (json['server_url'] ?? '').toString(),
       cacheLimitMb: _asInt(json['cache_limit_mb'], defaultCacheLimitMb),
-      allowSelfSignedHttps: json['allow_self_signed_https'] == true,
+      allowSelfSignedHttps: false,
       windowWidth: _asInt(json['window_width'], defaultWidth),
       windowHeight: _asInt(json['window_height'], defaultHeight),
       logLevel: (json['log_level'] ?? 'INFO').toString(),

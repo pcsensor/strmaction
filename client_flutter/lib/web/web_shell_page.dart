@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:window_manager/window_manager.dart';
@@ -14,6 +15,7 @@ import '../core/config.dart';
 import '../core/http_api.dart';
 import '../core/redaction.dart';
 import '../core/version.dart';
+import '../core/trust.dart';
 import '../features/connection/error_page.dart';
 import '../features/settings/settings_dialog.dart';
 import '../models/playback_payload.dart';
@@ -39,6 +41,8 @@ class _WebShellPageState extends State<WebShellPage> {
   bool _playerOpen = false;
   int? _pendingRequestId;
   bool _bootstrapped = false;
+  bool _isTv = false;
+  bool _requestingPlayback = false;
 
   AppController get app => widget.app;
 
@@ -51,6 +55,9 @@ class _WebShellPageState extends State<WebShellPage> {
   Future<void> _bootstrap() async {
     if (_bootstrapped) return;
     _bootstrapped = true;
+    if (Platform.isAndroid) {
+      _isTv = await const MethodChannel('strmaction/native').invokeMethod<bool>('isTV') ?? false;
+    }
     if (Platform.isWindows) {
       try {
         _webViewEnvironment = await WebViewEnvironment.create(
@@ -102,7 +109,7 @@ class _WebShellPageState extends State<WebShellPage> {
     app.setLastError('');
     setState(() {
       _checking = false;
-      _url ??= app.config.serverUrl;
+      _url ??= _isTv ? '${app.config.serverUrl}/?tv=1' : app.config.serverUrl;
     });
     final controller = _webController;
     if (controller != null && _url != null) {
@@ -111,11 +118,60 @@ class _WebShellPageState extends State<WebShellPage> {
     if (mounted) setState(() => _loading = false);
   }
 
+  Future<String> _cookie() async {
+    final cookies = await CookieManager.instance().getCookies(url: WebUri(app.config.serverUrl));
+    return cookies.map((c) => '${c.name}=${c.value}').join('; ');
+  }
+
+  Future<void> _refreshAccount() async {
+    if (!app.config.isConfigured) return;
+    try {
+      final auth = await ApiClient(app.config).request('/api/auth/state', cookie: await _cookie());
+      final user = auth['user'];
+      app.accountKey = user is Map ? '${app.config.serverUrl}|${user['id']}' : null;
+    } on Object { app.accountKey = null; }
+  }
+
+  Future<Map<String, dynamic>> _startPlayback(Map<String, dynamic> request) async {
+    if (_requestingPlayback || _playerOpen) return {'ok': false, 'error': '播放器正在打开'};
+    _requestingPlayback = true;
+    try {
+      final id = request['itemId'];
+      if (id is! int || id <= 0) throw const ConfigException('条目 ID 无效');
+      await _refreshAccount();
+      final mode = request['mode'] ?? app.config.playbackOverrides[app.accountKey];
+      final raw = await ApiClient(app.config).request('/api/play/$id', cookie: await _cookie(), body: {
+        if (mode == 'builtin' || mode == 'copy') 'mode': mode,
+        if (request['mediaFileId'] != null) 'media_file_id': request['mediaFileId'],
+      });
+      if (!app.config.inheritCacheDefaults) {
+        raw['buffer_limit_mb'] = app.config.cacheLimitMb;
+        raw['disk_cache_limit_mb'] = app.config.diskCacheLimitMb;
+      }
+      final payload = PlaybackPayload.fromJson(raw, app.config.serverUrl);
+      if (payload.mode == 'copy') {
+        await Clipboard.setData(ClipboardData(text: payload.playUrl));
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('已复制所选版本的播放链接')));
+      } else {
+        if (Platform.isAndroid || Platform.isIOS) {
+          await const MethodChannel('strmaction/native').invokeMethod<void>('trust', app.config.trustedCaPem);
+        }
+        unawaited(_openPlayer(payload));
+      }
+      return {'ok': true, 'mode': payload.mode};
+    } on Object catch (error) {
+      return {'ok': false, 'error': '$error'};
+    } finally { _requestingPlayback = false; }
+  }
+
   Future<bool> _showSettings({required bool allowCancel}) async {
+    await _refreshAccount();
+    if (!mounted) return false;
     final result = await showDialog<AppConfig>(
       context: context,
       barrierDismissible: allowCancel,
       builder: (_) => SettingsDialog(
+        accountKey: app.accountKey,
         initial: app.config,
         allowCancel: allowCancel,
       ),
@@ -160,6 +216,10 @@ class _WebShellPageState extends State<WebShellPage> {
 
   Future<dynamic> _handleBridge(String method, dynamic arg) async {
     switch (method) {
+      case 'requestPlayback':
+        final decoded = arg is String ? jsonDecode(arg) : arg;
+        if (decoded is! Map) return {'ok': false, 'error': '播放参数无效'};
+        return _startPlayback(Map<String, dynamic>.from(decoded));
       case 'playItem':
         try {
           final decoded = arg is String ? jsonDecode(arg) : arg;
@@ -177,7 +237,7 @@ class _WebShellPageState extends State<WebShellPage> {
           if (payload.headers.isNotEmpty) {
             app.logger.debug('播放请求头字段：${payload.headers.keys.join(', ')}');
           }
-          await _openPlayer(payload);
+          unawaited(_openPlayer(payload));
           return jsonEncode({'ok': true});
         } on PlaybackPayloadException catch (error) {
           app.logger.warning('播放请求校验失败：${error.message}');
@@ -230,6 +290,7 @@ class _WebShellPageState extends State<WebShellPage> {
         } on Object {
           // ignore
         }
+        if (Platform.isAndroid || Platform.isIOS) return {'ok': true};
         exit(0);
       default:
         return jsonEncode({'ok': false, 'error': '未知的桌面端方法：$method'});
@@ -263,12 +324,7 @@ class _WebShellPageState extends State<WebShellPage> {
   }
 
   void _requestItem(int itemId) {
-    final controller = _webController;
-    if (controller == null) return;
-    controller.evaluateJavascript(
-      source: "window.dispatchEvent(new CustomEvent('strmaction:request-play',"
-          "{detail:{itemId:$itemId}}));",
-    );
+    unawaited(_startPlayback({'itemId': itemId, 'mode': 'builtin'}));
   }
 
   void _dispatchProgressUpdated() {
@@ -304,6 +360,7 @@ class _WebShellPageState extends State<WebShellPage> {
     return InAppWebViewSettings(
       useShouldOverrideUrlLoading: true,
       javaScriptEnabled: true,
+      applicationNameForUserAgent: 'StrmActionCompanion/2.0',
       mediaPlaybackRequiresUserGesture: false,
       allowsInlineMediaPlayback: true,
       cacheEnabled: true,
@@ -328,7 +385,7 @@ class _WebShellPageState extends State<WebShellPage> {
       initialSettings: _settings(),
       initialUserScripts: UnmodifiableListView<UserScript>([
         UserScript(
-          source: buildBridgeScript(),
+          source: buildBridgeScript(isTV: _isTv),
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
           forMainFrameOnly: true,
         ),
@@ -338,6 +395,8 @@ class _WebShellPageState extends State<WebShellPage> {
         controller.addJavaScriptHandler(
           handlerName: 'strmaction',
           callback: (args) async {
+            final origin = await controller.getUrl();
+            if (origin == null || !_isAllowed(origin)) return {'ok': false, 'error': '页面来源不受信任'};
             final method = args.isNotEmpty ? '${args[0]}' : '';
             final arg = args.length > 1 ? args[1] : null;
             try {
@@ -360,8 +419,9 @@ class _WebShellPageState extends State<WebShellPage> {
       onLoadStop: (controller, url) async {
         if (!mounted) return;
         setState(() => _loading = false);
+        await _refreshAccount();
         try {
-          await controller.evaluateJavascript(source: buildBridgeScript());
+          await controller.evaluateJavascript(source: buildBridgeScript(isTV: _isTv));
         } on Object {
           // The document may be navigating again.
         }
@@ -403,9 +463,8 @@ class _WebShellPageState extends State<WebShellPage> {
       onCreateWindow: (controller, action) async => false,
       onReceivedServerTrustAuthRequest: (controller, challenge) async {
         return ServerTrustAuthResponse(
-          action: app.config.allowSelfSignedHttps
-              ? ServerTrustAuthResponseAction.PROCEED
-              : ServerTrustAuthResponseAction.CANCEL,
+          action: await verifyWebViewHost(app.config, challenge.protectionSpace.host, challenge.protectionSpace.port ?? 443)
+              ? ServerTrustAuthResponseAction.PROCEED : ServerTrustAuthResponseAction.CANCEL,
         );
       },
     );
