@@ -52,9 +52,7 @@ class FakeEngine extends PlaybackEngine {
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
-Future<FakeEngine> mountPlayer(WidgetTester tester, TargetPlatform platform) async {
-  debugDefaultTargetPlatformOverride = platform;
-  addTearDown(() => debugDefaultTargetPlatformOverride = null);
+Future<FakeEngine> mountPlayer(WidgetTester tester) async {
   tester.view.physicalSize = const Size(393, 852);
   tester.view.devicePixelRatio = 1;
   addTearDown(tester.view.resetPhysicalSize);
@@ -93,7 +91,7 @@ Future<void> tapScreen(WidgetTester tester) async {
 void main() {
   for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
     testWidgets('$platform taps show and hide controls without reaching native video', (tester) async {
-      final engine = await mountPlayer(tester, platform);
+      final engine = await mountPlayer(tester);
       expect(controlsVisible(tester), isTrue);
       expect(tester.getRect(find.byKey(const ValueKey('player-viewport'))), const Rect.fromLTWH(0, 0, 393, 852));
       await tapScreen(tester);
@@ -102,10 +100,10 @@ void main() {
       expect(controlsVisible(tester), isTrue);
       expect(engine.nativeTaps, 0);
       expect(tester.takeException(), isNull);
-    });
+    }, variant: TargetPlatformVariant({platform}));
 
     testWidgets('$platform auto hides after starting and allows hiding while paused', (tester) async {
-      final engine = await mountPlayer(tester, platform);
+      final engine = await mountPlayer(tester);
       await tester.pump(const Duration(seconds: 2));
       engine.notifyListeners();
       await tester.pump(const Duration(milliseconds: 1600));
@@ -120,10 +118,10 @@ void main() {
       await tapScreen(tester);
       expect(controlsVisible(tester), isTrue);
       expect(tester.takeException(), isNull);
-    });
+    }, variant: TargetPlatformVariant({platform}));
 
     testWidgets('$platform control buttons and drawer taps do not toggle the screen', (tester) async {
-      await mountPlayer(tester, platform);
+      await mountPlayer(tester);
       await tester.tap(find.text('1x'));
       await tester.pump(const Duration(milliseconds: 300));
       expect(tester.widget<PlayerDrawer>(find.byType(PlayerDrawer)).visible, isTrue);
@@ -133,10 +131,10 @@ void main() {
       expect(tester.widget<PlayerDrawer>(find.byType(PlayerDrawer)).visible, isFalse);
       expect(controlsVisible(tester), isTrue);
       expect(tester.takeException(), isNull);
-    });
+    }, variant: TargetPlatformVariant({platform}));
 
     testWidgets('$platform double tap pauses and lock keeps unlock accessible', (tester) async {
-      final engine = await mountPlayer(tester, platform);
+      final engine = await mountPlayer(tester);
       await tester.tapAt(const Offset(196, 400));
       await tester.pump(const Duration(milliseconds: 50));
       await tester.tapAt(const Offset(196, 400));
@@ -153,6 +151,6 @@ void main() {
       expect(controlsVisible(tester), isTrue);
       expect(engine.nativeTaps, 0);
       expect(tester.takeException(), isNull);
-    });
+    }, variant: TargetPlatformVariant({platform}));
   }
 }

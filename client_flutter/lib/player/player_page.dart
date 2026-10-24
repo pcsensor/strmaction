@@ -653,6 +653,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
           cursor: _controlsVisible ? SystemMouseCursors.basic : SystemMouseCursors.none,
           onHover: _mobile ? null : (_) => _showControls(),
           child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleControls,
+            child: Stack(
+              key: const ValueKey('player-viewport'),
+              fit: StackFit.expand,
+              children: [
+                // Native views only render; complex gestures stay below UI.
+                IgnorePointer(child: _engine.buildVideo()),
+                if (!_engine.isPiP) Positioned.fill(child: GestureDetector(
             key: const ValueKey('player-gestures'),
             behavior: HitTestBehavior.opaque,
             onTap: _toggleControls,
@@ -682,12 +691,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               if (_dragX < MediaQuery.sizeOf(context).width / 2) { _engine.setBrightness(change); }
               else { _engine.setVolumeRelative((change * 100).round()); }
             } : null,
-            child: Stack(
-              key: const ValueKey('player-viewport'),
-              fit: StackFit.expand,
-              children: [
-                // Flutter owns input; native views only render the video.
-                IgnorePointer(child: _engine.buildVideo()),
+                  child: const SizedBox.expand(),
+                )),
                 if (!_engine.isPiP) ControlsOverlay(
                   visible: _controlsVisible && !_locked && !_engine.isPiP,
                   title: widget.payload.title,
