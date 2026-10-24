@@ -7,6 +7,10 @@ import android.content.res.Configuration
 import android.os.Build
 import android.util.Rational
 import android.view.View
+import android.view.WindowManager
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.media3.ui.PlayerView
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -19,6 +23,29 @@ import java.io.File
 
 class MainActivity : FlutterActivity() {
     private lateinit var player: UnifiedPlayer
+    private var fullscreen = false
+
+    private fun applyFullscreen() {
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            window.attributes = window.attributes.apply {
+                layoutInDisplayCutoutMode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R)
+                    WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
+                else WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+            }
+        }
+        WindowInsetsControllerCompat(window, window.decorView).apply {
+            systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (fullscreen) hide(WindowInsetsCompat.Type.systemBars())
+            else show(WindowInsetsCompat.Type.systemBars())
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyFullscreen()
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         player = UnifiedPlayer(this)
@@ -26,6 +53,7 @@ class MainActivity : FlutterActivity() {
         MethodChannel(messenger, "strmaction/native").setMethodCallHandler { call, result ->
             try {
                 when (call.method) {
+                    "fullscreen" -> { fullscreen = call.arguments == true; applyFullscreen(); result.success(null) }
                     "configDirectory" -> result.success(File(filesDir, "unified-client").apply { mkdirs() }.absolutePath)
                     "legacySettings" -> {
                         val prefs = getSharedPreferences("player_prefs", Context.MODE_PRIVATE)

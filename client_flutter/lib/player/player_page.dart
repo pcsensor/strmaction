@@ -2,12 +2,14 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../app_controller.dart';
 import '../models/playback_payload.dart';
 import '../services/progress_reporter.dart';
+import '../services/mobile_window.dart';
 import 'input/player_keyboard.dart';
 import 'media_kit_engine.dart';
 import 'native_player_engine.dart';
@@ -22,6 +24,7 @@ class PlayerPage extends StatefulWidget {
   final PlaybackPayload payload;
   final bool isTv;
   final ValueChanged<int>? onRequestItem;
+  final PlaybackEngine? engine;
 
   const PlayerPage({
     super.key,
@@ -29,6 +32,7 @@ class PlayerPage extends StatefulWidget {
     required this.payload,
     this.isTv = false,
     this.onRequestItem,
+    this.engine,
   });
 
   @override
@@ -43,7 +47,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   double _dragX = 0;
   double _dragY = 0;
   double _dragPosition = 0;
-  bool get _mobile => Platform.isAndroid || Platform.isIOS;
+  bool get _mobile => defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS;
   int get _bufferLimit => widget.payload.bufferLimitMb ?? (_mobile && Platform.isAndroid ? 512 : widget.app.config.cacheLimitMb);
   late final ProgressReporter _reporter;
   late final PlayerKeyboardHandler _keyboard;
@@ -85,14 +89,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     super.initState();
     _boostSpeed = widget.app.config.boostSpeed;
     WidgetsBinding.instance.addObserver(this);
-    _engine = _mobile ? NativePlayerEngine() : MediaKitEngine(
+    _engine = widget.engine ?? (_mobile ? NativePlayerEngine() : MediaKitEngine(
       caBundlePath: '${widget.app.paths.baseDir}/media-ca.pem',
       trustedCaPem: widget.app.config.trustedCaPem,
       cacheDirectory: '${widget.app.paths.baseDir}/playback-${DateTime.now().microsecondsSinceEpoch}',
       diskLimitMb: widget.payload.diskCacheLimitMb ?? widget.app.config.diskCacheLimitMb,
       logger: widget.app.logger,
       hardwareAcceleration: widget.app.config.playerHardwareAcceleration,
-    );
+    ));
     _engine.addListener(_onEngineChanged);
     _reporter = ProgressReporter(
       serverUrl: widget.app.config.serverUrl,
@@ -181,7 +185,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       (_engine.position * 1000).round(),
       durationMs: _engine.duration > 0 ? (_engine.duration * 1000).round() : null,
     );
-    if (!_wasPaused && _engine.isPaused && _engine.position > 0) _reporter.requestFlush();
+    final pauseChanged = _wasPaused != _engine.isPaused;
+    if (pauseChanged && _engine.isPaused && _engine.position > 0) _reporter.requestFlush();
     _wasPaused = _engine.isPaused;
     if (_engine.completed && !_completionHandled) {
       _onCompleted();
@@ -196,8 +201,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _lastError = error;
       _showError(error);
     }
-    if (_engine.isPaused && !_controlsVisible) {
-      _showControls();
+    if (pauseChanged) {
+      if (_engine.isPaused) { _showControls(); }
+      else { _restartHideTimer(); }
     }
   }
 
@@ -303,8 +309,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Future<void> _exitFullscreenIfNeeded() async {
     if (_mobile) {
-      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-      await SystemChrome.setPreferredOrientations(DeviceOrientation.values);
+      await setMobileFullscreen(false);
       return;
     }
     try {
@@ -331,6 +336,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       setState(() => _controlsVisible = true);
     }
     _restartHideTimer();
+  }
+
+  void _toggleControls() {
+    if (_locked || _drawerVisible || _messageVisible || _seeking) return;
+    if (_controlsVisible) {
+      _hideTimer?.cancel();
+      setState(() => _controlsVisible = false);
+    } else {
+      _showControls();
+    }
   }
 
   void _restartHideTimer() {
@@ -436,8 +451,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   Future<void> _toggleFullscreen() async {
     if (_mobile) {
       setState(() => _fullscreen = !_fullscreen);
-      await SystemChrome.setEnabledSystemUIMode(_fullscreen ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge);
-      await SystemChrome.setPreferredOrientations(_fullscreen ? [DeviceOrientation.landscapeLeft, DeviceOrientation.landscapeRight] : DeviceOrientation.values);
+      await setMobileFullscreen(_fullscreen);
       return;
     }
     try {
@@ -448,6 +462,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       // ignore
     }
     _showControls();
+  }
+
+  void _toggleLock() {
+    setState(() => _locked = !_locked);
+    if (!_locked) _showControls();
   }
 
   void _onEscape() {
@@ -609,6 +628,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       onPopInvokedWithResult: (didPop, result) { if (!didPop) { if (_drawerVisible) { _closeDrawer(); } else { _back(); } } },
       child: Scaffold(
       backgroundColor: Colors.black,
+      resizeToAvoidBottomInset: false,
       body: Focus(
         focusNode: _focusNode,
         autofocus: true,
@@ -631,10 +651,20 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         },
         child: MouseRegion(
           cursor: _controlsVisible ? SystemMouseCursors.basic : SystemMouseCursors.none,
-          onHover: (_) => _showControls(),
+          onHover: _mobile ? null : (_) => _showControls(),
           child: GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onTap: () { if (!_locked) _showControls(); },
+            onTap: _toggleControls,
+            child: Stack(
+              key: const ValueKey('player-viewport'),
+              fit: StackFit.expand,
+              children: [
+                // Native views only render; complex gestures stay below UI.
+                IgnorePointer(child: _engine.buildVideo()),
+                if (!_engine.isPiP) Positioned.fill(child: GestureDetector(
+            key: const ValueKey('player-gestures'),
+            behavior: HitTestBehavior.opaque,
+            onTap: _toggleControls,
             onDoubleTapDown: (details) => _tapX = details.localPosition.dx,
             onDoubleTap: () {
               if (_locked) return;
@@ -661,10 +691,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               if (_dragX < MediaQuery.sizeOf(context).width / 2) { _engine.setBrightness(change); }
               else { _engine.setVolumeRelative((change * 100).round()); }
             } : null,
-            child: Stack(
-              fit: StackFit.expand,
-              children: [
-                _engine.buildVideo(),
+                  child: const SizedBox.expand(),
+                )),
                 if (!_engine.isPiP) ControlsOverlay(
                   visible: _controlsVisible && !_locked && !_engine.isPiP,
                   title: widget.payload.title,
@@ -685,6 +713,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   centerText: _centerText,
                   showCenterIcon: _showCenterIcon,
                   showCenterText: _showCenterText,
+                  trailingWidth: _mobile ? 100 : 0,
                   onBack: _back,
                   onPlayPause: _togglePlayPause,
                   onPrevious: _previousEpisode,
@@ -704,9 +733,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onFullscreen: _toggleFullscreen,
                 ),
                 if (_mobile && !_engine.isPiP && (_controlsVisible || _locked)) Positioned(
-                  right: 12, top: 48, child: Row(children: [
+                  right: 12 + MediaQuery.viewPaddingOf(context).right,
+                  top: 20 + MediaQuery.viewPaddingOf(context).top,
+                  child: Row(children: [
                     if (!_locked) IconButton(tooltip: '画中画', icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white), onPressed: _engine.enterPiP),
-                    IconButton(tooltip: _locked ? '解锁' : '锁定', icon: Icon(_locked ? Icons.lock : Icons.lock_open, color: Colors.white), onPressed: () => setState(() => _locked = !_locked)),
+                    IconButton(tooltip: _locked ? '解锁' : '锁定', icon: Icon(_locked ? Icons.lock : Icons.lock_open, color: Colors.white), onPressed: _toggleLock),
                   ]),
                 ),
                 if (!_engine.isPiP) PlayerDrawer(
