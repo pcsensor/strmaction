@@ -33,12 +33,16 @@ def android():
     import re
     settings = CLIENT / 'android/settings.gradle.kts'
     text = re.sub(r'id\("com.android.application"\) version "[^"]+"', 'id("com.android.application") version "8.11.1"', settings.read_text())
-    text = text.replace('id("com.android.application") version "8.11.1" apply false', 'id("com.android.application") version "8.11.1" apply false\n    id("org.jetbrains.kotlin.android") version "2.2.20" apply false')
+    text = re.sub(r'id\("org.jetbrains.kotlin.android"\) version "[^"]+"', 'id("org.jetbrains.kotlin.android") version "2.2.20"', text)
+    if 'id("org.jetbrains.kotlin.android")' not in text:
+        text = text.replace('id("com.android.application") version "8.11.1" apply false', 'id("com.android.application") version "8.11.1" apply false\n    id("org.jetbrains.kotlin.android") version "2.2.20" apply false')
     settings.write_text(text)
     wrapper = CLIENT / 'android/gradle/wrapper/gradle-wrapper.properties'
     wrapper.write_text(re.sub(r'gradle-[0-9.]+-all.zip', 'gradle-8.14-all.zip', wrapper.read_text()))
     gradle = app / 'build.gradle.kts'
-    text = gradle.read_text().replace('id("com.android.application")', 'id("com.android.application")\n    id("org.jetbrains.kotlin.android")').replace('top.strmaction.strmaction_desktop', 'top.strmaction.companion')
+    text = gradle.read_text().replace('top.strmaction.strmaction_desktop', 'top.strmaction.companion')
+    if 'id("org.jetbrains.kotlin.android")' not in text:
+        text = text.replace('id("com.android.application")', 'id("com.android.application")\n    id("org.jetbrains.kotlin.android")')
     text = text.replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
     # Unsigned releases can be re-signed with the existing installation key.
     text = text.replace('signingConfig = signingConfigs.getByName("debug")', 'signingConfig = null')

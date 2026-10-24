@@ -14,7 +14,7 @@ class ProgressOutbox {
   Future<T> _locked<T>(Future<T> Function() operation) {
     final before = _tails[path] ?? Future<void>.value();
     final result = before.then((_) => operation());
-    _tails[path] = result.then<void>((_) {}, onError: (Object _, StackTrace __) {});
+    _tails[path] = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
   }
   Future<List<Map<String, dynamic>>> _read() async {
