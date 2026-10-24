@@ -118,18 +118,13 @@ jobs:
         run: |
           swiftc -swift-version 5 -parse-as-library native/ios/Sources/Cache/PlaybackCacheDirectory.swift ci/tests/PlaybackCacheDirectoryTests.swift -o "$RUNNER_TEMP/cache-directory-tests"
           "$RUNNER_TEMP/cache-directory-tests"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - name: Verify native Range transport and cache
         run: |
           swiftc -swift-version 5 -parse-as-library native/ios/Sources/Cache/OriginClient.swift native/ios/Sources/Cache/RangeOriginSession.swift native/ios/Sources/Cache/RangeStore.swift native/ios/Sources/Cache/ThroughputSampler.swift native/ios/Sources/Cache/PlaybackCacheDirectory.swift native/ios/Sources/Cache/CacheServer.swift native/ios/Sources/Trust/CertificateTools.swift native/ios/Sources/Trust/CertificateTools+Parse.swift ci/tests/RangeTransportTests.swift -o "$RUNNER_TEMP/range-tests"
-          python3 ci/tests/range_origin_fixture.py "$RUNNER_TEMP/range-port" &
-          FIXTURE_PID=$!
-          trap 'kill "$FIXTURE_PID"' EXIT
-          for attempt in $(seq 1 50); do
-            test -s "$RUNNER_TEMP/range-port" && break
-            sleep 0.1
-          done
-          export RANGE_FIXTURE_URL="http://127.0.0.1:$(cat "$RUNNER_TEMP/range-port")/"
-          "$RUNNER_TEMP/range-tests"
+          python3 ci/tests/range_origin_fixture.py --run "$RUNNER_TEMP/range-tests"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}

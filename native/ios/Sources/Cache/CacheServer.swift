@@ -473,6 +473,7 @@ final class CacheServer {
                 if boundary > cursor { upper = min(upper, boundary) }
             }
             let size = upper - cursor
+            if size < min(4 * 1_048_576, min(store.capacity, targetAheadBytes)) && upper < totalLength { break }
             guard size > 0, store.reserve(pendingBytes + size, before: focus) else { break }
             let start = cursor
             reservations[start] = start..<upper; pendingBytes += size

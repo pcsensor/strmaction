@@ -177,12 +177,16 @@ class BoundedMediaCache {
 
   _Download? _schedule(int first, int endBlock, {bool demand = false}) {
     if (_closed || _jobs.length >= policy.concurrency) return null;
-    var last = min(endBlock, first + max(1, min(policy.segmentBytes, budgetBytes) ~/ blockSize));
+    var last = min(endBlock, first + max(1, min(policy.segmentBytes, budgetBytes) ~/ blockSize)).toInt();
     for (var next = first + 1; next < last; next++) {
       if (_covered(next)) { last = next; break; }
     }
     while (last > first && !_reserve(min(length, last * blockSize) - first * blockSize, demand: demand)) { last--; }
     if (last <= first) return null;
+    // Wait for a useful amount of consumed space instead of falling back to
+    // one HTTP request per 1 MiB as a full cache window moves forward.
+    if (!demand && (last - first) * blockSize < min(4 * blockSize, budgetBytes) &&
+        last * blockSize < length && !_covered(last)) return null;
     final job = _Download(first * blockSize, min(length, last * blockSize));
     _jobs.add(job);
     job.result = _download(job);
@@ -198,7 +202,7 @@ class BoundedMediaCache {
         first + max(1, window ~/ blockSize));
     for (var block = first; block < upper && _jobs.length < policy.concurrency;) {
       if (_covered(block)) { block++; continue; }
-      var end = min(upper, block + policy.segmentBytes ~/ blockSize);
+      var end = min(upper, block + policy.segmentBytes ~/ blockSize).toInt();
       for (var next = block + 1; next < end; next++) {
         if (_covered(next)) { end = next; break; }
       }

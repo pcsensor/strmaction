@@ -1,5 +1,7 @@
 """Loopback HTTP/1.1 fixture for CI's production Swift cache tests."""
 import json
+import os
+import subprocess
 import re
 import sys
 import threading
@@ -93,6 +95,15 @@ class Handler(BaseHTTPRequestHandler):
 
 if __name__ == "__main__":
     server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
-    with open(sys.argv[1], "w") as port_file:
-        port_file.write(str(server.server_port))
-    server.serve_forever()
+    if sys.argv[1] == "--run":
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            result = subprocess.run([sys.argv[2]], env={**os.environ, "RANGE_FIXTURE_URL": f"http://127.0.0.1:{server.server_port}/"}, timeout=120)
+            raise SystemExit(result.returncode)
+        finally:
+            server.shutdown()
+            server.server_close()
+    else:
+        with open(sys.argv[1], "w") as port_file:
+            port_file.write(str(server.server_port))
+        server.serve_forever()
