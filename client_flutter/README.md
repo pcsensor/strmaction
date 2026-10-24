@@ -26,4 +26,6 @@ Android、iOS、Windows、macOS 共用 Flutter 的 Web 外壳、设置、播放�
 
 ## 测试位置
 
+下载并发与网络分段由客户端自动调整（初始 2 个并发、最多 4 个，分段 4–8 MiB），沿用现有缓存容量设置。直链按播放会话复用，过期合并刷新；详细行为见[下载策略](../docs/playback-downloads.md)。
+
 `test/` 覆盖设置 / payload、长播放列表、窄屏控件、进度退出与重试队列、私有 CA 与主机名校验。`platform/android/test/` 验证私有 CA、错误主机名、叶子证书拒绝和重定向请求头。设备专属行为按迁移说明下载 CI 安装包验收。

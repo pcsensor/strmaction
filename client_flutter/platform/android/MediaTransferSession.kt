@@ -47,7 +47,7 @@ class MediaTransferSession(private val origin: HttpUrl) : Interceptor {
                 lease = Pair(resolved ?: origin, version)
             }
             var response = first ?: chain.proceed(request(original, lease.first))
-            if (response.code in listOf(401, 403, 410) && lease.first != origin) {
+            if (response.code in listOf(401, 403, 410) && (lease.first != origin || response.request.url != origin)) {
                 response.close()
                 synchronized(lock) {
                     if (version == lease.second) {
@@ -109,7 +109,7 @@ class MediaTransferSession(private val origin: HttpUrl) : Interceptor {
             val range = parseRange(response) ?: throw IOException("片源范围响应无效")
             val nextValidator = response.header("ETag")?.takeUnless { it.startsWith("W/") }
                 ?: response.header("Last-Modified")
-            if ((refresh || supportsRanges) && (range.third != contentLength ||
+            if (contentLength > 0 && (refresh || supportsRanges) && (range.third != contentLength ||
                     (validator != null && validator != nextValidator))) throw IOException("片源文件已变化，请重新播放")
             contentLength = range.third
             validator = nextValidator

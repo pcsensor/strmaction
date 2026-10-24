@@ -120,7 +120,7 @@ final class RangeOriginSession {
         if let etag = meta.headers["etag"], !etag.hasPrefix("W/") { return etag }
         return meta.headers["last-modified"]
     }
-    private func resolve() {
+    private func resolve(attempt: Int = 0) {
         let client = OriginClient(queue: queue, pool: pool); probe = client
         var bytes = 0
         var next: OriginClient.Meta?
@@ -135,6 +135,9 @@ final class RangeOriginSession {
         }, onMeta: { _ in }, onData: { bytes += $0.count }, onEnd: { [weak self] error in
             guard let self, !self.closed else { return }
             self.probe = nil
+            if let error, attempt == 0, self.isTransportError(error) {
+                self.pool.close(); self.resolve(attempt: 1); return
+            }
             if let meta = next, case SessionError.nonRange? = error {
                 self.resolved = meta.url; self.supportsRanges = false
                 self.totalLength = meta.totalLength ?? 0; self.version += 1
@@ -146,6 +149,17 @@ final class RangeOriginSession {
             self.pump()
         })
     }
+    private func isTransportError(_ error: Error) -> Bool {
+        if error is NWError || error is URLError { return true }
+        if let value = error as? OriginClient.OriginError {
+            switch value {
+            case .malformedResponse, .incomplete: return true
+            default: return false
+            }
+        }
+        return false
+    }
+
     private func start(_ request: OriginRequest) {
         guard let url = resolved else { pending.insert(request, at: 0); return }
         active[request.id] = request
@@ -154,7 +168,7 @@ final class RangeOriginSession {
         let started = ProcessInfo.processInfo.systemUptime
         var received: Int64 = 0
         var delivered = false
-        var requestHeaders = headers
+        var requestHeaders = headers.filter { $0.key.lowercased() != "if-range" }
         if let validator, supportsRanges { requestHeaders["If-Range"] = validator }
         client.fetch(url: url, headers: requestHeaders, start: request.start, end: request.end,
                      pace: request.pace, validate: { [weak self] meta in
@@ -180,7 +194,8 @@ final class RangeOriginSession {
                     request.retried = true; self.pending.insert(request, at: 0); self.pump(); return
                 }
                 // A pooled keep-alive socket may have been closed by the CDN.
-                if error is NWError || error is URLError {
+                if self.isTransportError(error) {
+                    self.pool.close()
                     request.retried = true; self.pending.insert(request, at: 0); self.pump(); return
                 }
             }

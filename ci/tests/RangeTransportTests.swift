@@ -55,6 +55,11 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         do { _ = try await fetch(bad, queue, 0, 1024); throw NSError(domain: "bad range accepted", code: 1) }
         catch RangeOriginSession.SessionError.rangeMismatch { }
         queue.sync { bad.stop() }
+        let stale = RangeOriginSession(url: base.appendingPathComponent("stale"), headers: headers, queue: queue)
+        let staleFirst = try await fetch(stale, queue, 0, 1024)
+        let staleNext = try await fetch(stale, queue, 1024, 2048)
+        try require(staleFirst.count == 1024 && staleNext.first == UInt8(1024 % 251), "stale keep-alive was not retried")
+        queue.sync { stale.stop() }
         let plain = RangeOriginSession(url: base.appendingPathComponent("non-range"), headers: headers, queue: queue)
         let plainData = try await fetch(plain, queue, 0, 1024)
         try require(String(data: plainData, encoding: .utf8) == "plain-video", "non-Range fallback failed")

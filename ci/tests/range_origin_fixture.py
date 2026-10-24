@@ -88,6 +88,8 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
         finally:
+            if self.path.startswith("/stale"):
+                self.close_connection = True
             with lock:
                 if not probe:
                     state["active"] -= 1

@@ -97,7 +97,10 @@ final class OriginClient {
                     let verdict = CertificateTools.evaluates(chain: chain, host: host, anchors: anchors)
                     complete(verdict.isTrusted || CertificateTools.isPubliclyTrusted(trust))
                 }, queue)
-                sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, host)
+                let numericHost = host.contains(":") || host.unicodeScalars.allSatisfy {
+                    CharacterSet(charactersIn: "0123456789.").contains($0)
+                }
+                if !numericHost { sec_protocol_options_set_tls_server_name(tls.securityProtocolOptions, host) }
                 parameters = NWParameters(tls: tls, tcp: tcp)
             } else { parameters = NWParameters(tls: nil, tcp: tcp) }
             connection = NWConnection(host: NWEndpoint.Host(host), port: port, using: parameters)
