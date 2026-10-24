@@ -200,7 +200,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     if (error == null) {
       _lastError = null;
       if (_messageVisible && _cardMode == 'error' && !_engine.isPaused &&
-          !_engine.isLoading && !_engine.isBuffering) _hideMessage();
+          !_engine.isLoading && !_engine.isBuffering) {
+        _hideMessage();
+      }
     } else if (error != _lastError) {
       _lastError = error;
       _showError(error);
