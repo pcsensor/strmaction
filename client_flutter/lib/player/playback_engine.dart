@@ -45,6 +45,7 @@ bool areBufferedRangesEqual(List<BufferedRange> a, List<BufferedRange> b) {
 }
 
 abstract class PlaybackEngine extends ChangeNotifier {
+  bool get isPiP => false;
   Widget buildVideo() {
     final controller = videoController;
     return controller == null ? const SizedBox.expand() : Video(

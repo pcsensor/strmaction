@@ -209,6 +209,11 @@ public final class VideoPlayerController: ObservableObject {
         seek(toMs: max(0, min(upper, currentPositionMs + seconds * 1000)))
     }
 
+    public func setBufferLimit(_ value: Int) {
+        bufferLimitMb = max(0, min(8192, value))
+        refreshBufferTarget()
+    }
+
     public func setSpeed(_ speed: Double) {
         playbackSpeed = speed
         ksCoordinator.playbackRate = Float(speed)

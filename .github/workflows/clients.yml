@@ -85,23 +85,24 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: Prepare Xcode project
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Prepare Flutter iOS runner
         run: |
-          xcodebuild -version
-          brew install xcodegen
-          xcodegen generate --spec project.yml
-        working-directory: native/ios
-      - name: Build iOS baseline
-        run: >-
-          xcodebuild archive -project StrmAction.xcodeproj -scheme StrmAction
-          -destination 'generic/platform=iOS' -archivePath build/StrmAction.xcarchive
-          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
-          ENABLE_USER_SCRIPT_SANDBOXING=NO
-        working-directory: native/ios
+          flutter config --no-enable-swift-package-manager
+          flutter create --platforms=ios --org top.strmaction --project-name strmaction_desktop .
+          python3 ../ci/prepare_mobile.py ios
+          flutter pub get
+        working-directory: client_flutter
+      - name: Build iOS shared client
+        run: flutter build ipa --release --no-codesign
+        working-directory: client_flutter
       - name: Package unsigned IPA
         run: |
           mkdir -p dist/Payload
-          cp -R native/ios/build/StrmAction.xcarchive/Products/Applications/StrmAction.app dist/Payload/
+          cp -R client_flutter/build/ios/archive/Runner.xcarchive/Products/Applications/*.app dist/Payload/
           cd dist
           zip -r -q StrmAction-iOS-unsigned.ipa Payload
           rm -rf Payload

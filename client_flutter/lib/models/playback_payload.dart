@@ -9,10 +9,13 @@ class PlaybackPayloadException implements Exception {
 class SubtitleInfo {
   final String label;
   final String url;
+  final String? format;
+  final String? mime;
+  final String? lang;
 
-  const SubtitleInfo({required this.label, required this.url});
+  const SubtitleInfo({required this.label, required this.url, this.format, this.mime, this.lang});
 
-  Map<String, dynamic> toJson() => {'label': label, 'url': url};
+  Map<String, dynamic> toJson() => {'label': label, 'url': url, 'format': format, 'mime': mime, 'lang': lang};
 }
 
 class PlaylistEntry {
@@ -256,7 +259,7 @@ class PlaybackPayload {
         continue;
       }
       final label = (entry['label'] ?? entry['lang'] ?? '').toString().trim();
-      result.add(SubtitleInfo(label: label.isEmpty ? '字幕' : label, url: absolute));
+      result.add(SubtitleInfo(label: label.isEmpty ? '字幕' : label, url: absolute, format: entry['format'] as String?, mime: entry['mime'] as String?, lang: entry['lang'] as String?));
     }
     return result;
   }

@@ -96,6 +96,7 @@ class ControlsOverlay extends StatelessWidget {
               final height = constraints.maxHeight.isFinite
                   ? constraints.maxHeight
                   : MediaQuery.sizeOf(context).height;
+              final bottomHeight = constraints.maxWidth < 650 ? 124.0 : 88.0;
               return Stack(
                 children: [
                   Positioned(
@@ -108,7 +109,7 @@ class ControlsOverlay extends StatelessWidget {
                     top: 72,
                     left: 0,
                     right: 0,
-                    bottom: 88,
+                    bottom: bottomHeight,
                     child: IgnorePointer(
                       child: Center(
                         child: Column(
@@ -160,10 +161,11 @@ class ControlsOverlay extends StatelessWidget {
                     ),
                   ),
                   Positioned(
-                    top: height - 88,
+                    top: height - bottomHeight,
                     left: 0,
                     right: 0,
                     child: _BottomBar(
+                      compact: constraints.maxWidth < 650,
                       position: position,
                       duration: duration,
                       bufferedRanges: bufferedRanges,
@@ -298,6 +300,7 @@ class _CircleButton extends StatelessWidget {
 }
 
 class _BottomBar extends StatelessWidget {
+  final bool compact;
   final double position;
   final double duration;
   final List<BufferedRange> bufferedRanges;
@@ -318,6 +321,7 @@ class _BottomBar extends StatelessWidget {
   final VoidCallback onFullscreen;
 
   const _BottomBar({
+    required this.compact,
     required this.position,
     required this.duration,
     required this.bufferedRanges,
@@ -340,85 +344,41 @@ class _BottomBar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final time = Text(
+      '${formatTime(position)} / ${formatTime(duration)}',
+      style: const TextStyle(color: Color(0xFFD1D5DB), fontSize: 13),
+    );
+    final network = Text(formatNetworkSpeed(networkSpeed),
+      style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 12));
     return Container(
-      height: 88,
-      padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
-      decoration: const BoxDecoration(
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [Color(0x00000000), Color(0xDC000000)],
-        ),
-      ),
-      child: Column(
-        children: [
-          BufferedSeekBar(
-            position: position,
-            duration: duration,
-            bufferedRanges: bufferedRanges,
-            onSeek: onSeek,
-            onSeekingChanged: onSeekingChanged,
-          ),
-          Expanded(
-            child: Row(
-              children: [
-                _ToolButton(
-                  iconPath: paused ? AppIcons.play : AppIcons.pause,
-                  size: 22,
-                  onTap: onPlayPause,
-                ),
-                _ToolButton(
-                  iconPath: AppIcons.previous,
-                  size: 20,
-                  onTap: hasPrevious ? onPrevious : null,
-                ),
-                _ToolButton(
-                  iconPath: AppIcons.next,
-                  size: 20,
-                  onTap: hasNext ? onNext : null,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  '${formatTime(position)} / ${formatTime(duration)}',
-                  style: const TextStyle(
-                    color: Color(0xFFD1D5DB),
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                  ),
-                ),
-                if (formatNetworkSpeed(networkSpeed).isNotEmpty) ...[
-                  const SizedBox(width: 10),
-                  Text(
-                    formatNetworkSpeed(networkSpeed),
-                    style: const TextStyle(
-                      color: Color(0xFF9CA3AF),
-                      fontSize: 12,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                ],
-                const Spacer(),
-                _SpeedChip(speed: speed, onTap: onSpeed),
-                _ToolButton(
-                  iconPath: AppIcons.episodes,
-                  size: 20,
-                  onTap: onEpisodes,
-                ),
-                _ToolButton(
-                  iconPath: AppIcons.more,
-                  size: 20,
-                  onTap: onTracks,
-                ),
-                _ToolButton(
-                  iconPath: fullscreen ? AppIcons.fullscreenExit : AppIcons.fullscreen,
-                  size: 20,
-                  onTap: onFullscreen,
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
+      height: compact ? 124 : 88,
+      padding: EdgeInsets.fromLTRB(compact ? 12 : 20, 0, compact ? 12 : 20, 12),
+      decoration: const BoxDecoration(gradient: LinearGradient(
+        begin: Alignment.topCenter, end: Alignment.bottomCenter,
+        colors: [Color(0x00000000), Color(0xDC000000)],
+      )),
+      child: Column(children: [
+        BufferedSeekBar(position: position, duration: duration,
+          bufferedRanges: bufferedRanges, onSeek: onSeek,
+          onSeekingChanged: onSeekingChanged),
+        if (compact) SizedBox(height: 24, child: Row(children: [
+          time, const Spacer(), Flexible(child: network),
+        ])),
+        Expanded(child: Row(children: [
+          _ToolButton(iconPath: paused ? AppIcons.play : AppIcons.pause, size: 22, onTap: onPlayPause),
+          _ToolButton(iconPath: AppIcons.previous, size: 20, onTap: hasPrevious ? onPrevious : null),
+          _ToolButton(iconPath: AppIcons.next, size: 20, onTap: hasNext ? onNext : null),
+          if (!compact) ...[
+            const SizedBox(width: 4), time,
+            if (formatNetworkSpeed(networkSpeed).isNotEmpty) ...[const SizedBox(width: 10), network],
+          ],
+          const Spacer(),
+          _SpeedChip(speed: speed, onTap: onSpeed),
+          _ToolButton(iconPath: AppIcons.episodes, size: 20, onTap: onEpisodes),
+          _ToolButton(iconPath: AppIcons.more, size: 20, onTap: onTracks),
+          _ToolButton(iconPath: fullscreen ? AppIcons.fullscreenExit : AppIcons.fullscreen, size: 20, onTap: onFullscreen),
+        ])),
+      ]),
     );
   }
 }

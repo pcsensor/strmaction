@@ -98,7 +98,7 @@ enum DiskCachePreference {
     }
 
     static func clamp(_ value: Int) -> Int {
-        min(maxLimitMb, max(minLimitMb, value))
+        value <= 0 ? 0 : min(maxLimitMb, max(minLimitMb, value))
     }
 }
 
@@ -118,7 +118,7 @@ enum PlaybackBufferPreference {
     static let presets: [Int] = [64, 128, 256, 512]
     static let defaultLimitMb = 128
     static let minLimitMb = 16
-    static let maxLimitMb = 4096
+    static let maxLimitMb = 8192
 
     static var limitMb: Int {
         let value = UserDefaults.standard.integer(forKey: defaultsKey)
@@ -127,7 +127,7 @@ enum PlaybackBufferPreference {
     }
 
     static func clamp(_ value: Int) -> Int {
-        min(maxLimitMb, max(minLimitMb, value))
+        value <= 0 ? 0 : min(maxLimitMb, max(minLimitMb, value))
     }
 
     // MARK: 码率
@@ -150,6 +150,7 @@ enum PlaybackBufferPreference {
 
     /// 把「缓冲上限 MB」折算成 `maxBufferDuration` 需要的秒数。
     static func seconds(limitMb: Int, bitRate: Double) -> Double {
+        if limitMb <= 0 { return 2 } // Decoder jitter buffer only; no read-ahead.
         let bytes = Double(clamp(limitMb)) * 1024 * 1024
         let rate = bitRate > 0 ? bitRate : fallbackBitRate
         let raw = bytes * 8 / rate

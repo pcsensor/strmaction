@@ -264,6 +264,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _watchdog?.cancel();
     _hideTimer?.cancel();
     _badgeTimer?.cancel();
+    await _engine.pause();
+    _reporter.update((_engine.position * 1000).round(), durationMs: (_engine.duration * 1000).round());
     await _reporter.stop(flush: true);
     if (widget.app.activeProgress == _reporter) {
       widget.app.activeProgress = null;
@@ -638,7 +640,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               children: [
                 _engine.buildVideo(),
                 ControlsOverlay(
-                  visible: _controlsVisible && !_locked,
+                  visible: _controlsVisible && !_locked && !_engine.isPiP,
                   title: widget.payload.title,
                   seriesTitle: widget.payload.seriesTitle,
                   position: _engine.position,

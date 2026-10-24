@@ -34,6 +34,7 @@ class NativePlayerEngine extends PlaybackEngine {
   List<TrackInfo> _tracks(String key, String type) => ((_state[key] as List?) ?? []).whereType<Map>().map((t) => TrackInfo(
     id: '${t['id']}', type: type, title: '${t['title'] ?? t['id']}', external: t['external'] == true,
   )).toList();
+  @override bool get isPiP => _state['pip'] == true;
   @override VideoController? get videoController => null;
   @override double get position => _number('position_ms') / 1000;
   @override double get duration => _number('duration_ms') / 1000;

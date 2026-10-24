@@ -82,7 +82,7 @@ final class RangeStore {
     /// 写入一段数据，返回是否真的落盘（超过容量上限时返回 false，调用方仍应继续转发）。
     @discardableResult
     func write(_ data: Data, at offset: Int64) -> Bool {
-        guard !data.isEmpty else { return false }
+        guard limitBytes > 0, !data.isEmpty else { return false }
         lock.lock()
         defer { lock.unlock() }
         guard let handle else { return false }

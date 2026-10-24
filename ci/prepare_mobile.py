@@ -63,8 +63,14 @@ def ios():
     runner = CLIENT / 'ios/Runner'
     sources = runner / 'Native'
     shutil.copytree(ROOT / 'native/ios/Sources', sources, dirs_exist_ok=True)
-    # Flutter supplies the sole application entry point; the original remains historical.
-    (sources / 'App/StrmActionApp.swift').unlink()
+    # Copy only the tested transport/decoder core; Flutter owns application UI.
+    core = {'Model', 'Cache', 'Network'}
+    player = {'PlaybackSession.swift', 'MediaTransport.swift', 'VideoPlayerAdapter.swift', 'PlayerDiagnostics.swift', 'SystemVolumeController.swift'}
+    for path in sources.rglob('*.swift'):
+        folder = path.relative_to(sources).parts[0]
+        if folder in core or (folder == 'Trust' and path.name != 'TrustManagementView.swift') or (folder == 'Player' and path.name in player):
+            continue
+        path.unlink()
     for source in (PLATFORM / 'ios').glob('*.swift'):
         shutil.copy2(source, runner / source.name)
     shutil.copy2(ROOT / 'native/ios/Resources/ca/roots.pem', runner / 'roots.pem')

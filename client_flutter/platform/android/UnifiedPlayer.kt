@@ -129,8 +129,8 @@ class UnifiedPlayer(private val activity: MainActivity) {
         val subtitles = (data["subtitles"] as? List<*>)?.mapIndexedNotNull { index, entry ->
             val sub = entry as? Map<*, *> ?: return@mapIndexedNotNull null
             val url = sub["url"] as? String ?: return@mapIndexedNotNull null
-            val ext = Uri.parse(url).getQueryParameter("format") ?: Uri.parse(url).path?.substringAfterLast('.')
-            val mime = when (ext?.lowercase()) { "vtt" -> MimeTypes.TEXT_VTT; "ass", "ssa" -> MimeTypes.TEXT_SSA; else -> MimeTypes.APPLICATION_SUBRIP }
+            val ext = (sub["format"] as? String) ?: Uri.parse(url).getQueryParameter("format") ?: Uri.parse(url).path?.substringAfterLast('.')
+            val mime = sub["mime"] as? String ?: when (ext?.lowercase()) { "vtt" -> MimeTypes.TEXT_VTT; "ass", "ssa" -> MimeTypes.TEXT_SSA; else -> MimeTypes.APPLICATION_SUBRIP }
             MediaItem.SubtitleConfiguration.Builder(Uri.parse(url)).setMimeType(mime)
                 .setLabel(sub["label"] as? String ?: "字幕 ${index + 1}")
                 .setSelectionFlags(if (index == 0) C.SELECTION_FLAG_DEFAULT else 0).build()
