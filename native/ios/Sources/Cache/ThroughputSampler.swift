@@ -16,7 +16,10 @@ final class ThroughputSampler {
     func add(_ bytes: Int64) {
         guard bytes > 0 else { return }
         lock.lock(); defer { lock.unlock() }
-        let now = clock(); samples.append((now, bytes)); trim(now)
+        let now = clock()
+        if let last = samples.last, now - last.0 < 0.1 { samples[samples.count - 1].1 += bytes }
+        else { samples.append((now, bytes)) }
+        trim(now)
     }
     func bytesPerSecond() -> Double {
         lock.lock(); defer { lock.unlock() }

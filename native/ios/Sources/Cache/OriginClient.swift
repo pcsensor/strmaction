@@ -154,7 +154,8 @@ final class OriginClient {
             guard let self, !self.cancelled, !state.finished, state.lastRead == tick else { return }
             finish(OriginError.timedOut, false)
         }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
+        let minimum = state.expected.map { Int(min(64 * 1024, max(1, $0 - state.received))) } ?? 1
+        connection.receive(minimumIncompleteLength: minimum, maximumLength: 256 * 1024) { [weak self] data, _, complete, error in
             guard let self, !self.cancelled, !state.finished else { connection.cancel(); return }
             state.lastRead += 1
             var body = data ?? Data()

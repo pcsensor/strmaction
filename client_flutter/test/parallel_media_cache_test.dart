@@ -91,6 +91,12 @@ void main() {
     final requests = origin.sizes.length;
     expect(await read(client, cache, 10, 50), List.generate(41, (index) => (index + 10) % 251));
     expect(origin.sizes.length, requests);
+    await read(client, cache, 4 * mib, 4 * mib + 99);
+    for (var i = 0; i < 300 && cache.activeDownloads > 0; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(origin.sizes.every((size) => size >= 4 * mib), isTrue,
+      reason: 'a moving full window must not degrade to tiny requests');
     final diskBytes = Directory('${root.path}/cache').listSync().whereType<File>()
         .fold<int>(0, (sum, file) => sum + file.lengthSync());
     expect(diskBytes, lessThanOrEqualTo(16 * mib));

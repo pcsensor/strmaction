@@ -6,7 +6,11 @@ class RollingNetworkRate(private val clock: () -> Long = { System.nanoTime() / 1
     private var started = clock()
     @Synchronized fun add(bytes: Long) {
         val now = clock()
-        if (bytes > 0) samples.addLast(Pair(now, bytes))
+        if (bytes > 0) {
+            if (samples.isNotEmpty() && now - samples.last.first < 100) {
+                val last = samples.removeLast(); samples.addLast(Pair(last.first, last.second + bytes))
+            } else samples.addLast(Pair(now, bytes))
+        }
         trim(now)
     }
     @Synchronized fun sample(): Long {

@@ -49,8 +49,16 @@ class NetworkRate {
   }
 
   void add(int bytes) {
-    if (bytes > 0) _samples.add((_now(), bytes));
-    _trim(_now());
+    final now = _now();
+    if (bytes > 0) {
+      if (_samples.isNotEmpty && now - _samples.last.$1 < const Duration(milliseconds: 100)) {
+        final last = _samples.removeLast();
+        _samples.add((last.$1, last.$2 + bytes));
+      } else {
+        _samples.add((now, bytes));
+      }
+    }
+    _trim(now);
   }
 
   double get bytesPerSecond {

@@ -81,11 +81,14 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         let cache = try CacheServer(sourceURL: base.appendingPathComponent("entry"), headers: headers, store: cacheStore,
                                     token: "test-token", targetAheadMb: 8, targetAheadSeconds: 10)
         let port = try await cache.start()
+        cache.setPacingEnabled(true)
         var request = URLRequest(url: URL(string: "http://127.0.0.1:\(port)/test-token")!)
         request.setValue("bytes=0-999", forHTTPHeaderField: "Range")
         let (localData, response) = try await URLSession.shared.data(for: request)
         try require((response as? HTTPURLResponse)?.statusCode == 206 && localData.count == 1000, "local proxy range framing")
         try require(localData[999] == UInt8(999 % 251), "local proxy data corruption")
+        try await Task.sleep(nanoseconds: 500_000_000)
+        try require(cacheStore.storedBytes <= 8 * 1_048_576, "proxy prefetch exceeded capacity")
         cache.seek(); cache.stop(); cacheStore.removeFiles(); try? FileManager.default.removeItem(at: root)
         print("Swift Range transport: URL reuse, shared refresh, pooled connections, parallelism, validation, fallback, LRU, rate and proxy passed")
     }

@@ -186,7 +186,9 @@ class BoundedMediaCache {
     // Wait for a useful amount of consumed space instead of falling back to
     // one HTTP request per 1 MiB as a full cache window moves forward.
     if (!demand && (last - first) * blockSize < min(4 * blockSize, budgetBytes) &&
-        last * blockSize < length && !_covered(last)) return null;
+        last * blockSize < length && !_covered(last)) {
+      return null;
+    }
     final job = _Download(first * blockSize, min(length, last * blockSize));
     _jobs.add(job);
     job.result = _download(job);

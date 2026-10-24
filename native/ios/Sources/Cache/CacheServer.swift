@@ -35,26 +35,15 @@ final class CacheServer {
     private var waiting: [ObjectIdentifier: (NWConnection, Int64, Int64?)] = [:]
     private var isStopped = false
 
-    // MARK: 流量控制
-    //
-    // 这一层插在 FFmpeg 和源站之间，天然会切断 TCP 背压：FFmpeg 不读之后，
-    // 本地连接的 send 队列会在内存里无限堆积，源站却毫不知情地继续全速推送。
-    // 所以必须由我们自己做「下游消费驱动」的流量控制，否则缓冲设置形同虚设。
-
-    /// 预拉取目标：已拉取但还没播到的字节维持在这个量以内（用户设置的缓冲大小）。
+    // Prefetch has a hard byte window; local writes separately apply bounded
+    // backpressure so a paused decoder cannot accumulate an unlimited send queue.
     private let targetLock = NSLock()
     private var storedAheadBytes: Int64 = 0
-    private var storedFillRate: Double = 0
     private var targetAheadBytes: Int64 {
         get { targetLock.lock(); defer { targetLock.unlock() }; return storedAheadBytes }
         set { targetLock.lock(); defer { targetLock.unlock() }; storedAheadBytes = newValue }
     }
-    /// 达标后的填充速率（字节/秒）≈ 片源码率 × 1.15。见 `nextDecision`。
-    private var fillBytesPerSecond: Double {
-        get { targetLock.lock(); defer { targetLock.unlock() }; return storedFillRate }
-        set { targetLock.lock(); defer { targetLock.unlock() }; storedFillRate = newValue }
-    }
-    /// 流控总开关。起播与探测阶段必须关闭，理由见 `nextDecision`。
+    /// Proactive prefetch starts once the container is ready; demand reads never wait on it.
     private let enableLock = NSLock()
     private var storedPacingEnabled = false
     private var pacingEnabled: Bool {
@@ -104,10 +93,6 @@ final class CacheServer {
         self.store = store
         self.token = token
         self.storedAheadBytes = Int64(max(0, targetAheadMb)) * 1_048_576
-        // 目标字节数 ÷ 目标秒数 = 片源字节率，再留 15% 余量跟上播放消耗。
-        let rate = targetAheadSeconds > 0 ? Double(self.storedAheadBytes) / targetAheadSeconds : 0
-        self.storedFillRate = rate > 0 ? rate * 1.15 : 1_048_576
-
         let parameters = NWParameters.tcp
         parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any)
         parameters.allowLocalEndpointReuse = true
@@ -184,56 +169,13 @@ final class CacheServer {
     /// 打开/关闭预拉取流控。起播阶段由播放层关着，真正开始播放后打开。
     func setPacingEnabled(_ enabled: Bool) {
         pacingEnabled = enabled
+        if enabled { queue.async { self.prefetch() } }
     }
 
-    /// 轨道码率出来之后校正一次目标与填充速率。
+    /// Update the prefetch byte window without changing the disk capacity.
     func updateTarget(aheadMb: Int, seconds: Double) {
         targetAheadBytes = Int64(max(0, aheadMb)) * 1_048_576
-        let rate = seconds > 0 ? Double(targetAheadBytes) / seconds : 0
-        fillBytesPerSecond = rate > 0 ? rate * 1.15 : 1_048_576
-    }
-
-    // MARK: 流量控制
-
-    /// 收到一批之后的下一步动作。
-    ///
-    /// 两点与上一版不同，都是这次故障的直接教训：
-    /// 1. 水位相对**本次请求起点**算。FFmpeg 的探测读取起点可以在文件尾部，
-    ///    用绝对偏移会被瞬间判定为「已超前 700MB」。
-    /// 2. 达标后是**限速**而不是停止。停掉 receive 会让接收窗口关闭，
-    ///    源站约 3.8 秒后 RST 整条连接，FFmpeg 只能重开 Range 再被掐，死循环。
-    private func nextDecision(_ pace: Pace, chunkBytes: Int64) -> PaceDecision {
-        guard !isStopped else { return .suspend }
-
-        // FFmpeg 不读了（用户暂停、或它自己的缓冲已满）就真停。
-        // 这个条件只看本地在途量，不依赖播放位置，因此不会把探测读取饿死。
-        if pace.inFlight >= Self.maxInFlightBytes {
-            if pace.loggedStage != 2 {
-                pace.loggedStage = 2
-                D.log("cache", "本地在途 \(Self.mb(pace.inFlight))，暂停回源等下游消费")
-            }
-            return .suspend
-        }
-
-        guard pacingEnabled else { return .now }
-
-        let base = max(pace.startOffset, consumedBytes)
-        let ahead = pace.writeOffset - base
-        if ahead < targetAheadBytes {
-            if pace.loggedStage != 0 {
-                pace.loggedStage = 0
-                D.log("cache", "回源全速 已超前 \(Self.mb(ahead))/\(Self.mb(targetAheadBytes))")
-            }
-            return .now
-        }
-
-        if pace.loggedStage != 1 {
-            pace.loggedStage = 1
-            D.log("cache", "预拉取达标 \(Self.mb(ahead))，限速 "
-                + String(format: "%.2f", fillBytesPerSecond / 1_048_576) + "MB/s")
-        }
-        let seconds = Double(chunkBytes) / fillBytesPerSecond
-        return .after(min(1.0, max(0.004, seconds)))
+        queue.async { self.prefetch() }
     }
 
     /// 是否仍处于挂起。只用在 tick 里判断能否恢复。
@@ -453,7 +395,7 @@ final class CacheServer {
     }
 
     private func prefetch(after lower: Int64? = nil) {
-        guard !isStopped, originSession.supportsRanges, totalLength > 0, targetAheadBytes > 0, store.capacity > 0 else { return }
+        guard !isStopped, pacingEnabled, originSession.supportsRanges, totalLength > 0, targetAheadBytes > 0, store.capacity > 0 else { return }
         let focus = max(focusOffset, consumedBytes)
         let target = min(totalLength, focus + min(targetAheadBytes, store.capacity))
         let reserved = reservations.values.reduce(Int64(0)) { $0 + ($1.upperBound - $1.lowerBound) }

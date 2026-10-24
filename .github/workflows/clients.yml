@@ -40,7 +40,16 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
           cache: true
-      - run: flutter pub get && flutter analyze && flutter test
+      - name: Resolve Flutter dependencies
+        id: flutter-deps
+        run: flutter pub get
+        working-directory: client_flutter
+      - name: Analyze Flutter client
+        run: flutter analyze
+        working-directory: client_flutter
+      - name: Test Flutter client
+        if: ${{ !cancelled() && steps.flutter-deps.outcome == 'success' }}
+        run: flutter test
         working-directory: client_flutter
       - uses: actions/upload-artifact@v4
         if: always()
@@ -81,6 +90,9 @@ jobs:
           flutter create --platforms=android --org top.strmaction --project-name strmaction_desktop .
           python3 ../ci/prepare_mobile.py android
         working-directory: client_flutter
+      - name: Verify Android trust and Range downloads
+        run: ./gradlew :app:testDebugUnitTest
+        working-directory: client_flutter/android
       - name: Build Android shared client
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
@@ -88,9 +100,6 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: flutter build apk --debug && flutter build apk --release
         working-directory: client_flutter
-      - name: Verify Android trust and redirects
-        run: ./gradlew :app:testDebugUnitTest
-        working-directory: client_flutter/android
       - name: Package Android
         run: |
           mkdir -p dist

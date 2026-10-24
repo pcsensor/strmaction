@@ -19,7 +19,7 @@ public struct CachedSegment: Hashable, Identifiable {
 /// 设计约束（不可放宽）：
 /// - **只有一个内核**：KSMEPlayer（FFmpeg）。不保留 AVFoundation 运行路径，
 ///   因为它无法处理自签名证书，留着的唯一结果就是一条注定失败的隐式回退。
-/// - **不代理**：交给 FFmpeg 的永远是原始 URL，字节不经过任何中间层。
+/// - 网络与磁盘缓存由本地 Range 服务统一管理，回源严格校验证书与主机名。
 /// - **不回退**：任一环节失败即 `.failed(message)`，message 为底层原始错误。
 @MainActor
 public final class VideoPlayerController: ObservableObject {
@@ -77,7 +77,7 @@ public final class VideoPlayerController: ObservableObject {
     private var cacheSession: MediaCacheSession?
     /// 诊断节流：上次记录过的播放秒数。
     private var lastDiagnosticSecond: Int64 = -1
-    /// 网速 / 缓存区间的轮询任务。1 秒一次足够，再高频只会让 UI 白刷新。
+    /// 网速 / 缓存区间每 500ms 更新；吞吐使用 3 秒滚动窗口。
     private var metricsTask: Task<Void, Never>?
     private var loadGeneration: UInt64 = 0
 
