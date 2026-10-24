@@ -15,6 +15,7 @@ final class SystemVolumeController {
 
     private let volumeView: MPVolumeView
     private weak var host: UIView?
+    private var pendingSet: DispatchWorkItem?
 
     private init() {
         volumeView = MPVolumeView(frame: CGRect(x: 0, y: 0, width: 2, height: 2))
@@ -44,14 +45,17 @@ final class SystemVolumeController {
     /// 视图刚挂上时内部 slider 可能还没创建，这里做一次延迟重试，
     /// 避免「第一次滑动没反应」。
     func set(_ value: Float) {
+        pendingSet?.cancel(); pendingSet = nil
         let clamped = max(0, min(1, value))
         if let slider = volumeSlider {
             slider.value = clamped
             return
         }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
+        let update = DispatchWorkItem { [weak self] in
             self?.volumeSlider?.value = clamped
         }
+        pendingSet = update
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: update)
     }
 
     private var volumeSlider: UISlider? {

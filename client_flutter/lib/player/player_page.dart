@@ -11,11 +11,13 @@ import '../models/playback_payload.dart';
 import '../services/progress_reporter.dart';
 import '../services/mobile_window.dart';
 import 'input/player_keyboard.dart';
+import 'input/latest_value_dispatcher.dart';
 import 'media_kit_engine.dart';
 import 'native_player_engine.dart';
 import 'playback_engine.dart';
 import 'widgets/app_icons.dart';
 import 'widgets/controls_overlay.dart';
+import 'widgets/gesture_feedback.dart';
 import 'widgets/message_card.dart';
 import 'widgets/player_drawer.dart';
 
@@ -47,6 +49,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   double _dragX = 0;
   double _dragY = 0;
   double _dragPosition = 0;
+  double _dragStartValue = 0;
+  bool _gestureActive = false;
+  final ValueNotifier<PlayerGestureValue?> _gestureFeedback = ValueNotifier(null);
+  late final LatestValueDispatcher<double> _brightnessAdjustments;
+  late final LatestValueDispatcher<int> _volumeAdjustments;
+  Timer? _gestureTimer;
   bool get _mobile => defaultTargetPlatform == TargetPlatform.android || defaultTargetPlatform == TargetPlatform.iOS;
   int get _bufferLimit => widget.payload.bufferLimitMb ?? (_mobile && Platform.isAndroid ? 512 : widget.app.config.cacheLimitMb);
   late final ProgressReporter _reporter;
@@ -98,6 +106,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       hardwareAcceleration: widget.app.config.playerHardwareAcceleration,
     ));
     _engine.addListener(_onEngineChanged);
+    _brightnessAdjustments = LatestValueDispatcher<double>(
+      apply: _engine.setBrightnessLevel,
+      onError: (error) => widget.app.logger.warning('手势调节失败：$error'),
+    );
+    _volumeAdjustments = LatestValueDispatcher<int>(
+      apply: _engine.setVolume,
+      onError: (error) => widget.app.logger.warning('手势调节失败：$error'),
+    );
     _reporter = ProgressReporter(
       serverUrl: widget.app.config.serverUrl,
       itemId: widget.payload.itemId,
@@ -295,6 +311,8 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _shutdownFuture ??= Future<void>.microtask(_performShutdown);
 
   Future<void> _performShutdown() async {
+    _brightnessAdjustments.dispose(); _volumeAdjustments.dispose();
+    _gestureTimer?.cancel();
     _watchdog?.cancel();
     _hideTimer?.cancel();
     _badgeTimer?.cancel();
@@ -358,7 +376,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _toggleControls() {
-    if (_drawerVisible || _messageVisible || _seeking) return;
+    if (_drawerVisible || _messageVisible || _seeking || _gestureActive) return;
     if (_controlsVisible) {
       _hideTimer?.cancel();
       setState(() => _controlsVisible = false);
@@ -369,12 +387,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _restartHideTimer() {
     _hideTimer?.cancel();
-    if ((_engine.isPaused && !_locked) || _seeking || _drawerVisible || _messageVisible) {
+    if ((_engine.isPaused && !_locked) || _seeking || _drawerVisible || _messageVisible || _gestureActive) {
       return;
     }
     _hideTimer = Timer(const Duration(milliseconds: 3500), () {
       if (!mounted) return;
-      if ((_engine.isPaused && !_locked) || _seeking || _drawerVisible || _messageVisible) {
+      if ((_engine.isPaused && !_locked) || _seeking || _drawerVisible || _messageVisible || _gestureActive) {
         return;
       }
       setState(() => _controlsVisible = false);
@@ -484,6 +502,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _toggleLock() {
+    _cancelGesture();
     setState(() => _locked = !_locked);
     _showControls();
   }
@@ -575,6 +594,78 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     );
   }
 
+  void _startVerticalGesture(DragStartDetails details) {
+    if (_locked || _closing) return;
+    _gestureTimer?.cancel();
+    _hideTimer?.cancel();
+    _gestureActive = true;
+    _dragY = details.localPosition.dy;
+    final kind = details.localPosition.dx < MediaQuery.sizeOf(context).width / 2
+        ? PlayerGestureKind.brightness : PlayerGestureKind.volume;
+    _dragStartValue = (kind == PlayerGestureKind.brightness ? _engine.brightness ?? 50 : _engine.volume) / 100;
+    _gestureFeedback.value = PlayerGestureValue(kind, _dragStartValue);
+  }
+
+  void _updateVerticalGesture(DragUpdateDetails details) {
+    final feedback = _gestureFeedback.value;
+    if (_locked || _closing || !_gestureActive || feedback == null) return;
+    final target = (_dragStartValue + (_dragY - details.localPosition.dy) /
+        MediaQuery.sizeOf(context).height * 1.25)
+        .clamp(feedback.kind == PlayerGestureKind.brightness ? 0.02 : 0.0, 1.0).toDouble();
+    if (target == feedback.value) return;
+    final value = PlayerGestureValue(feedback.kind, target);
+    _gestureFeedback.value = value;
+    if (value.kind == PlayerGestureKind.brightness) {
+      _brightnessAdjustments.schedule(value.value);
+    } else {
+      _volumeAdjustments.schedule((value.value * 100).round());
+    }
+  }
+
+  void _finishGesture() {
+    if (_closing || !_gestureActive) return;
+    _gestureActive = false;
+    unawaited(_brightnessAdjustments.flush()); unawaited(_volumeAdjustments.flush());
+    _gestureTimer?.cancel();
+    _gestureTimer = Timer(const Duration(milliseconds: 700), () { _gestureFeedback.value = null; });
+    _restartHideTimer();
+  }
+
+  void _cancelGesture() {
+    if (_closing) return;
+    _gestureActive = false;
+    _gestureTimer?.cancel();
+    _brightnessAdjustments.cancelPending(); _volumeAdjustments.cancelPending();
+    _gestureFeedback.value = null;
+  }
+
+  void _startSeekGesture(DragStartDetails details) {
+    if (_locked || _closing) return;
+    _gestureTimer?.cancel(); _hideTimer?.cancel();
+    _gestureActive = true;
+    _dragX = details.localPosition.dx;
+    _dragPosition = _engine.position;
+    _gestureFeedback.value = PlayerGestureValue(PlayerGestureKind.seek, _dragPosition, duration: _engine.duration);
+  }
+
+  void _updateSeekGesture(DragUpdateDetails details) {
+    if (_locked || _closing || !_gestureActive) return;
+    final seconds = _dragPosition + (details.localPosition.dx - _dragX) / MediaQuery.sizeOf(context).width * 120;
+    _gestureFeedback.value = PlayerGestureValue(PlayerGestureKind.seek,
+        seconds.clamp(0, _engine.duration > 0 ? _engine.duration : 1e12).toDouble(), duration: _engine.duration);
+  }
+
+  void _finishSeekGesture() {
+    if (_closing) return;
+    final feedback = _gestureFeedback.value;
+    if (!_gestureActive || feedback?.kind != PlayerGestureKind.seek) return;
+    unawaited(_engine.seek(feedback!.value).catchError((Object error) {
+      widget.app.logger.warning('手势定位失败：$error');
+    }));
+    _reporter.requestFlush();
+    _finishGesture();
+  }
+
   int? get _nextId {
     final payload = widget.payload;
     if (payload.playlist.isNotEmpty && payload.currentIndex >= 0) {
@@ -621,6 +712,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _closing = true;
+    _gestureTimer?.cancel();
+    _brightnessAdjustments.dispose(); _volumeAdjustments.dispose();
+    _gestureFeedback.dispose();
     widget.app.configNotifier.removeListener(_onConfigChanged);
     _engine.removeListener(_onEngineChanged);
     _watchdog?.cancel();
@@ -679,7 +774,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               fit: StackFit.expand,
               children: [
                 // Native views only render; complex gestures stay below UI.
-                IgnorePointer(child: _engine.buildVideo()),
+                IgnorePointer(child: RepaintBoundary(child: _engine.buildVideo())),
                 if (!_engine.isPiP) Positioned.fill(child: GestureDetector(
             key: const ValueKey('player-gestures'),
             behavior: HitTestBehavior.opaque,
@@ -695,21 +790,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             },
             onLongPressStart: _mobile ? (_) { if (!_locked) { HapticFeedback.mediumImpact(); _startSpeedBoost(_boostSpeed); } } : null,
             onLongPressEnd: _mobile ? (_) { if (_speedBoost) _endSpeedBoost(); } : null,
-            onHorizontalDragStart: _mobile ? (details) { _dragX = details.localPosition.dx; _dragPosition = _engine.position; } : null,
-            onHorizontalDragUpdate: _mobile ? (details) {
-              if (_locked) return;
-              final seconds = _dragPosition + (details.localPosition.dx - _dragX) / MediaQuery.sizeOf(context).width * 120;
-              _engine.seek(seconds.clamp(0, _engine.duration > 0 ? _engine.duration : 1e12));
-            } : null,
-            onHorizontalDragEnd: _mobile ? (_) => _reporter.requestFlush() : null,
-            onVerticalDragStart: _mobile ? (details) { _dragX = details.localPosition.dx; _dragY = details.localPosition.dy; } : null,
-            onVerticalDragUpdate: _mobile ? (details) {
-              if (_locked) return;
-              final change = (_dragY - details.localPosition.dy) / MediaQuery.sizeOf(context).height;
-              _dragY = details.localPosition.dy;
-              if (_dragX < MediaQuery.sizeOf(context).width / 2) { _engine.setBrightness(change); }
-              else { _engine.setVolumeRelative((change * 100).round()); }
-            } : null,
+            onHorizontalDragStart: _mobile ? _startSeekGesture : null,
+            onHorizontalDragUpdate: _mobile ? _updateSeekGesture : null,
+            onHorizontalDragEnd: _mobile ? (_) => _finishSeekGesture() : null,
+            onHorizontalDragCancel: _mobile ? _cancelGesture : null,
+            onVerticalDragStart: _mobile ? _startVerticalGesture : null,
+            onVerticalDragUpdate: _mobile ? _updateVerticalGesture : null,
+            onVerticalDragEnd: _mobile ? (_) => _finishGesture() : null,
+            onVerticalDragCancel: _mobile ? _cancelGesture : null,
                   child: const SizedBox.expand(),
                 )),
                 if (!_engine.isPiP) ControlsOverlay(
@@ -752,6 +840,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onTracks: () => _openDrawer('tracks'),
                   onFullscreen: _toggleFullscreen,
                 ),
+                if (_mobile && !_engine.isPiP) PlayerGestureFeedback(feedback: _gestureFeedback),
                 if (_mobile && !_engine.isPiP && _controlsVisible) Positioned(
                   right: 12 + MediaQuery.viewPaddingOf(context).right,
                   top: 20 + MediaQuery.viewPaddingOf(context).top,

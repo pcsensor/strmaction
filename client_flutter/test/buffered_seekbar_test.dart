@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
+import 'dart:ui' as ui;
+import 'dart:typed_data';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/player/playback_engine.dart';
 import 'package:strmaction_desktop/player/widgets/buffered_seekbar.dart';
 
 void main() {
   group('BufferedRange and areBufferedRangesEqual', () {
+    test('merges thousands of adjacent fragments and overlaps without filling holes', () {
+      final fragments = List.generate(2000, (i) => BufferedRange(i.toDouble(), i + 1.0)).reversed;
+      final merged = mergeBufferedRanges([...fragments, const BufferedRange(100, 400),
+        const BufferedRange(2001, 2100), const BufferedRange(double.nan, 20)]);
+      expect(merged, [const BufferedRange(0, 2000), const BufferedRange(2001, 2100)]);
+    });
     test('compares ranges by approximate values', () {
       const r1 = BufferedRange(0.0, 10.0);
       const r2 = BufferedRange(0.05, 10.04);
@@ -29,6 +37,31 @@ void main() {
   });
 
   group('BufferedSeekBar interaction', () {
+    testWidgets('dense adjacent fragments paint a solid line while actual holes stay visible', (tester) async {
+      Future<ByteData> raster(List<BufferedRange> ranges) async {
+        await tester.pumpWidget(MaterialApp(home: Scaffold(body: Center(child: SizedBox(
+          width: 320, child: BufferedSeekBar(position: 0, duration: 3600,
+            bufferedRanges: ranges, onSeek: (_) {}),
+        )))));
+        final painter = tester.widget<CustomPaint>(find.descendant(
+          of: find.byType(BufferedSeekBar), matching: find.byType(CustomPaint))).painter!;
+        final recorder = ui.PictureRecorder();
+        painter.paint(Canvas(recorder), const Size(320, 32));
+        final picture = recorder.endRecording();
+        return (await tester.runAsync(() async {
+          final image = await picture.toImage(320, 32);
+          final bytes = (await image.toByteData(format: ui.ImageByteFormat.rawRgba))!;
+          image.dispose(); picture.dispose();
+          return bytes;
+        }))!;
+      }
+      final solid = await raster(List.generate(1000, (i) => BufferedRange(i.toDouble(), i + 1.0)));
+      for (var x = 20; x < 85; x++) {
+        expect(solid.getUint8((16 * 320 + x) * 4 + 3), greaterThan(220), reason: 'dotted at pixel $x');
+      }
+      final gap = await raster(const [BufferedRange(0, 500), BufferedRange(1000, 1500)]);
+      expect(gap.getUint8((16 * 320 + 60) * 4 + 3), lessThan(100));
+    });
     testWidgets('tap triggers onSeek and retains pending position until caught up', (tester) async {
       double currentPosition = 10.0;
       double? seekedTarget;

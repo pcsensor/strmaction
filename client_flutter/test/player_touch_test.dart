@@ -20,15 +20,22 @@ class FakeEngine extends PlaybackEngine {
   bool paused = false;
   int nativeTaps = 0;
   int loadCalls = 0;
+  int videoBuilds = 0;
   String? failure;
   bool buffering = false;
+  double volumeValue = 50;
+  double brightnessValue = 40;
+  final volumes = <int>[];
+  final brightnesses = <double>[];
+  final seeks = <double>[];
   final loading = Completer<void>();
   @override VideoController? get videoController => null;
   @override double get position => 10;
   @override double get duration => 100;
   @override bool get isPaused => paused;
   @override double get speed => 1;
-  @override double get volume => 100;
+  @override double get volume => volumeValue;
+  @override double? get brightness => brightnessValue;
   @override bool get isLoading => false;
   @override bool get isBuffering => buffering;
   @override bool get completed => false;
@@ -49,10 +56,13 @@ class FakeEngine extends PlaybackEngine {
   @override Future<void> play() => setPaused(false);
   @override Future<void> pause() => setPaused(true);
   @override Future<void> shutdown() async {}
-  @override Widget buildVideo() => GestureDetector(
+  @override Future<void> setVolume(int percent) async { volumes.add(percent); volumeValue = percent.toDouble(); }
+  @override Future<void> setBrightnessLevel(double level) async { brightnesses.add(level); brightnessValue = level * 100; }
+  @override Future<void> seek(double seconds, {bool relative = false}) async { seeks.add(seconds); }
+  @override Widget buildVideo() { videoBuilds++; return GestureDetector(
     behavior: HitTestBehavior.opaque, onTap: () => nativeTaps++,
     child: const ColoredBox(color: Colors.black),
-  );
+  ); }
   @override dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
@@ -94,6 +104,67 @@ Future<void> tapScreen(WidgetTester tester) async {
 
 void main() {
   for (final platform in [TargetPlatform.android, TargetPlatform.iOS]) {
+    testWidgets('$platform brightness swipe animates feedback with hidden controls', (tester) async {
+      final engine = await mountPlayer(tester);
+      await tapScreen(tester);
+      expect(controlsVisible(tester), isFalse);
+      final gesture = await tester.startGesture(const Offset(80, 500));
+      await gesture.moveBy(const Offset(0, -30)); await tester.pump();
+      await gesture.moveBy(const Offset(0, -100)); await tester.pump(const Duration(milliseconds: 100));
+      await tester.pump(const Duration(milliseconds: 100));
+      expect(find.byKey(const ValueKey('player-gesture-feedback')), findsOneWidget);
+      expect(find.textContaining('亮度 '), findsOneWidget);
+      final level = tester.widget<LinearProgressIndicator>(find.byKey(const ValueKey('player-gesture-level'))).value!;
+      expect(level, greaterThan(0.4));
+      expect(engine.brightnesses.last, greaterThan(0.4));
+      expect(controlsVisible(tester), isFalse);
+      await gesture.up(); await tester.pump(const Duration(milliseconds: 700));
+      await tester.pump(const Duration(milliseconds: 220));
+      expect(find.byKey(const ValueKey('player-gesture-feedback')), findsNothing);
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform small volume movements accumulate and platform calls stay bounded', (tester) async {
+      final engine = await mountPlayer(tester);
+      final videoBuilds = engine.videoBuilds;
+      final gesture = await tester.startGesture(const Offset(310, 500));
+      await gesture.moveBy(const Offset(0, -30)); await tester.pump();
+      for (var i = 0; i < 100; i++) {
+        await gesture.moveBy(const Offset(0, -0.5));
+        await tester.pump(const Duration(milliseconds: 1));
+      }
+      expect(find.textContaining('音量 '), findsOneWidget);
+      await gesture.up(); await tester.pump();
+      expect(engine.volumes.last, greaterThan(55));
+      expect(engine.volumes.length, lessThan(10));
+      expect(engine.brightnesses, isEmpty);
+      expect(engine.videoBuilds, videoBuilds, reason: 'gesture frames must only rebuild the feedback layer');
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform seek swipe previews locally and only seeks once on release', (tester) async {
+      final engine = await mountPlayer(tester);
+      final gesture = await tester.startGesture(const Offset(100, 400));
+      await gesture.moveBy(const Offset(30, 0)); await tester.pump();
+      for (var i = 0; i < 20; i++) {
+        await gesture.moveBy(const Offset(3, 0)); await tester.pump(const Duration(milliseconds: 10));
+      }
+      expect(find.byKey(const ValueKey('player-gesture-feedback')), findsOneWidget);
+      expect(engine.seeks, isEmpty);
+      await gesture.up(); await tester.pump();
+      expect(engine.seeks, hasLength(1)); expect(engine.seeks.single, greaterThan(10));
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform locked swipes neither show feedback nor adjust device levels', (tester) async {
+      final engine = await mountPlayer(tester);
+      await tester.tap(find.byTooltip('锁定')); await tester.pump();
+      await tester.dragFrom(const Offset(310, 500), const Offset(0, -150));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(engine.volumes, isEmpty); expect(engine.brightnesses, isEmpty);
+      expect(find.byKey(const ValueKey('player-gesture-feedback')), findsNothing);
+    }, variant: TargetPlatformVariant({platform}));
+
     testWidgets('$platform taps show and hide controls without reaching native video', (tester) async {
       final engine = await mountPlayer(tester);
       expect(controlsVisible(tester), isTrue);

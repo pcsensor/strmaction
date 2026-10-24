@@ -174,7 +174,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
                       painter: _SeekBarPainter(
                         position: shown,
                         duration: widget.duration,
-                        bufferedRanges: widget.bufferedRanges,
+                        bufferedRanges: mergeBufferedRanges(widget.bufferedRanges),
                         left: _left(width),
                         right: _right(width),
                       ),

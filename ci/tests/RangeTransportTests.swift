@@ -99,9 +99,11 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         try store.prepare()
         try require(store.write(Data(repeating: 1, count: 1_048_576), at: 0), "first block write")
         try require(store.write(Data(repeating: 2, count: 1_048_576), at: 1_048_576), "second block write")
+        try require(store.snapshot() == [Int64(0)..<Int64(2 * 1_048_576)], "adjacent iOS fragments were not merged")
         _ = store.read(length: 1, at: 0)
         try require(store.write(Data(repeating: 3, count: 1_048_576), at: 2 * 1_048_576), "LRU write")
         try require(store.read(length: 1, at: 1_048_576) == nil, "LRU did not evict old block")
+        try require(store.snapshot().count == 2, "iOS cache snapshot hid an evicted hole")
         try require(store.storedBytes <= 2 * 1_048_576, "disk budget exceeded")
         store.removeFiles(); try? FileManager.default.removeItem(at: root)
         var now: TimeInterval = 0

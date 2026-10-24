@@ -44,6 +44,23 @@ bool areBufferedRangesEqual(List<BufferedRange> a, List<BufferedRange> b) {
   return true;
 }
 
+/// Merge actual touching/overlapping intervals, preserving every real gap.
+List<BufferedRange> mergeBufferedRanges(Iterable<BufferedRange> ranges) {
+  final sorted = ranges.where((range) => range.start.isFinite && range.end.isFinite &&
+      range.end > range.start && range.end > 0).toList()
+    ..sort((a, b) => a.start.compareTo(b.start));
+  final merged = <BufferedRange>[];
+  for (final range in sorted) {
+    final start = range.start < 0 ? 0.0 : range.start;
+    if (merged.isEmpty || start > merged.last.end) {
+      merged.add(BufferedRange(start, range.end));
+    } else if (range.end > merged.last.end) {
+      merged[merged.length - 1] = BufferedRange(merged.last.start, range.end);
+    }
+  }
+  return merged;
+}
+
 abstract class PlaybackEngine extends ChangeNotifier {
   bool get isPiP => false;
   String? get notice => null;
@@ -57,6 +74,8 @@ abstract class PlaybackEngine extends ChangeNotifier {
 
   Future<void> enterPiP() async {}
   Future<void> setBrightness(double value) async {}
+  double? get brightness => null;
+  Future<void> setBrightnessLevel(double level) => setBrightness(level - (brightness ?? 50) / 100);
 
   VideoController? get videoController;
 

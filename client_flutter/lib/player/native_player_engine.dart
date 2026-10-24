@@ -19,12 +19,22 @@ class NativePlayerEngine extends PlaybackEngine {
   bool _disposed = false;
   String? _error;
   double _previousVolume = 100;
+  List<BufferedRange> _bufferedRanges = const [];
+  late final Widget _surface = Platform.isAndroid
+      ? const AndroidView(viewType: 'strmaction/video')
+      : UiKitView(viewType: 'strmaction/video', creationParams: {'session_id': sessionId},
+          creationParamsCodec: const StandardMessageCodec());
 
   NativePlayerEngine({Stream<dynamic>? stateEvents}) {
     _subscription = (stateEvents ?? events.receiveBroadcastStream()).listen((event) {
       if (_disposed || event is! Map) return;
       if (event['session_id'] != null && event['session_id'] != sessionId) return;
       _state = Map<String, dynamic>.from(event);
+      _bufferedRanges = mergeBufferedRanges([
+        if (_number('buffered_ms') > _number('position_ms')) BufferedRange(position, _number('buffered_ms') / 1000),
+        ...((_state['cached_ranges'] as List?) ?? []).whereType<Map>().map((r) =>
+          BufferedRange((r['start_ms'] as num).toDouble() / 1000, (r['end_ms'] as num).toDouble() / 1000)),
+      ]);
       _error = _state['error'] as String?;
       notifyListeners();
     }, onError: (Object error) {
@@ -45,15 +55,13 @@ class NativePlayerEngine extends PlaybackEngine {
   @override bool get isPaused => _state['playing'] != true;
   @override double get speed => _number('speed', 1);
   @override double get volume => _number('volume', 100);
+  @override double? get brightness => (_state['brightness'] as num?)?.toDouble();
   @override bool get isLoading => _state['loading'] == true;
   @override bool get isBuffering => _state['buffering'] == true;
   @override bool get completed => _state['completed'] == true;
   @override String? get errorMessage => _error;
   @override double? get networkSpeed => (_state['network_speed'] as num?)?.toDouble();
-  @override List<BufferedRange> get bufferedRanges => [
-    if (_number('buffered_ms') > _number('position_ms')) BufferedRange(position, _number('buffered_ms') / 1000),
-    ...((_state['cached_ranges'] as List?) ?? []).whereType<Map>().map((r) => BufferedRange((r['start_ms'] as num).toDouble() / 1000, (r['end_ms'] as num).toDouble() / 1000)),
-  ];
+  @override List<BufferedRange> get bufferedRanges => _bufferedRanges;
   @override List<TrackInfo> get audioTracks => _tracks('audio_tracks', 'audio');
   @override List<TrackInfo> get subtitleTracks => _tracks('subtitle_tracks', 'sub');
   @override String? get currentAudioId => _state['audio_id'] as String?;
@@ -65,6 +73,7 @@ class NativePlayerEngine extends PlaybackEngine {
 
   @override Future<void> load(PlaybackPayload payload, {required int cacheLimitMb, required bool tlsVerify}) async {
     _state = {'loading': true};
+    _bufferedRanges = const [];
     _error = null;
     notifyListeners();
     try {
@@ -82,7 +91,10 @@ class NativePlayerEngine extends PlaybackEngine {
   @override Future<void> setPaused(bool paused) => paused ? pause() : play();
   @override Future<void> seek(double seconds, {bool relative = false}) => _call('seek', ((relative ? position + seconds : seconds).clamp(0, 1e12) * 1000).round());
   @override Future<void> setSpeed(double speed) => _call('speed', speed);
-  @override Future<void> setVolume(int percent) => _call('volume', percent.clamp(0, 100));
+  @override Future<void> setVolume(int percent) {
+    _state['volume'] = percent.clamp(0, 100);
+    return _call('volume', percent.clamp(0, 100));
+  }
   @override Future<void> setVolumeRelative(int deltaPercent) => setVolume(volume.round() + deltaPercent);
   @override Future<void> toggleMute() {
     if (volume > 0) { _previousVolume = volume; return setVolume(0); }
@@ -99,6 +111,10 @@ class NativePlayerEngine extends PlaybackEngine {
   }
   @override Future<void> enterPiP() => _call('pip');
   @override Future<void> setBrightness(double value) => _call('brightness', value);
+  @override Future<void> setBrightnessLevel(double level) {
+    _state['brightness'] = level.clamp(0.02, 1) * 100;
+    return _call('brightnessLevel', level.clamp(0.02, 1));
+  }
   @override Future<void> stop() => pause();
   @override Future<void> shutdown() async {
     if (_disposed) return;
@@ -108,9 +124,7 @@ class NativePlayerEngine extends PlaybackEngine {
   }
 
   @override Widget buildVideo() => Stack(fit: StackFit.expand, children: [
-    if (Platform.isAndroid) const AndroidView(viewType: 'strmaction/video')
-    else UiKitView(viewType: 'strmaction/video',
-      creationParams: {'session_id': sessionId}, creationParamsCodec: const StandardMessageCodec()),
+    _surface,
     if (_state['subtitle_text'] is String && (_state['subtitle_text'] as String).isNotEmpty)
       Positioned(left: 20, right: 20, bottom: 100, child: IgnorePointer(child: Text(
         _state['subtitle_text'] as String, textAlign: TextAlign.center,

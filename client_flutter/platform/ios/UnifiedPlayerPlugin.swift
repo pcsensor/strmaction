@@ -24,6 +24,8 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var remoteTargets: [(MPRemoteCommand, Any)] = []
     private var interruptionObserver: NSObjectProtocol?
     private var wasPlayingBeforeInterruption = false
+    private var lastNowPlayingAt: TimeInterval = 0
+    private var lastNowPlayingRate: Double = -1
 
     static func register(with registrar: FlutterPluginRegistrar) {
         let plugin = UnifiedPlayerPlugin()
@@ -116,6 +118,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "speed": controller.setSpeed((call.arguments as? NSNumber)?.doubleValue ?? 1)
         case "volume": SystemVolumeController.shared.set(Float((call.arguments as? NSNumber)?.doubleValue ?? 100) / 100)
         case "brightness": UIScreen.main.brightness = min(1, max(0.02, UIScreen.main.brightness + ((call.arguments as? NSNumber)?.doubleValue ?? 0)))
+        case "brightnessLevel": UIScreen.main.brightness = min(1, max(0.02, (call.arguments as? NSNumber)?.doubleValue ?? 0.5))
         case "pip": _ = controller.togglePiP()
         case "audio":
             if let id = call.arguments as? String, let track = controller.ksCoordinator.playerLayer?.player.tracks(mediaType: .audio).first(where: { String($0.trackID) == id }) {
@@ -130,7 +133,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             clear()
         default: result(FlutterMethodNotImplemented); return
         }
-        emit()
+        if !["volume", "brightness", "brightnessLevel"].contains(call.method) { emit() }
         result(nil)
     }
 
@@ -168,6 +171,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             "notice": notice as Any? ?? NSNull(),
             "completed": completed, "error": controller.errorMessage as Any? ?? NSNull(),
             "speed": controller.playbackSpeed, "volume": Double(SystemVolumeController.shared.current) * 100,
+            "brightness": Double(UIScreen.main.brightness) * 100,
             "network_speed": controller.networkSpeedBps, "pip": controller.isPiPActive,
             "audio_tracks": audio.map { ["id": String($0.trackID), "title": $0.name] },
             "audio_id": audio.first(where: { $0.isEnabled }).map { String($0.trackID) } as Any? ?? NSNull(),
@@ -177,6 +181,10 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             "cached_ranges": controller.cachedSegments.map { ["start_ms": $0.startMs, "end_ms": $0.endMs] },
         ])
         if loaded {
+            let rate = controller.isPlaying ? controller.playbackSpeed : 0
+            let now = ProcessInfo.processInfo.systemUptime
+            guard now - lastNowPlayingAt >= 1 || rate != lastNowPlayingRate else { return }
+            lastNowPlayingAt = now; lastNowPlayingRate = rate
             MPNowPlayingInfoCenter.default().nowPlayingInfo = [
                 MPMediaItemPropertyTitle: title, MPMediaItemPropertyPlaybackDuration: Double(controller.durationMs) / 1000,
                 MPNowPlayingInfoPropertyElapsedPlaybackTime: Double(controller.currentPositionMs) / 1000,
@@ -222,6 +230,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         UIScreen.main.brightness = originalBrightness
         UIApplication.shared.isIdleTimerDisabled = false
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+        lastNowPlayingAt = 0; lastNowPlayingRate = -1
     }
 }
 

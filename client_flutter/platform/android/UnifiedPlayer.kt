@@ -8,6 +8,8 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
+import android.provider.Settings
+import kotlin.math.roundToInt
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -50,10 +52,18 @@ class UnifiedPlayer(private val activity: MainActivity) {
     private var diskLimit = 0
     private val audio = activity.getSystemService(Context.AUDIO_SERVICE) as AudioManager
     private val originalBrightness = activity.window.attributes.screenBrightness
+    private var systemBrightness = readSystemBrightness()
+    private var emitPending = false
+    private val emitTask = Runnable { emitPending = false; emitState() }
     private val tick = object : Runnable {
-        override fun run() { emit(); handler.postDelayed(this, 500) }
+        override fun run() { emit(); if (loaded) handler.postDelayed(this, 500) }
     }
-    init { active = this; handler.post(tick) }
+    init { active = this }
+
+    private fun readSystemBrightness(): Float = runCatching {
+        Settings.System.getInt(activity.contentResolver, Settings.System.SCREEN_BRIGHTNESS, 128) / 255f
+    }.getOrDefault(0.5f)
+    private fun brightness(): Float = activity.window.attributes.screenBrightness.takeIf { it >= 0 } ?: systemBrightness
 
     fun command(method: String, value: Any?) {
         when (method) {
@@ -67,27 +77,32 @@ class UnifiedPlayer(private val activity: MainActivity) {
             "speed" -> exo?.setPlaybackSpeed((value as Number).toFloat().coerceIn(0.25f, 4f))
             "volume" -> {
                 val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
-                audio.setStreamVolume(AudioManager.STREAM_MUSIC, ((value as Number).toDouble().coerceIn(0.0, 100.0) * max / 100).toInt(), 0)
+                val target = ((value as Number).toDouble().coerceIn(0.0, 100.0) * max / 100).roundToInt()
+                if (target != audio.getStreamVolume(AudioManager.STREAM_MUSIC)) audio.setStreamVolume(AudioManager.STREAM_MUSIC, target, 0)
             }
             "audio" -> selectTrack(C.TRACK_TYPE_AUDIO, value as? String)
             "subtitle" -> selectTrack(C.TRACK_TYPE_TEXT, value as? String)
             "pip" -> activity.enterPlayerPiP()
-            "brightness" -> {
+            "brightness", "brightnessLevel" -> {
                 val params = activity.window.attributes
-                val current = if (params.screenBrightness < 0) 0.5f else params.screenBrightness
-                params.screenBrightness = (current + (value as Number).toFloat()).coerceIn(0.02f, 1f)
+                val target = (value as Number).toFloat()
+                params.screenBrightness = (if (method == "brightnessLevel") target else brightness() + target).coerceIn(0.02f, 1f)
                 activity.window.attributes = params
             }
             "settings" -> prefetch?.setWindowMb(((value as Map<*, *>)["buffer_limit_mb"] as Number).toInt().coerceAtMost(diskLimit))
             "dispose" -> clear()
             else -> throw IllegalArgumentException("Unknown player command: $method")
         }
-        emit()
+        // Gesture feedback is rendered immediately in Flutter. The periodic
+        // snapshot reconciles device levels without a full event per pixel.
+        if (method !in listOf("brightness", "brightnessLevel", "volume")) emit()
     }
 
     private fun load(data: Map<*, *>) {
         clear()
         loaded = true
+        systemBrightness = readSystemBrightness()
+        handler.post(tick)
         active = this
         error = null
         title = data["title"] as? String ?: "StrmAction"
@@ -187,6 +202,12 @@ class UnifiedPlayer(private val activity: MainActivity) {
         return Pair(entries, selected)
     }
     fun emit() {
+        if (emitPending) return
+        emitPending = true
+        handler.postDelayed(emitTask, 50)
+    }
+    private fun emitState() {
+        if (sink == null && !loaded) return
         val player = exo
         val duration = player?.duration?.coerceAtLeast(0) ?: 0
         transferSession?.takeIf { it.supportsRanges }?.let { prefetch?.setContentLength(it.contentLength) }
@@ -202,6 +223,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
             "completed" to (player?.playbackState == Player.STATE_ENDED),
             "speed" to (player?.playbackParameters?.speed ?: 1f), "error" to error,
             "volume" to (audio.getStreamVolume(AudioManager.STREAM_MUSIC) * 100.0 / max),
+            "brightness" to brightness() * 100.0,
             "network_speed" to NetworkSpeedMeter.sample(), "audio_tracks" to tracks.first, "audio_id" to tracks.second,
             "subtitle_tracks" to subtitles.first, "subtitle_id" to subtitles.second, "pip" to inPiP,
             "cached_ranges" to (prefetch?.cachedSpansMs()?.map { mapOf("start_ms" to it.first, "end_ms" to it.last) } ?: emptyList<Map<String, Long>>()),
@@ -210,6 +232,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
     }
     private fun clear() {
         loaded = false
+        handler.removeCallbacks(tick)
         surface?.player = null
         transport?.dispatcher?.cancelAll()
         exo?.release(); exo = null
@@ -224,7 +247,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
         activity.window.attributes = params
     }
     fun close() {
-        clear(); handler.removeCallbacks(tick); sink = null
+        clear(); handler.removeCallbacks(tick); handler.removeCallbacks(emitTask); emitPending = false; sink = null
         if (active === this) active = null
     }
 }

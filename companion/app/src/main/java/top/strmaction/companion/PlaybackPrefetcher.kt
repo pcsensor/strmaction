@@ -7,12 +7,27 @@ import androidx.media3.common.util.UnstableApi
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DataSpec
 import androidx.media3.datasource.cache.SimpleCache
+import androidx.media3.datasource.cache.Cache
+import androidx.media3.datasource.cache.CacheSpan
 import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** Carries cancellation across CacheDataSource.open() into the HTTP factory. */
 internal object PrefetchCancellation { val current = ThreadLocal<() -> Boolean>() }
+
+/** Half-open byte intervals; adjacency is merged before conversion to time. */
+internal object CachedIntervals {
+    fun merge(ranges: Iterable<Pair<Long, Long>>): List<Pair<Long, Long>> {
+        val merged = mutableListOf<Pair<Long, Long>>()
+        for (range in ranges.filter { it.first >= 0 && it.second > it.first }.sortedBy { it.first }) {
+            val previous = merged.lastOrNull()
+            if (previous == null || range.first > previous.second) merged.add(range)
+            else if (range.second > previous.second) merged[merged.lastIndex] = previous.first to range.second
+        }
+        return merged
+    }
+}
 
 /**
  * 后台磁盘预取：内存缓冲之外，把后续内容提前读到 [SimpleCache]。
@@ -63,6 +78,14 @@ class PlaybackPrefetcher(
     @Volatile private var running = false
     @Volatile private var working = false
     @Volatile private var eofReached = false
+    @Volatile private var byteSnapshot: List<Pair<Long, Long>> = emptyList()
+    @Volatile private var timeSnapshot: List<LongRange> = emptyList()
+    @Volatile private var snapshotDirty = true
+    private val cacheListener = object : Cache.Listener {
+        override fun onSpanAdded(cache: Cache, span: CacheSpan) { snapshotDirty = true }
+        override fun onSpanRemoved(cache: Cache, span: CacheSpan) { snapshotDirty = true }
+        override fun onSpanTouched(cache: Cache, oldSpan: CacheSpan, newSpan: CacheSpan) {}
+    }
 
     fun start() {
         if (running) return
@@ -72,6 +95,7 @@ class PlaybackPrefetcher(
 
     fun stop() {
         running = false
+        byteSnapshot = emptyList(); timeSnapshot = emptyList()
         generation++
         working = false
         cancelDownloads()
@@ -84,6 +108,7 @@ class PlaybackPrefetcher(
         if (this.factory === factory && this.mediaUri == uri) return
         this.factory = factory
         this.mediaUri = uri
+        byteSnapshot = emptyList(); timeSnapshot = emptyList(); snapshotDirty = true
         contentLength = 0L
         eofReached = false
         generation++
@@ -92,6 +117,7 @@ class PlaybackPrefetcher(
     fun setContentLength(bytes: Long) {
         if (bytes > 0 && bytes != contentLength) {
             contentLength = bytes
+            snapshotDirty = true
             eofReached = false
         }
     }
@@ -105,7 +131,7 @@ class PlaybackPrefetcher(
     fun onTick(positionMs: Long, bufferedMs: Long, durationMs: Long, buffering: Boolean) {
         this.positionMs = positionMs.coerceAtLeast(0L)
         this.bufferedMs = bufferedMs.coerceAtLeast(0L)
-        if (durationMs > 0) this.durationMs = durationMs
+        if (durationMs > 0 && this.durationMs != durationMs) { this.durationMs = durationMs; snapshotDirty = true }
         playbackUrgent = buffering || this.bufferedMs - this.positionMs < 10_000
     }
 
@@ -142,9 +168,8 @@ class PlaybackPrefetcher(
     fun prefetchedAheadBytes(): Long {
         val ratio = bytesPerMs()
         if (ratio <= 0) return 0L
-        val cache = cacheProvider() ?: return 0L
-        val uri = mediaUri ?: return 0L
-        val end = cachedEndBytes(cache, uri.toString(), ratio)
+        if (mediaUri == null) return 0L
+        val end = cachedEndBytes(ratio)
         if (end <= 0) return 0L
         val positionBytes = (positionMs * ratio).toLong()
         return (end - positionBytes).coerceAtLeast(0L)
@@ -154,46 +179,19 @@ class PlaybackPrefetcher(
      * 磁盘里当前视频已缓存的区间（毫秒），按整片字节/时长等比换算。
      * 拿不到 Content-Length 或时长时返回空列表（调用方只看内存缓冲）。
      */
-    fun cachedSpansMs(): List<LongRange> {
-        val ratio = bytesPerMs()
-        val cache = cacheProvider() ?: return emptyList()
-        val uri = mediaUri ?: return emptyList()
-        if (ratio <= 0) return emptyList()
-        return runCatching {
-            cache.getCachedSpans(uri.toString())
-                .filter { it.isCached && it.length > 0 }
-                .sortedBy { it.position }
-                .map { span ->
-                    val start = (span.position / ratio).toLong()
-                    val end = ((span.position + span.length) / ratio).toLong()
-                    start..end
-                }
-        }.getOrDefault(emptyList())
-    }
+    fun cachedSpansMs(): List<LongRange> = timeSnapshot
 
     /** 播放器已缓冲末端之后，连续缓存的末尾（字节）。 */
-    private fun cachedEndBytes(cache: SimpleCache, key: String, ratio: Double): Long {
+    private fun cachedEndBytes(ratio: Double): Long {
         val positionBytes = (positionMs * ratio).toLong()
         val bufferedBytes = (bufferedMs * ratio).toLong().coerceAtLeast(positionBytes)
         if (bufferedBytes <= 0) return 0L
-        return bufferedBytes + contiguousBytesFrom(cache, key, bufferedBytes)
+        return bufferedBytes + contiguousBytesFrom(bufferedBytes)
     }
 
     /** 从 from 开始连续缓存的字节数；中间有洞就返回洞之前的长度。 */
-    private fun contiguousBytesFrom(cache: SimpleCache, key: String, from: Long): Long =
-        runCatching {
-            var cursor = from
-            var total = 0L
-            for (span in cache.getCachedSpans(key).sortedBy { it.position }) {
-                if (!span.isCached || span.length <= 0) continue
-                val end = span.position + span.length
-                if (end <= cursor) continue
-                if (span.position > cursor) break
-                total += end - cursor
-                cursor = end
-            }
-            total
-        }.getOrDefault(0L)
+    private fun contiguousBytesFrom(from: Long): Long = byteSnapshot
+        .firstOrNull { from >= it.first && from < it.second }?.let { it.second - from } ?: 0L
 
     fun prefetchedAheadMs(): Long {
         val ratio = bytesPerMs()
@@ -210,18 +208,42 @@ class PlaybackPrefetcher(
         }
 
     private fun loop() {
+        var observedCache: SimpleCache? = null
+        var observedKey: String? = null
+        var lastSnapshot = 0L
+        try {
         while (running) {
             try {
                 val cache = cacheProvider()
                 val sourceFactory = factory
                 val uri = mediaUri
+                val key = uri?.toString()
+                if (observedCache !== cache || observedKey != key) {
+                    observedKey?.let { old -> runCatching { observedCache?.removeListener(old, cacheListener) } }
+                    observedCache = cache; observedKey = key
+                    if (cache != null && key != null) cache.addListener(key, cacheListener)
+                    snapshotDirty = true
+                }
+                val now = System.nanoTime()
+                if (cache != null && key != null && snapshotDirty && now - lastSnapshot >= 500_000_000L) {
+                    snapshotDirty = false
+                    val snapshot = CachedIntervals.merge(cache.getCachedSpans(key)
+                        .filter { it.isCached && it.length > 0 }.map { it.position to it.position + it.length })
+                    val scale = bytesPerMs()
+                    // Publish immutable snapshots; UI polling never takes a cache lock.
+                    if (running && mediaUri == uri) {
+                        byteSnapshot = snapshot
+                        timeSnapshot = if (scale > 0) snapshot.map { (it.first / scale).toLong()..(it.second / scale).toLong() } else emptyList()
+                    }
+                    lastSnapshot = now
+                }
                 val ratio = bytesPerMs()
                 if (cache != null && sourceFactory != null && uri != null && ratio > 0 && windowBytes > 0) {
                     val key = uri.toString()
                     val target = minOf(contentLength, (positionMs * ratio).toLong() + windowBytes)
-                    var cursor = cachedEndBytes(cache, key, ratio)
+                    var cursor = cachedEndBytes(ratio)
                     demandOffset?.takeIf { it < target }?.let {
-                        cursor = it + contiguousBytesFrom(cache, key, it)
+                        cursor = it + contiguousBytesFrom(it)
                     }
                     // Reserve one transport slot for the decoder; total is at most four.
                     val limit = (if (playbackUrgent) 1 else policy.concurrency - 1).coerceIn(1, 3)
@@ -253,6 +275,9 @@ class PlaybackPrefetcher(
                 Log.w(TAG, "prefetch scheduler failed", error)
                 runCatching { sleep(ERROR_BACKOFF_MS) }
             }
+        }
+        } finally {
+            observedKey?.let { key -> runCatching { observedCache?.removeListener(key, cacheListener) } }
         }
     }
 

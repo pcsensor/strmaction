@@ -12,6 +12,27 @@ const payload = PlaybackPayload(itemId: 1, playUrl: 'https://media.invalid/video
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  test('native cache fragments are merged once per event and preserve gaps on both mobile bridges', () async {
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    final calls = <MethodCall>[];
+    messenger.setMockMethodCallHandler(NativePlayerEngine.channel, (call) async { calls.add(call); return null; });
+    addTearDown(() => messenger.setMockMethodCallHandler(NativePlayerEngine.channel, null));
+    final states = StreamController<dynamic>.broadcast(sync: true);
+    final engine = NativePlayerEngine(stateEvents: states.stream);
+    states.add({'session_id': engine.sessionId, 'position_ms': 1000, 'buffered_ms': 6000,
+      'brightness': 40, 'cached_ranges': List.generate(1000, (i) => {'start_ms': i * 10, 'end_ms': (i + 1) * 10})});
+    expect(engine.bufferedRanges, hasLength(1));
+    expect(engine.bufferedRanges.single.start, 0);
+    expect(engine.bufferedRanges.single.end, 10);
+    expect(identical(engine.bufferedRanges, engine.bufferedRanges), isTrue);
+    states.add({'position_ms': 1000, 'cached_ranges': [{'start_ms': 0, 'end_ms': 2000}, {'start_ms': 3000, 'end_ms': 4000}]});
+    expect(engine.bufferedRanges, hasLength(2));
+    await engine.setBrightnessLevel(0.65);
+    expect(calls.last.method, 'brightnessLevel'); expect(calls.last.arguments, 0.65);
+    expect(engine.brightness, 65);
+    await engine.setVolume(73); expect(engine.volume, 73);
+    await engine.shutdown(); await states.close();
+  });
   test('reentered native player rejects old-session errors and disposes its own session', () async {
     final calls = <MethodCall>[];
     final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
