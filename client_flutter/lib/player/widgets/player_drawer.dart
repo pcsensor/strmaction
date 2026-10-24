@@ -51,6 +51,7 @@ class PlayerDrawer extends StatefulWidget {
 
 class PlayerDrawerState extends State<PlayerDrawer> {
   String _tab = 'episodes';
+  final FocusScopeNode _scope = FocusScopeNode(debugLabel: 'player-drawer');
 
   @override
   void initState() {
@@ -60,7 +61,11 @@ class PlayerDrawerState extends State<PlayerDrawer> {
 
   void openTab(String tab) {
     setState(() => _tab = tab);
+    WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted && widget.visible) { _scope.requestFocus(); _scope.nextFocus(); } });
   }
+
+  @override
+  void dispose() { _scope.dispose(); super.dispose(); }
 
   @override
   void didUpdateWidget(covariant PlayerDrawer oldWidget) {
@@ -95,7 +100,7 @@ class PlayerDrawerState extends State<PlayerDrawer> {
                   bottom: 0,
                   right: widget.visible ? 0 : -width,
                   width: width,
-                  child: _DrawerPanel(
+                  child: FocusScope(node: _scope, canRequestFocus: widget.visible, child: _DrawerPanel(
                     tab: _tab,
                     onTabChanged: (tab) => setState(() => _tab = tab),
                     playlist: widget.playlist,
@@ -113,7 +118,7 @@ class PlayerDrawerState extends State<PlayerDrawer> {
                     onBoostSpeedSelected: widget.onBoostSpeedSelected,
                     onSubtitleSelected: widget.onSubtitleSelected,
                     onAudioSelected: widget.onAudioSelected,
-                  ),
+                  )),
                 ),
               ],
             ),

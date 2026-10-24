@@ -5,6 +5,7 @@ import 'dart:io';
 import '../core/app_logger.dart';
 import '../core/version.dart';
 import '../core/trust.dart';
+import 'progress_outbox.dart';
 
 const double finishedRatio = 0.9;
 
@@ -21,6 +22,7 @@ class ProgressReporter {
   final String trustedCaPem;
   final void Function()? onAuthError;
   final AppLogger? logger;
+  final String? outboxPath;
 
   HttpClient? _client;
   Timer? _timer;
@@ -45,6 +47,7 @@ class ProgressReporter {
     this.trustedCaPem = '',
     this.onAuthError,
     this.logger,
+    this.outboxPath,
     String? sessionId,
   })  : _session = sessionId ?? _randomSession(),
         intervalMs = intervalMs.clamp(2000, 60000);
@@ -105,6 +108,7 @@ class ProgressReporter {
     _dirty = false;
     final payload = _payload();
     try {
+      if (outboxPath != null) await ProgressOutbox(outboxPath!).save(url, playToken, payload);
       final request = await client.postUrl(Uri.parse(url)).timeout(
             const Duration(seconds: 5),
           );
@@ -126,9 +130,9 @@ class ProgressReporter {
       await response.drain<void>().timeout(const Duration(seconds: 5));
       if (response.statusCode == 401 || response.statusCode == 403) {
         _authFailed = true;
-        _stopped = true;
         _timer?.cancel();
         logger?.warning('进度上报鉴权失败（${response.statusCode}），停止上报');
+        if (outboxPath != null) await ProgressOutbox(outboxPath!).acknowledge(url, payload['client_key'] as String);
         onAuthError?.call();
         return false;
       }
@@ -137,6 +141,7 @@ class ProgressReporter {
         _dirty = true;
         return false;
       }
+      if (outboxPath != null) await ProgressOutbox(outboxPath!).acknowledge(url, payload['client_key'] as String);
       return true;
     } on TimeoutException {
       logger?.warning('进度上报超时');
@@ -170,7 +175,7 @@ class ProgressReporter {
   }
 
   Future<void> stop({bool flush = true}) async {
-    if (_closing || _stopped) return;
+    if (_closing) return;
     _closing = true;
     _timer?.cancel();
     _timer = null;

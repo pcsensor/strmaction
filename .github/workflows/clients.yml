@@ -42,6 +42,12 @@ jobs:
           cache: true
       - run: flutter pub get && flutter analyze && flutter test
         working-directory: client_flutter
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Client-dependency-lock
+          path: client_flutter/pubspec.lock
+          retention-days: 7
 
   android:
     runs-on: ubuntu-24.04
@@ -67,6 +73,9 @@ jobs:
       - name: Build Android shared client
         run: flutter build apk --debug && flutter build apk --release
         working-directory: client_flutter
+      - name: Verify Android trust and redirects
+        run: ./gradlew :app:testDebugUnitTest
+        working-directory: client_flutter/android
       - name: Package Android
         run: |
           mkdir -p dist

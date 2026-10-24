@@ -13,7 +13,7 @@ end
 end
 package = project.new(Xcodeproj::Project::Object::XCRemoteSwiftPackageReference)
 package.repositoryURL = 'https://github.com/kingslay/KSPlayer.git'
-package.requirement = { 'kind' => 'upToNextMajorVersion', 'minimumVersion' => '2.2.0' }
+package.requirement = { 'kind' => 'exactVersion', 'version' => '2.3.4' }
 project.root_object.package_references << package
 product = project.new(Xcodeproj::Project::Object::XCSwiftPackageProductDependency)
 product.package = package

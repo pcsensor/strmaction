@@ -4,13 +4,18 @@ import 'package:strmaction_desktop/player/playback_engine.dart';
 import 'package:strmaction_desktop/player/widgets/controls_overlay.dart';
 
 void main() {
-  testWidgets('controls overlay renders both bars and seekbar', (tester) async {
+  for (final width in [320.0, 1280.0]) {
+  testWidgets('controls render without overflow at width $width', (tester) async {
+    tester.view.physicalSize = Size(width, 800);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
     await tester.pumpWidget(
       MaterialApp(
         home: Scaffold(
           backgroundColor: Colors.black,
           body: SizedBox(
-            width: 1280,
+            width: width,
             height: 800,
             child: ControlsOverlay(
               visible: true,
@@ -53,5 +58,7 @@ void main() {
     expect(find.text('1x'), findsOneWidget);
     final timeRect = tester.getRect(find.text('00:10 / 01:40'));
     expect(timeRect.bottom, lessThanOrEqualTo(800));
+    expect(tester.takeException(), isNull);
   });
+  }
 }

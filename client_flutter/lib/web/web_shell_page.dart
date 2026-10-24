@@ -306,6 +306,7 @@ class _WebShellPageState extends State<WebShellPage> {
         pageBuilder: (context, animation, secondaryAnimation) => PlayerPage(
           app: app,
           payload: payload,
+          isTv: _isTv,
           onRequestItem: (id) => _pendingRequestId = id,
         ),
         transitionDuration: Duration.zero,
@@ -396,7 +397,7 @@ class _WebShellPageState extends State<WebShellPage> {
           handlerName: 'strmaction',
           callback: (args) async {
             final origin = await controller.getUrl();
-            if (origin == null || !_isAllowed(origin)) return {'ok': false, 'error': '页面来源不受信任'};
+            if (origin == null || !['http', 'https'].contains(origin.scheme) || !_isAllowed(origin)) return {'ok': false, 'error': '页面来源不受信任'};
             final method = args.isNotEmpty ? '${args[0]}' : '';
             final arg = args.length > 1 ? args[1] : null;
             try {

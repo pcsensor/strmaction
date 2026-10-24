@@ -106,6 +106,16 @@ void main() {
       expect(parsed.playlist, hasLength(2));
     });
 
+    test('keeps the full playlist and selected index beyond episode 200', () {
+      final raw = payload()
+        ..['playlist'] = List.generate(350, (index) => {'id': index + 1, 'title': 'Episode $index'})
+        ..['current_index'] = 301;
+      final parsed = PlaybackPayload.fromJson(raw, 'https://media.example.com');
+      expect(parsed.playlist.length, 350);
+      expect(parsed.currentIndex, 301);
+      expect(parsed.playlist[parsed.currentIndex - 1].itemId, 301);
+    });
+
     test('rejects bad token and non-http url', () {
       final badToken = payload()..['play_token'] = 'bad token';
       expect(

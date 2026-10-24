@@ -109,6 +109,11 @@ class PlayerKeyboardHandler {
       return KeyEventResult.ignored;
     }
 
+    if (key == LogicalKeyboardKey.mediaPlay || key == LogicalKeyboardKey.mediaPause || key == LogicalKeyboardKey.mediaPlayPause) {
+      onPlayPause(); return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.mediaTrackNext) { onNextEpisode(); return KeyEventResult.handled; }
+    if (key == LogicalKeyboardKey.mediaTrackPrevious) { onPreviousEpisode(); return KeyEventResult.handled; }
     if (key == LogicalKeyboardKey.space) {
       onPlayPause();
       return KeyEventResult.handled;

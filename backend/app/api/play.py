@@ -127,7 +127,10 @@ def _next_unwatched(
     if not series or target.kind != "episode":
         return None, None, None
     sequence = _episode_sequence(session, series)
+    if not sequence:
+        return None, None, None
     playable = set(session.exec(select(MediaFile.item_id).where(
+        MediaFile.item_id.in_([episode.id for episode in sequence]),
         MediaFile.invalid == False, MediaFile.missing == False,
     )).all())
     sequence = [episode for episode in sequence if episode.id in playable]

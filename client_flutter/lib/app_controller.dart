@@ -10,6 +10,7 @@ import 'core/cli_options.dart';
 import 'core/config.dart';
 import 'core/version.dart';
 import 'services/progress_reporter.dart';
+import 'services/progress_outbox.dart';
 
 class AppController {
   String? accountKey;
@@ -46,6 +47,7 @@ class AppController {
     AppConfig config;
     try {
       config = await store.load();
+      if (Platform.isAndroid && !await File(paths.configFile).exists()) { config = config.copyWith(cacheLimitMb: 512); }
       if (!config.isConfigured && (Platform.isAndroid || Platform.isIOS)) {
         final legacy = await const MethodChannel('strmaction/native')
             .invokeMapMethod<String, dynamic>('legacySettings');
@@ -58,6 +60,8 @@ class AppController {
       logger.warning('配置读取失败，使用默认配置：$error');
       config = const AppConfig();
     }
+    try { await ProgressOutbox('${paths.baseDir}/progress-outbox.json').replay(config.trustedCaPem); }
+    on Object catch (error) { logger.warning('进度队列恢复失败：$error'); }
     return AppController(
       paths: paths,
       configStore: store,
@@ -72,7 +76,7 @@ class AppController {
     final normalized = next.normalized();
     await configStore.save(normalized);
     configNotifier.value = normalized;
-    logger.info('桌面端设置已保存，服务器=${normalized.serverUrl}');
+    logger.info('客户端设置已保存，服务器=${normalized.serverUrl}');
     return normalized.serverUrl != previousServer;
   }
 
@@ -97,7 +101,8 @@ class AppController {
     if (_shutDown) return;
     _shutDown = true;
     try {
-      await activeProgress?.stop(flush: true);
+      if (_playbackShutdown != null) { await _playbackShutdown!(); }
+      else { await activeProgress?.stop(flush: true); }
     } on Object {
       // best effort
     }

@@ -135,7 +135,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
               ),
               const SizedBox(height: 8),
               const Text(
-                '播放时按住键盘右方向键（→）加速播放，松开恢复原速。',
+                '播放时长按画面或键盘右方向键加速，松开恢复原速。',
                 style: TextStyle(color: Color(0xFF7C8698), fontSize: 11),
               ),
               const SizedBox(height: 12),

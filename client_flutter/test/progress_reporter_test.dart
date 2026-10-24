@@ -1,8 +1,10 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/services/progress_reporter.dart';
+import 'package:strmaction_desktop/services/progress_outbox.dart';
 
 void main() {
   test('sends bearer token, UA and JSON body', () async {
@@ -76,4 +78,56 @@ void main() {
     await subscription.cancel();
     await server.close(force: true);
   });
+  test('stop waits for the in-flight request and sends the final position', () async {
+    final firstArrived = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final bodies = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      bodies.add(jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>);
+      if (bodies.length == 1) { firstArrived.complete(); await releaseFirst.future; }
+      request.response.statusCode = 200;
+      await request.response.close();
+    });
+    final reporter = ProgressReporter(serverUrl: 'http://127.0.0.1:${server.port}', itemId: 7,
+      playToken: 'pt_12345678', intervalMs: 5000, verifySsl: true);
+    reporter.start();
+    reporter.update(10000, durationMs: 100000);
+    final first = reporter.flushOnce();
+    await firstArrived.future;
+    reporter.update(25000, durationMs: 100000);
+    final stopped = reporter.stop();
+    releaseFirst.complete();
+    await first;
+    await stopped;
+    expect(bodies.map((b) => b['position_ms']), [10000, 25000]);
+    await subscription.cancel(); await server.close(force: true);
+  });
+
+  test('failed exit report remains queued until acknowledged after restart', () async {
+    final directory = await Directory.systemTemp.createTemp('strmaction-progress-');
+    final path = '${directory.path}/outbox.json';
+    var fail = true;
+    final bodies = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      bodies.add(jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>);
+      expect(await File(path).exists(), isTrue); // Persisted before the request.
+      request.response.statusCode = fail ? 503 : 200;
+      await request.response.close();
+    });
+    final reporter = ProgressReporter(serverUrl: 'http://127.0.0.1:${server.port}', itemId: 9,
+      playToken: 'pt_12345678', intervalMs: 5000, verifySsl: true, outboxPath: path);
+    reporter.start(); reporter.update(42000, durationMs: 100000);
+    await reporter.stop();
+    expect(jsonDecode(await File(path).readAsString()), hasLength(1));
+    fail = false;
+    await ProgressOutbox(path).replay('');
+    expect(bodies, hasLength(2));
+    expect(bodies[1], bodies[0]);
+    expect(jsonDecode(await File(path).readAsString()), isEmpty);
+    await subscription.cancel(); await server.close(force: true);
+    await directory.delete(recursive: true);
+  });
+
 }

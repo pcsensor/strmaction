@@ -1,10 +1,6 @@
-"""用户级偏好（v1.2 / v1.3）。
+"""账号播放偏好。None 跟随全局；公开方式仅 builtin / copy。
 
-只有少量字段允许普通用户自定：播放方式与失败回退提示。
-`None` 表示「跟随全局默认」，读取时与 SettingsService.player() 合并。
-
-v1.3 起服务端不再启动 mpv，播放方式收敛为：
-auto（按设备自动）/ builtin（伴侣 App 内置）/ browser_intent（Android 跳转）/ copy（复制链接）。
+历史模式读取时归一化为 builtin，设备覆盖由客户端按服务器和账号保存。
 """
 
 from __future__ import annotations
@@ -75,7 +71,7 @@ def effective_player(
 def effective_summary(
     settings: SettingsService, pref: UserPreference | None
 ) -> dict[str, Any]:
-    """给前端的「生效值」：只暴露用户关心的两个字段。"""
+    """给前端的「生效值」：只暴露播放方式。"""
     player = effective_player(settings, pref)
     return {
         "mode": normalize_mode(None, player),

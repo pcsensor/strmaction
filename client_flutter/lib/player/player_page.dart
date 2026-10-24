@@ -20,12 +20,14 @@ import 'widgets/player_drawer.dart';
 class PlayerPage extends StatefulWidget {
   final AppController app;
   final PlaybackPayload payload;
+  final bool isTv;
   final ValueChanged<int>? onRequestItem;
 
   const PlayerPage({
     super.key,
     required this.app,
     required this.payload,
+    this.isTv = false,
     this.onRequestItem,
   });
 
@@ -97,6 +99,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       intervalMs: widget.payload.progressIntervalMs,
       verifySsl: true,
       trustedCaPem: widget.app.config.trustedCaPem,
+      outboxPath: '${widget.app.paths.baseDir}/progress-outbox.json',
       onAuthError: _onProgressAuthError,
       logger: widget.app.logger,
     );
@@ -602,7 +605,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       body: Focus(
         focusNode: _focusNode,
         autofocus: true,
-        onKeyEvent: _keyboard.handle,
+        onKeyEvent: (node, event) {
+          if (_drawerVisible) {
+            if (event.logicalKey == LogicalKeyboardKey.escape && event is KeyDownEvent) {
+              _closeDrawer(); return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          }
+          if (widget.isTv && event is KeyDownEvent) {
+            if (event.logicalKey == LogicalKeyboardKey.arrowUp) { _openDrawer('tracks'); return KeyEventResult.handled; }
+            if (event.logicalKey == LogicalKeyboardKey.arrowDown) { _openDrawer('episodes'); return KeyEventResult.handled; }
+            if (event.logicalKey == LogicalKeyboardKey.select || event.logicalKey == LogicalKeyboardKey.enter) {
+              if (_messageVisible) { _onCardPrimary(); } else { _togglePlayPause(); }
+              return KeyEventResult.handled;
+            }
+          }
+          return _keyboard.handle(node, event);
+        },
         child: MouseRegion(
           cursor: _controlsVisible ? SystemMouseCursors.basic : SystemMouseCursors.none,
           onHover: (_) => _showControls(),
@@ -677,7 +696,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onTracks: () => _openDrawer('tracks'),
                   onFullscreen: _toggleFullscreen,
                 ),
-                if (_mobile && (_controlsVisible || _locked)) Positioned(
+                if (_mobile && !_engine.isPiP && (_controlsVisible || _locked)) Positioned(
                   right: 12, top: 48, child: Row(children: [
                     if (!_locked) IconButton(tooltip: '画中画', icon: const Icon(Icons.picture_in_picture_alt, color: Colors.white), onPressed: _engine.enterPiP),
                     IconButton(tooltip: _locked ? '解锁' : '锁定', icon: Icon(_locked ? Icons.lock : Icons.lock_open, color: Colors.white), onPressed: () => setState(() => _locked = !_locked)),

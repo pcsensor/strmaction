@@ -24,14 +24,30 @@ def android():
     old.unlink(missing_ok=True)
     for name in ['PlaybackCache', 'PlaybackDiskCache', 'PlaybackPrefetcher', 'NetworkSpeedMeter']:
         shutil.copy2(ROOT / f'companion/app/src/main/java/top/strmaction/companion/{name}.kt', kotlin / f'{name}.kt')
+    tests = app / 'src/test/kotlin/top/strmaction/companion'
+    tests.mkdir(parents=True, exist_ok=True)
+    for source in (PLATFORM / 'android/test').glob('*.kt'):
+        shutil.copy2(source, tests / source.name)
+    # Stable WebView 6.1.5 still uses the AGP 8 DSL. Pin the supported toolchain
+    # instead of mutating dependencies in the pub cache.
+    import re
+    settings = CLIENT / 'android/settings.gradle.kts'
+    text = re.sub(r'id\("com.android.application"\) version "[^"]+"', 'id("com.android.application") version "8.11.1"', settings.read_text())
+    text = text.replace('id("com.android.application") version "8.11.1" apply false', 'id("com.android.application") version "8.11.1" apply false\n    id("org.jetbrains.kotlin.android") version "2.2.20" apply false')
+    settings.write_text(text)
+    wrapper = CLIENT / 'android/gradle/wrapper/gradle-wrapper.properties'
+    wrapper.write_text(re.sub(r'gradle-[0-9.]+-all.zip', 'gradle-8.14-all.zip', wrapper.read_text()))
     gradle = app / 'build.gradle.kts'
-    text = gradle.read_text().replace('top.strmaction.strmaction_desktop', 'top.strmaction.companion')
+    text = gradle.read_text().replace('id("com.android.application")', 'id("com.android.application")\n    id("org.jetbrains.kotlin.android")').replace('top.strmaction.strmaction_desktop', 'top.strmaction.companion')
     text = text.replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
     # Unsigned releases can be re-signed with the existing installation key.
     text = text.replace('signingConfig = signingConfigs.getByName("debug")', 'signingConfig = null')
     text += '''
 android { buildFeatures { buildConfig = true } }
 dependencies {
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    testImplementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.media3:media3-exoplayer:1.4.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.4.1")
@@ -81,6 +97,11 @@ def ios():
                 NSLocalNetworkUsageDescription='连接家庭媒体服务器。',
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'])
     info.write_bytes(plistlib.dumps(data, sort_keys=False))
+    podfile = CLIENT / 'ios/Podfile'
+    if podfile.exists():
+        import re
+        text = re.sub(r"#?platform :ios, '[^']+'", "platform :ios, '16.0'", podfile.read_text())
+        podfile.write_text(text)
     delegate = runner / 'AppDelegate.swift'
     text = delegate.read_text().replace('GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)',
         'GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)\n    UnifiedPlayerPlugin.register(with: engineBridge.pluginRegistry.registrar(forPlugin: "UnifiedPlayerPlugin")!)')
