@@ -403,7 +403,7 @@ final class CacheServer {
 
     private func prefetch(after lower: Int64? = nil) {
         guard !isStopped, pacingEnabled, originSession.supportsRanges, totalLength > 0, targetAheadBytes > 0, store.capacity > 0 else { return }
-        let focus = max(focusOffset, consumedBytes)
+        let focus = consumedBytes
         let target = min(totalLength, focus + min(targetAheadBytes, store.capacity))
         let reserved = reservations.values.reduce(Int64(0)) { $0 + ($1.upperBound - $1.lowerBound) }
         var pendingBytes = reserved
@@ -442,8 +442,10 @@ final class CacheServer {
         }
     }
 
-    func seek() {
+    func seek(fraction: Double = 0) {
         queue.async {
+            self.consumedBytes = Int64(Double(max(0, self.totalLength)) * min(1, max(0, fraction)))
+            self.focusOffset = self.consumedBytes
             self.closeConnections()
             self.cancelSpeculation()
             self.origins.values.forEach { $0.cancel() }; self.origins.removeAll(); self.pacing.removeAll()
@@ -610,7 +612,7 @@ final class MediaCacheSession {
         server.updateTarget(aheadMb: aheadMb, seconds: seconds)
     }
 
-    func seek() { server.seek() }
+    func seek(fraction: Double = 0) { server.seek(fraction: fraction) }
 
     func stop() {
         directory.remove { server.stop(); store.removeFiles() }

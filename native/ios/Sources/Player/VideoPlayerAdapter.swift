@@ -212,7 +212,7 @@ public final class VideoPlayerController: ObservableObject {
     public func seek(toMs: Int64) {
         let upper = durationMs > 0 ? durationMs : toMs
         let target = max(0, min(toMs, upper))
-        cacheSession?.seek()
+        cacheSession?.seek(fraction: durationMs > 0 ? Double(target) / Double(durationMs) : 0)
         currentPositionMs = target
         ksCoordinator.seek(time: TimeInterval(target) / 1000.0)
     }

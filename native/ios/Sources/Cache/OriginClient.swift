@@ -57,6 +57,7 @@ final class OriginClient {
         queue.async {
             self.cancelled = true
             self.resumeHandler = nil
+            self.connection?.stateUpdateHandler = nil
             self.connection?.cancel(); self.connection = nil
         }
     }
@@ -110,6 +111,7 @@ final class OriginClient {
         let finish: (Error?, Bool) -> Void = { [weak self] error, reusable in
             guard let self, !state.finished else { return }
             state.finished = true
+            connection.stateUpdateHandler = nil
             self.resumeHandler = nil
             if self.connection === connection { self.connection = nil }
             if reusable, let pool = self.pool { pool.put(connection, url: url) }
@@ -175,7 +177,7 @@ final class OriginClient {
                 }
                 body = Data(state.buffer[headerEnd.upperBound...]); state.buffer.removeAll()
                 if [301, 302, 303, 307, 308].contains(meta.status) {
-                    state.finished = true; connection.cancel()
+                    state.finished = true; connection.stateUpdateHandler = nil; connection.cancel()
                     guard redirectsLeft > 0, let location = meta.headers["location"],
                           let next = URL(string: location, relativeTo: url)?.absoluteURL else {
                         onEnd(OriginError.tooManyRedirects); return

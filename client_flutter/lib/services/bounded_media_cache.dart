@@ -32,6 +32,7 @@ class BoundedMediaCache {
   var _bytes = 0;
   var _generation = 0;
   var _focus = 0;
+  int? _consumedBlock;
   var _closed = false;
 
   BoundedMediaCache._(this._client, this._origin, this._headers,
@@ -200,8 +201,9 @@ class BoundedMediaCache {
 
   void _prefetch(int first) {
     final window = min(budgetBytes, max(blockSize, prefetchBytes));
+    final base = _consumedBlock ?? first;
     final upper = min((length + blockSize - 1) ~/ blockSize,
-        first + max(1, window ~/ blockSize));
+        base + max(1, window ~/ blockSize));
     for (var block = first; block < upper && _jobs.length < policy.concurrency;) {
       if (_covered(block)) { block++; continue; }
       var end = min(upper, block + policy.segmentBytes ~/ blockSize).toInt();
@@ -279,10 +281,18 @@ class BoundedMediaCache {
     throw const _Cancelled();
   }
 
+  /// The decoder can read far ahead or probe the tail. The speculative window
+  /// follows the actual playhead, keeping it within the user's prefetch budget.
+  void setConsumed(int byteOffset) {
+    _consumedBlock = byteOffset.clamp(0, length - 1) ~/ blockSize;
+    _prefetch(_consumedBlock!);
+  }
+
   /// Called for explicit seeks, not format probes (which can read the tail).
   void seek(int byteOffset) {
     _generation++;
-    _focus = (byteOffset.clamp(0, length - 1) / blockSize).floor();
+    _focus = byteOffset.clamp(0, length - 1) ~/ blockSize;
+    if (_consumedBlock != null) _consumedBlock = _focus;
     for (final job in _jobs.toList()) { job.cancel(); }
     _jobs.clear();
   }

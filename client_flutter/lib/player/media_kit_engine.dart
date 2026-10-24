@@ -289,6 +289,9 @@ class MediaKitEngine extends PlaybackEngine {
         return;
       }
       _diskCache = opened;
+      if (opened != null) {
+        opened.setConsumed(_duration > 0 ? (opened.length * payload.resumeMs / 1000 / _duration).round() : 0);
+      }
     }
     final media = Media(
       _diskCache?.localUrl.toString() ?? payload.playUrl,
@@ -370,6 +373,8 @@ class MediaKitEngine extends PlaybackEngine {
     _networkTimer?.cancel();
     _networkTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       // Independent of MPV property latency and loopback/disk read throughput.
+      final disk = _diskCache;
+      if (disk != null && _duration > 0) disk.setConsumed((disk.length * _position / _duration).round());
       _networkSpeed = _diskCache?.networkSpeed ?? _fallbackRate.bytesPerSecond;
       _notify();
     });

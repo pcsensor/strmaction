@@ -20,6 +20,7 @@ class OriginFixture {
   bool wrongRange = false;
   bool changed = false;
   final sizes = <int>[];
+  final starts = <int>[];
   Future<void> start() async {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
@@ -40,7 +41,7 @@ class OriginFixture {
         final end = min(length - 1, int.parse(range[2]!));
         final probe = start == 0 && end == 0;
         if (!probe) {
-          active++; peak = max(peak, active); sizes.add(end - start + 1);
+          active++; peak = max(peak, active); sizes.add(end - start + 1); starts.add(start);
           await Future<void>.delayed(const Duration(milliseconds: 30));
         }
         request.response.statusCode = 206;
@@ -160,6 +161,23 @@ void main() {
     origin.expire = true; origin.changed = true;
     await expectLater(read(client, cache, 0, 99), throwsA(isA<HttpException>()));
     expect(cache.storedBytes, 0); expect(origin.entries, 2);
+  });
+
+  test('format probes do not move speculation past the actual playhead window', () async {
+    final origin = OriginFixture(); await origin.start();
+    final root = await Directory.systemTemp.createTemp('playhead-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 32 * mib, prefetchBytes: 8 * mib))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    cache.setConsumed(0);
+    await read(client, cache, 24 * mib, 24 * mib + 99);
+    for (var i = 0; i < 300 && cache.activeDownloads > 0; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(origin.starts.every((start) => start < 8 * mib || start == 24 * mib), isTrue,
+      reason: 'tail probes must not start another prefetch window');
   });
 
   test('rolling rate spans burst gaps and becomes zero after a real stall', () {
