@@ -1,10 +1,6 @@
-"""用户级偏好（v1.2 / v1.3）。
+"""账号播放偏好。None 跟随全局；公开方式仅 builtin / copy。
 
-只有少量字段允许普通用户自定：播放方式与失败回退提示。
-`None` 表示「跟随全局默认」，读取时与 SettingsService.player() 合并。
-
-v1.3 起服务端不再启动 mpv，播放方式收敛为：
-auto（按设备自动）/ builtin（伴侣 App 内置）/ browser_intent（Android 跳转）/ copy（复制链接）。
+历史模式读取时归一化为 builtin，设备覆盖由客户端按服务器和账号保存。
 """
 
 from __future__ import annotations
@@ -17,10 +13,9 @@ from .config_store import SettingsService
 from .models import UserPreference, utcnow
 from .players import normalize_mode
 
-ALL_PLAYER_MODES = ("auto", "builtin", "browser_intent", "copy")
+ALL_PLAYER_MODES = ("builtin", "copy")
 _COLUMN_BY_FIELD = {
     "mode": "player_mode",
-    "fallback_on_error": "fallback_on_error",
 }
 
 
@@ -30,11 +25,7 @@ def allowed_player_modes() -> list[str]:
 
 def available_player_modes(is_companion: bool, is_android: bool) -> list[str]:
     """当前客户端真正能执行的模式；用于设置页提示“当前设备不支持”。"""
-    if is_companion:
-        return ["auto", "builtin", "copy"]
-    if is_android:
-        return ["auto", "browser_intent", "copy"]
-    return ["auto", "copy"]
+    return ["builtin", "copy"] if is_companion else ["copy"]
 
 
 def get_preference(engine, user_id: int) -> UserPreference | None:
@@ -45,8 +36,7 @@ def get_preference(engine, user_id: int) -> UserPreference | None:
 def preference_payload(pref: UserPreference | None) -> dict[str, Any]:
     """只返回用户可自定的字段，None 表示跟随全局。"""
     return {
-        "mode": pref.player_mode if pref else None,
-        "fallback_on_error": pref.fallback_on_error if pref else None,
+        "mode": normalize_mode(pref.player_mode) if pref and pref.player_mode else None,
     }
 
 
@@ -58,7 +48,8 @@ def save_preference(engine, user_id: int, changes: dict[str, Any]) -> UserPrefer
             row = UserPreference(user_id=user_id, updated_at=utcnow())
         for field, column in _COLUMN_BY_FIELD.items():
             if field in changes:
-                setattr(row, column, changes[field])
+                value = changes[field]
+                setattr(row, column, normalize_mode(value) if field == "mode" and value else value)
         row.updated_at = utcnow()
         session.add(row)
         session.commit()
@@ -73,20 +64,17 @@ def effective_player(
     player = dict(settings.player())
     if pref is not None:
         if pref.player_mode:
-            player["mode"] = pref.player_mode
-        if pref.fallback_on_error is not None:
-            player["fallback_on_error"] = bool(pref.fallback_on_error)
+            player["mode"] = normalize_mode(pref.player_mode)
     return player
 
 
 def effective_summary(
     settings: SettingsService, pref: UserPreference | None
 ) -> dict[str, Any]:
-    """给前端的「生效值」：只暴露用户关心的两个字段。"""
+    """给前端的「生效值」：只暴露播放方式。"""
     player = effective_player(settings, pref)
     return {
         "mode": normalize_mode(None, player),
-        "fallback_on_error": bool(player.get("fallback_on_error", True)),
     }
 
 
@@ -94,5 +82,4 @@ def defaults_summary(settings: SettingsService) -> dict[str, Any]:
     player = settings.player()
     return {
         "mode": normalize_mode(None, player),
-        "fallback_on_error": bool(player.get("fallback_on_error", True)),
     }

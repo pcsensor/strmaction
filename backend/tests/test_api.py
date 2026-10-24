@@ -598,17 +598,17 @@ def test_multiuser_and_permissions():
             # 4.2 个人播放偏好：普通用户可读写自己的 mode / fallback
             pref = user_client.get("/api/me/player")
             assert pref.status_code == 200
-            assert pref.json()["overrides"] == {"mode": None, "fallback_on_error": None}
+            assert pref.json()["overrides"] == {"mode": None}
             # v1.3：服务端 mpv / 外部 mpv 已下线，所有人可选模式一致
             assert pref.json()["allowed_modes"] == [
-                "auto", "builtin", "browser_intent", "copy"
+                "builtin", "copy"
             ]
             assert pref.json()["client"]["is_browser"] is True
-            assert pref.json()["available_modes"] == ["auto", "copy"]
+            assert pref.json()["available_modes"] == ["copy"]
             assert pref.json()["resolved_mode"] == "copy"  # 桌面浏览器默认 builtin → copy
             admin_pref = admin_client.get("/api/me/player").json()
             assert admin_pref["allowed_modes"] == pref.json()["allowed_modes"]
-            assert admin_pref["available_modes"] == ["auto", "copy"]
+            assert admin_pref["available_modes"] == ["copy"]
 
             patched = user_client.patch(
                 "/api/me/player",
@@ -616,7 +616,7 @@ def test_multiuser_and_permissions():
             )
             assert patched.status_code == 200, patched.text
             assert patched.json()["effective"]["mode"] == "builtin"
-            assert patched.json()["effective"]["fallback_on_error"] is False
+            assert "fallback_on_error" not in patched.json()["effective"]
             assert patched.json()["resolved_mode"] == "copy"  # 桌面浏览器没有原生播放器
             # 白名单之外的字段 / 已下线的 mpv 相关字段必须拒绝
             assert user_client.patch(
@@ -651,10 +651,10 @@ def test_multiuser_and_permissions():
 
             # 6.1 桌面端 direct：返回 URL/headers/token，不触发服务端播放器
             direct_play = user_client.post(
-                f"/api/play/{movie_item['id']}", json={"mode": "direct"}
+                f"/api/play/{movie_item['id']}", json={"mode": "direct"}, headers={"X-StrmAction-Companion": "1"}
             )
             assert direct_play.status_code == 200, direct_play.text
-            assert direct_play.json()["mode"] == "direct"
+            assert direct_play.json()["mode"] == "builtin"
             assert direct_play.json()["play_url"]
             assert direct_play.json()["play_token"]
             assert direct_play.json()["downgraded"] is False
@@ -666,14 +666,14 @@ def test_multiuser_and_permissions():
             assert external_play.json()["requested_mode"] == "builtin"
             assert external_play.json()["downgraded"] is True
             assert external_play.json()["downgrade_reason"] == "requires_companion"
-            assert external_play.json()["fallback_on_error"] is False
+            assert "fallback_on_error" not in external_play.json()
 
             # 6.1.1 browser_intent 在桌面浏览器同样降级
             user_client.patch("/api/me/player", json={"mode": "browser_intent"})
             intent_play = user_client.post(f"/api/play/{movie_item['id']}", json={})
             assert intent_play.status_code == 200, intent_play.text
             assert intent_play.json()["mode"] == "copy"
-            assert intent_play.json()["downgrade_reason"] == "requires_android"
+            assert intent_play.json()["downgrade_reason"] == "requires_companion"
 
             # 6.1.2 个人偏好 copy 生效；管理员默认 builtin 在 Android 浏览器走 intent
             user_client.patch("/api/me/player", json={"mode": "copy"})
@@ -687,7 +687,8 @@ def test_multiuser_and_permissions():
                 f"/api/play/{movie_item['id']}", json={}, headers=android_ua
             )
             assert admin_android.status_code == 200, admin_android.text
-            assert admin_android.json()["mode"] == "browser_intent"
+            assert admin_android.json()["mode"] == "copy"
+            assert admin_android.json()["action"] is None
 
             # 6.2 显式 null 清除个人覆盖，回落到全局默认
             cleared = user_client.patch("/api/me/player", json={"mode": None})

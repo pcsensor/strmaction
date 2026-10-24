@@ -43,10 +43,9 @@ object PlaybackDiskCache {
     private var appContext: Context? = null
 
     /** 打开（或复用）本次播放的磁盘缓存；关闭或不可用时返回 null。 */
-    fun open(context: Context): SimpleCache? = synchronized(lock) {
+    fun open(context: Context, requestedMb: Int = PlaybackCache.diskLimitMb(context)): SimpleCache? = synchronized(lock) {
         cache?.let { return it }
         appContext = context.applicationContext
-        val requestedMb = PlaybackCache.diskLimitMb(context)
         if (requestedMb <= 0) return null
 
         val root = rootDir(context) ?: return null

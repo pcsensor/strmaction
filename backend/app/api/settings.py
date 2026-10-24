@@ -42,7 +42,7 @@ router = APIRouter(tags=["settings"])
 PRIORITY_KEYS = {"movie", "tv", "home", "course"}
 PROVIDERS = {"tmdb", "tvdb"}
 # v1.3：服务端 mpv / 外部 mpv 已下线，设置里只保留这些模式。
-PLAYER_MODES = {"builtin", "browser_intent", "copy", "auto"}
+PLAYER_MODES = {"builtin", "copy"}
 
 
 def _validate(patch: dict[str, Any]) -> None:
@@ -91,10 +91,16 @@ def _sanitize(patch: dict[str, Any]) -> dict[str, Any]:
         if "cache_limit_mb" in player:
             # 0 表示最小预读；伴侣 App 最低按 16MB 执行。
             player["cache_limit_mb"] = normalize_cache_limit(player["cache_limit_mb"])
+        for key, maximum in (("buffer_limit_mb", 8192), ("disk_cache_limit_mb", 32768)):
+            if key in player and player[key] is not None:
+                try:
+                    player[key] = min(max(0, int(player[key])), maximum)
+                except (TypeError, ValueError):
+                    raise APIError(400, "INVALID_SETTINGS", f"{key} 必须是容量或 null")
         if "mode" in player:
             player.pop("default", None)
         # 已下线的播放器字段：直接丢弃，避免旧客户端写回。
-        for key in ("mpv_path", "mpv_extra_args", "mpv_package", "enable_progress"):
+        for key in ("mpv_path", "mpv_extra_args", "mpv_package", "enable_progress", "fallback_on_error"):
             player.pop(key, None)
     return patch
 

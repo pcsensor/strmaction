@@ -1,0 +1,663 @@
+import SwiftUI
+import AVFoundation
+import Combine
+import KSPlayer
+
+/// 已落盘区间在时间轴上的投影。
+///
+/// 字节区间 → 时间区间是按「总字节 : 总时长」线性折算的（MP4 的 mdat 里音视频交错，
+/// 偏差通常在百分之几），对进度条上的缓存指示足够用，不值得为它去解 stts 表。
+public struct CachedSegment: Hashable, Identifiable {
+    public let startMs: Int64
+    public let endMs: Int64
+
+    public var id: Int64 { startMs }
+}
+
+/// 播放引擎适配层。
+///
+/// 设计约束（不可放宽）：
+/// - **只有一个内核**：KSMEPlayer（FFmpeg）。不保留 AVFoundation 运行路径，
+///   因为它无法处理自签名证书，留着的唯一结果就是一条注定失败的隐式回退。
+/// - **不代理**：交给 FFmpeg 的永远是原始 URL，字节不经过任何中间层。
+/// - **不回退**：任一环节失败即 `.failed(message)`，message 为底层原始错误。
+@MainActor
+public final class VideoPlayerController: ObservableObject {
+    // MARK: 对外状态
+
+    @Published public private(set) var phase: PlaybackPhase = .idle
+    @Published public private(set) var isPlaying = false
+    @Published public private(set) var currentPositionMs: Int64 = 0
+    @Published public private(set) var durationMs: Int64 = 0
+    @Published public private(set) var bufferedPositionMs: Int64 = 0
+    /// 缓冲上限（MB），用户设置项。
+    @Published public private(set) var bufferLimitMb: Int = PlaybackBufferPreference.defaultLimitMb
+    /// 按码率折算出的实际目标时长（秒）。面板里的读数用它。
+    @Published public private(set) var bufferTargetSeconds: Double = PlaybackBufferPreference.secondsForCurrentLimit()
+    /// 本次会话的磁盘缓存上限（MB）。
+    @Published public private(set) var diskCacheLimitMb: Int = DiskCachePreference.defaultLimitMb
+    /// 实时回源速度（字节/秒）。只有真正走网络的字节计入，磁盘命中为 0。
+    @Published public private(set) var networkSpeedBps: Double = 0
+    /// 已落盘区间（时间轴），进度条上的缓存横线画它。
+    @Published public private(set) var cachedSegments: [CachedSegment] = []
+    @Published public var playbackSpeed: Double = 1.0
+    @Published public var isAspectFill: Bool = false
+    @Published public private(set) var errorMessage: String?
+    @Published public private(set) var isPiPActive: Bool = false
+    @Published public private(set) var subtitleText: String?
+
+    /// 交给 SwiftUI 的渲染图层参数。
+    @Published public private(set) var ksOptions: KSOptions?
+    @Published public private(set) var playbackURL: URL?
+
+    public var onPlaybackEnded: (() -> Void)?
+
+    public var isReady: Bool { phase == .ready }
+
+    /// 低于这个速度视为「没有在下载」，UI 不再显示数字，避免静止时来回抖。
+    private static let networkSpeedFloor: Double = 20 * 1024
+
+    public var isDownloading: Bool { networkSpeedBps >= Self.networkSpeedFloor }
+
+    // MARK: 内部
+
+    public let ksCoordinator = KSVideoPlayer.Coordinator()
+
+    private var selectedSubtitleFileURL: URL?
+    private var setupResumeMs: Int64 = 0
+    private var pipStateCancellable: AnyCancellable?
+    private weak var boundPiPLayer: KSPlayerLayer?
+
+    private var connectTimeoutTask: Task<Void, Never>?
+    /// 当前会话的选项实例。`KSOptions` 是引用类型，
+    /// ready 之后改 `maxBufferDuration` 会立刻被 `codecDidChangeCapacity` 读到。
+    private var activeOptions: KSOptions?
+    /// 当前会话的磁盘缓存；`destroy()` 时停止服务并删除目录。
+    private var cacheSession: MediaCacheSession?
+    /// 诊断节流：上次记录过的播放秒数。
+    private var lastDiagnosticSecond: Int64 = -1
+    /// 网速 / 缓存区间的轮询任务。1 秒一次足够，再高频只会让 UI 白刷新。
+    private var metricsTask: Task<Void, Never>?
+
+    /// FFmpeg 缓冲上限相对用户设置留的余量，避免它成为流量控制的主控（见 `refreshBufferTarget`）。
+    private static let maxBufferHeadroom: Double = 1.2
+    private static let connectTimeoutSeconds: UInt64 = 20
+    private static let metricsIntervalNanos: UInt64 = 1_000_000_000
+
+    public init() {}
+
+    /// 由上层在进入引擎之前就发现的问题（例如服务端返回的 URL 无法解析）上报。
+    /// 与其它失败一样，走同一条 `.failed` 通道，不另设标志位。
+    public func reportUnplayableSource(_ reason: String) {
+        resetState()
+        fail(reason)
+    }
+
+    // MARK: - 装载
+
+    /// 建立证书固定关系、组装选项、创建图层。整个过程是确定的单行道。
+    public func load(_ request: PlaybackRequest) async {
+        D.log("engine", "load \(request.url.absoluteString.prefix(110)) resumeMs=\(request.resumeMs) buffer=\(request.bufferLimitMb)MB")
+
+        resetState()
+        phase = .resolving
+
+        // 1. 证书信任校验（仅 https）
+        //
+        //    这里刻意提前失败：链校验不过就直接给出原因，
+        //    而不是把问题丢给 FFmpeg，让它在 100ms 后吐一句
+        //    "avformat can't open input"。
+        if request.url.scheme?.lowercased() == "https" {
+            let host = request.url.host ?? ""
+            let hostKey = TLSTrustStore.hostKey(host: host, port: request.url.port)
+            phase = .pinning(hostKey: hostKey)
+            do {
+                try await SecurityPolicy.ensureTrusted(for: request.url)
+            } catch {
+                fail(error.localizedDescription)
+                return
+            }
+        }
+
+        // 2. 磁盘缓存层
+        //
+        //    播放地址会被换成本地 127.0.0.1：字节从这里进出，读过的位置落盘，
+        //    之后 seek 回同一位置直接命中磁盘，不再回源。
+        //    会话结束（destroy）整目录删除。
+        // 目标秒数要在起会话之前算：缓存层用它把「MB」换算成填充速率。
+        let aheadSeconds = PlaybackBufferPreference.seconds(
+            limitMb: request.bufferLimitMb,
+            bitRate: PlaybackBufferPreference.observedBitRate
+        )
+        let session: MediaCacheSession
+        do {
+            session = try await MediaCacheSession.start(
+                sourceURL: request.url,
+                headers: request.headers,
+                limitMb: request.diskCacheLimitMb,
+                targetAheadMb: request.bufferLimitMb,
+                targetAheadSeconds: aheadSeconds
+            )
+        } catch {
+            fail("磁盘缓存层启动失败：\(error.localizedDescription)")
+            return
+        }
+        cacheSession?.stop()
+        cacheSession = session
+        startMetricsTask()
+
+        // 3. 选项
+        let options = MediaTransport.makeOptions(for: request)
+
+        guard !Task.isCancelled else {
+            session.stop()
+            return
+        }
+
+        // 4. 重建图层
+        if let oldLayer = ksCoordinator.playerLayer, oldLayer.isPipActive {
+            oldLayer.isPipActive = false
+        }
+        pipStateCancellable?.cancel()
+        pipStateCancellable = nil
+        boundPiPLayer = nil
+        ksOptions = nil
+        ksCoordinator.resetPlayer()
+
+        setupResumeMs = request.resumeMs
+        bufferLimitMb = request.bufferLimitMb
+        diskCacheLimitMb = request.diskCacheLimitMb
+        bufferTargetSeconds = aheadSeconds
+        // 交给播放器的是本地缓存地址，不是源站地址。
+        playbackURL = session.localURL
+        installKSPlayerCallbacks()
+        ksOptions = options
+        activeOptions = options
+
+        phase = .connecting
+        lastDiagnosticSecond = -1
+        startConnectTimeout()
+
+        reapplySelectedSubtitle()
+    }
+
+    // MARK: - 播放控制
+
+    public func play() {
+        ksCoordinator.playerLayer?.play()
+        isPlaying = true
+    }
+
+    public func pause() {
+        ksCoordinator.playerLayer?.pause()
+        isPlaying = false
+    }
+
+    public func togglePlayPause() {
+        isPlaying ? pause() : play()
+    }
+
+    public func seek(toMs: Int64) {
+        let upper = durationMs > 0 ? durationMs : toMs
+        let target = max(0, min(toMs, upper))
+        currentPositionMs = target
+        ksCoordinator.seek(time: TimeInterval(target) / 1000.0)
+    }
+
+    public func skip(seconds: Int64) {
+        let upper = durationMs > 0 ? durationMs : Int64.max
+        seek(toMs: max(0, min(upper, currentPositionMs + seconds * 1000)))
+    }
+
+    public func setBufferLimit(_ value: Int) {
+        bufferLimitMb = max(0, min(8192, value))
+        refreshBufferTarget()
+    }
+
+    public func setSpeed(_ speed: Double) {
+        playbackSpeed = speed
+        ksCoordinator.playbackRate = Float(speed)
+    }
+
+    public func toggleAspect() {
+        isAspectFill.toggle()
+        ksCoordinator.isScaleAspectFill = isAspectFill
+    }
+
+    // MARK: - 画中画
+
+    public var isPiPAvailable: Bool {
+        ksCoordinator.playerLayer?.player.pipController != nil
+    }
+
+    @discardableResult
+    public func togglePiP() -> Bool {
+        guard let layer = ksCoordinator.playerLayer, layer.player.pipController != nil else {
+            return false
+        }
+        layer.isPipActive.toggle()
+        isPiPActive = layer.isPipActive
+        return layer.isPipActive
+    }
+
+    // MARK: - 字幕
+
+    public func loadSubtitle(_ subtitle: SubtitleEntry, serverUrl: String) async throws {
+        let data = try await PlayApi.shared.fetchSubtitleData(
+            serverUrl: serverUrl,
+            subtitlePath: subtitle.url
+        )
+        try Task.checkCancellation()
+        guard !data.isEmpty else {
+            throw PlayApiError.badResponse(statusCode: 0, message: "字幕文件为空")
+        }
+
+        let ext = (subtitle.format?.trimmingCharacters(in: .whitespacesAndNewlines)).flatMap {
+            $0.isEmpty ? nil : $0.lowercased()
+        } ?? "srt"
+        let fileURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("strmaction-subtitle-\(UUID().uuidString).\(ext)")
+        try data.write(to: fileURL, options: .atomic)
+
+        if let oldURL = selectedSubtitleFileURL {
+            try? FileManager.default.removeItem(at: oldURL)
+        }
+        selectedSubtitleFileURL = fileURL
+        ksCoordinator.subtitleModel.selectedSubtitleInfo = URLSubtitleInfo(url: fileURL)
+        D.log("engine", "字幕已加载 \(subtitle.label)")
+    }
+
+    public func clearSubtitle() {
+        ksCoordinator.subtitleModel.selectedSubtitleInfo = nil
+        if let oldURL = selectedSubtitleFileURL {
+            try? FileManager.default.removeItem(at: oldURL)
+        }
+        selectedSubtitleFileURL = nil
+        subtitleText = nil
+    }
+
+    private func reapplySelectedSubtitle() {
+        guard let fileURL = selectedSubtitleFileURL else { return }
+        ksCoordinator.subtitleModel.selectedSubtitleInfo = URLSubtitleInfo(url: fileURL)
+    }
+
+    // MARK: - 回调
+
+    /// 图层创建/重建后必须重新安装回调。由 `KSPlayerSurfaceView.updateUIView` 调用。
+    public func installKSPlayerCallbacks() {
+        ksCoordinator.onStateChanged = { [weak self] layer, state in
+            let layerURL = layer.url.absoluteString
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let isCurrent = self.ksCoordinator.playerLayer === layer
+                D.log("state", "\(state) 是当前图层=\(isCurrent) url=\(layerURL.prefix(50))")
+                guard isCurrent else { return }
+
+                if state == .readyToPlay {
+                    self.enterReady()
+                } else if state == .error {
+                    self.fail("播放器进入错误状态")
+                }
+            }
+        }
+
+        ksCoordinator.onPlay = { [weak self] current, total in
+            DispatchQueue.main.async {
+                guard let self, self.ksCoordinator.playerLayer != nil else { return }
+
+                let second = Int64(current)
+                if self.lastDiagnosticSecond < 0 || (second % 3 == 0 && second != self.lastDiagnosticSecond) {
+                    self.lastDiagnosticSecond = second
+                    D.log("play", String(format: "pos=%.2f total=%.2f", current, total))
+                }
+
+                self.currentPositionMs = Int64(current * 1000)
+                if total > 0 {
+                    self.durationMs = Int64(total * 1000)
+                }
+                self.isPlaying = self.ksCoordinator.state.isPlaying
+
+                // 缓冲进度只认 playableTime。
+                //
+                // KSMEPlayer 里 playableTime = currentPlaybackTime + loadedTime，
+                // 也就是「已经能播到哪个时间点」。不要用 onBufferChanged：
+                // 它的两个参数是 (bufferedCount, consumeTime)，后者是「这一次缓冲花了多久」，
+                // 当成已缓冲秒数用会得到一个几百毫秒的数字，进度条永远画不出来。
+                if let layer = self.ksCoordinator.playerLayer {
+                    let playable = max(current, layer.player.playableTime)
+                    if playable > 0 {
+                        self.bufferedPositionMs = Int64(playable * 1000)
+                    }
+                }
+
+                // 有数据在动即脱离「连接中」。不在这里直接判 ready，
+                // 以免把「刚拿到首包」误当成「已经可播」。
+                if self.phase == .connecting || self.phase == .buffering {
+                    self.phase = total > 0 ? .ready : .buffering
+                }
+
+                let subtitle = self.ksCoordinator.subtitleModel.parts
+                    .compactMap { $0.text?.string }
+                    .filter { !$0.isEmpty }
+                    .joined(separator: "\n")
+                self.subtitleText = subtitle.isEmpty ? nil : subtitle
+            }
+        }
+
+        ksCoordinator.onFinish = { [weak self] layer, error in
+            let reason = error?.localizedDescription
+            // KSPlayer 会把 avformat 的错误码塞进 NSError，这里把细节打出来，
+            // 否则永远只能看到 "avformat can't open input" 这种无从下手的信息。
+            var detail = ""
+            if let nsError = error.map({ $0 as NSError }) {
+                detail = " domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)"
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                let isCurrent = self.ksCoordinator.playerLayer === layer
+                D.log("finish", "\(reason ?? "正常结束")\(detail) 是当前图层=\(isCurrent)")
+                guard isCurrent else { return }
+
+                self.isPlaying = false
+                if let reason {
+                    self.fail(reason)
+                } else {
+                    self.phase = .ready
+                    self.onPlaybackEnded?()
+                }
+            }
+        }
+    }
+
+    public func bindPiPState(for layer: KSPlayerLayer) {
+        guard boundPiPLayer !== layer else { return }
+        boundPiPLayer = layer
+        pipStateCancellable = layer.$isPipActive
+            .sink { [weak self] active in
+                DispatchQueue.main.async {
+                    self?.isPiPActive = active
+                }
+            }
+    }
+
+    // MARK: - 状态转移
+
+    private func enterReady() {
+        connectTimeoutTask?.cancel()
+        connectTimeoutTask = nil
+
+        isPlaying = true
+        ksCoordinator.playbackRate = Float(playbackSpeed)
+        ksCoordinator.isScaleAspectFill = isAspectFill
+        // 音量由系统音量控制，播放器固定满增益，避免二次衰减。
+        ksCoordinator.playerLayer?.player.playbackVolume = 1.0
+        reapplySelectedSubtitle()
+
+        phase = .ready
+
+        // 到这里说明 FFmpeg 已经把容器解析完、真的开始出帧了。
+        // 之前的探测读取（可能跳到文件尾部读 moov）起点远离播放位置，
+        // 任何基于「已拉取 − 已消费」的限流都会把它们饿死，所以现在才打开。
+        cacheSession?.setPacingEnabled(true)
+
+        // 轨道已经解析出来了，用真实码率把「MB → 秒」校正一次。
+        refreshBufferTarget()
+
+        if setupResumeMs > 0 {
+            let resume = setupResumeMs
+            setupResumeMs = 0
+            ksCoordinator.seek(time: TimeInterval(resume) / 1000.0)
+        } else {
+            play()
+        }
+    }
+
+    /// 用真实码率把「缓冲上限 MB」折算成 `maxBufferDuration` 秒数。
+    ///
+    /// 必须在解析出轨道之后才能算：`avformat_open_input` 之前拿不到码率，
+    /// 所以 load 时先用上次观测到的码率估算，这里再用真实值校正。
+    /// 改的是同一个 `KSOptions` 实例，`codecDidChangeCapacity` 每轮都会读它，立即生效。
+    private func refreshBufferTarget() {
+        guard let player = ksCoordinator.playerLayer?.player else { return }
+
+        // 1. 视频轨码率（FFmpeg 的 codecpar.bit_rate），最准确
+        var bitRate = Double(
+            player.tracks(mediaType: .video)
+                .first(where: { $0.isEnabled })?
+                .bitRate ?? 0
+        )
+        // 2. 反推整体码率：KSPlayer 内部 fileSize = bit_rate × duration ÷ 8
+        if bitRate <= 0, player.duration > 0, player.fileSize > 0 {
+            bitRate = player.fileSize * 8 / player.duration
+        }
+        guard bitRate > 0, bitRate.isFinite else { return }
+
+        PlaybackBufferPreference.rememberBitRate(bitRate)
+        let seconds = PlaybackBufferPreference.seconds(limitMb: bufferLimitMb, bitRate: bitRate)
+        bufferTargetSeconds = seconds
+        // 交给 FFmpeg 的上限刻意留 20% 余量：流量控制由缓存层的水位主导，
+        // 这个开关只做兜底。若两者目标相同，FFmpeg 会先于我们触发 pause/resume，
+        // 下载就变成「全速 / 全停」的方波（它的判定是 >max 暂停、<max/2 才恢复）。
+        activeOptions?.maxBufferDuration = seconds * Self.maxBufferHeadroom
+        // 缓存层的填充速率也要跟着真实码率校正，否则限速会偏快或偏慢。
+        cacheSession?.updateTarget(aheadMb: bufferLimitMb, seconds: seconds)
+        D.log("buffer", "目标 \(Int(seconds))s = \(bufferLimitMb)MB @ "
+            + String(format: "%.1f", bitRate / 1_000_000) + "Mbps")
+    }
+
+    // MARK: - 网速 / 缓存区间
+
+    /// 每秒刷新一次「实时网速」和「已落盘区间」。
+    ///
+    /// 网速只能由缓存层统计：FFmpeg 现在只连 127.0.0.1，它看到的永远是本地速度。
+    private func startMetricsTask() {
+        metricsTask?.cancel()
+        metricsTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: Self.metricsIntervalNanos)
+                guard !Task.isCancelled else { break }
+                self?.refreshMetrics()
+            }
+        }
+    }
+
+    private func stopMetricsTask() {
+        metricsTask?.cancel()
+        metricsTask = nil
+    }
+
+    private func refreshMetrics() {
+        guard let session = cacheSession else {
+            networkSpeedBps = 0
+            cachedSegments = []
+            return
+        }
+
+        networkSpeedBps = session.throughputSampler.bytesPerSecond()
+
+        let snapshot = session.cacheSnapshot()
+        guard snapshot.totalBytes > 0, durationMs > 0 else { return }
+
+        // 把播放位置回写给缓存层：它的流量控制用「已拉取 − 已消费」当水位，
+        // 没有这个输入就判断不了预拉取是否超前。
+        let consumed = Int64(Double(currentPositionMs) / Double(durationMs) * Double(snapshot.totalBytes))
+        session.setConsumedBytes(consumed)
+
+        // 兜底打开流控：拿得到总时长就说明容器已经解析完，
+        // 探测读取阶段结束了，此后限流不会再误伤 FFmpeg。
+        if durationMs > 0 {
+            session.setPacingEnabled(true)
+        }
+
+        // 字节 → 时间：整文件线性折算。
+        let scale = Double(durationMs) / Double(snapshot.totalBytes)
+        let mapped = snapshot.ranges.map { range in
+            CachedSegment(
+                startMs: min(durationMs, Int64(Double(range.lowerBound) * scale)),
+                endMs: min(durationMs, Int64(Double(range.upperBound) * scale))
+            )
+        }
+        // 只在真的变了才发：否则每秒一次的无意义刷新会让进度条白白重绘。
+        if mapped != cachedSegments {
+            cachedSegments = mapped
+        }
+    }
+
+    private func fail(_ reason: String) {
+        connectTimeoutTask?.cancel()
+        connectTimeoutTask = nil
+
+        // 失败原因一律用底层原文，不加工、不降级。
+        // 证书类问题在进入引擎之前就已经给出可操作的说明，这里不再追加提示。
+        D.log("engine", "失败: \(reason)")
+        errorMessage = reason
+        isPlaying = false
+        phase = .failed(reason)
+    }
+
+    /// 连接阶段超时。只在 `.connecting` 阶段计时；一旦有数据在动就取消，
+    /// 因为慢速源上「缓冲得慢」是正常状态，不该被判为失败。
+    private func startConnectTimeout() {
+        connectTimeoutTask?.cancel()
+        connectTimeoutTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: Self.connectTimeoutSeconds * 1_000_000_000)
+            guard let self, !Task.isCancelled else { return }
+            guard self.phase == .connecting else { return }
+            self.fail("连接媒体源超时（\(Self.connectTimeoutSeconds) 秒无响应）")
+        }
+    }
+
+    // MARK: - 生命周期
+
+    private func resetState() {
+        stopMetricsTask()
+        connectTimeoutTask?.cancel()
+        connectTimeoutTask = nil
+        isPlaying = false
+        currentPositionMs = 0
+        durationMs = 0
+        bufferedPositionMs = 0
+        networkSpeedBps = 0
+        cachedSegments = []
+        activeOptions = nil
+        isPiPActive = false
+        subtitleText = nil
+        errorMessage = nil
+        lastDiagnosticSecond = -1
+    }
+
+    /// 释放播放器。调用后 `phase` 回到 `.idle`。
+    public func destroy() {
+        D.log("engine", "destroy")
+        stopMetricsTask()
+        connectTimeoutTask?.cancel()
+        connectTimeoutTask = nil
+        resetState()
+
+        // 退出播放即清空本次会话的磁盘缓存。
+        cacheSession?.stop()
+        cacheSession = nil
+
+        if let layer = ksCoordinator.playerLayer, layer.isPipActive {
+            layer.isPipActive = false
+        }
+        ksOptions = nil
+        setupResumeMs = 0
+        pipStateCancellable?.cancel()
+        pipStateCancellable = nil
+        boundPiPLayer = nil
+        ksCoordinator.resetPlayer()
+
+        if let oldURL = selectedSubtitleFileURL {
+            try? FileManager.default.removeItem(at: oldURL)
+        }
+        selectedSubtitleFileURL = nil
+        playbackURL = nil
+        phase = .idle
+    }
+}
+
+// MARK: - 渲染图层
+
+public struct VideoSurfaceView: View {
+    @ObservedObject public var controller: VideoPlayerController
+    public let url: URL
+    public let resumeMs: Int64
+
+    public init(controller: VideoPlayerController, url: URL, resumeMs: Int64) {
+        self.controller = controller
+        self.url = url
+        self.resumeMs = resumeMs
+    }
+
+    public var body: some View {
+        if let options = controller.ksOptions {
+            KSPlayerSurfaceView(
+                controller: controller,
+                url: controller.playbackURL ?? url,
+                options: options
+            )
+            .ignoresSafeArea()
+        } else {
+            Color.black.ignoresSafeArea()
+        }
+    }
+}
+
+/// 直接承载 `KSPlayerLayer` 的渲染 view。
+///
+/// 不用官方 `KSVideoPlayer`：它在 URL 不变时无法重建播放器，
+/// 而切换剧集与重新装载都需要重建图层。
+struct KSPlayerSurfaceView: UIViewRepresentable {
+    @ObservedObject var controller: VideoPlayerController
+    let url: URL
+    let options: KSOptions
+
+    func makeUIView(context: Context) -> UIView {
+        let container = UIView()
+        container.backgroundColor = .black
+        return container
+    }
+
+    func updateUIView(_ container: UIView, context: Context) {
+        // 仅在 URL 变化或图层为空时创建，避免反复重置 subtitleModel。
+        let currentURL = controller.ksCoordinator.playerLayer?.url.absoluteString
+        let needsCreate = currentURL != url.absoluteString
+
+        if needsCreate {
+            _ = controller.ksCoordinator.makeView(url: url, options: options)
+        }
+
+        // 回调必须在拿到图层后立刻安装，不能等 player.view 就绪——
+        // 渲染视图是异步创建的，若在早退分支跳过安装，且此后没有状态变更
+        // 触发第二次 updateUIView，回调就永远挂不上。
+        controller.installKSPlayerCallbacks()
+        if let layer = controller.ksCoordinator.playerLayer {
+            controller.bindPiPState(for: layer)
+        }
+
+        guard let playerView = controller.ksCoordinator.playerLayer?.player.view else {
+            container.subviews.forEach { $0.removeFromSuperview() }
+            return
+        }
+
+        if playerView.superview !== container {
+            for subview in container.subviews where subview !== playerView {
+                subview.removeFromSuperview()
+            }
+            playerView.removeFromSuperview()
+            playerView.translatesAutoresizingMaskIntoConstraints = false
+            container.addSubview(playerView)
+            NSLayoutConstraint.activate([
+                playerView.leadingAnchor.constraint(equalTo: container.leadingAnchor),
+                playerView.trailingAnchor.constraint(equalTo: container.trailingAnchor),
+                playerView.topAnchor.constraint(equalTo: container.topAnchor),
+                playerView.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            ])
+        } else {
+            for subview in container.subviews where subview !== playerView {
+                subview.removeFromSuperview()
+            }
+        }
+    }
+}

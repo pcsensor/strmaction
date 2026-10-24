@@ -1,3 +1,6 @@
+> 迁移说明：当前四端客户端与 CI 构建入口为 [client_flutter](../client_flutter/README.md)。
+> 此目录保留原 Android 实现及共享客户端复用的 Media3 缓存核心；以下为原生版本历史说明。
+
 # StrmAction Companion（Android 伴侣 App）
 
 **手机优先、兼容电视**的 Android 壳：一个 WebView 加载 StrmAction 网页，
