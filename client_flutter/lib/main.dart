@@ -10,6 +10,7 @@ import 'app_controller.dart';
 import 'core/cli_options.dart';
 import 'core/config.dart';
 import 'core/version.dart';
+import 'services/mobile_window.dart';
 import 'web/web_shell_page.dart';
 
 Future<void> main(List<String> args) async {
@@ -35,6 +36,7 @@ Future<void> main(List<String> args) async {
   }
 
   if (Platform.isAndroid || Platform.isIOS) {
+    await setMobileFullscreen(false);
     runApp(StrmActionApp(app: app));
     return;
   }

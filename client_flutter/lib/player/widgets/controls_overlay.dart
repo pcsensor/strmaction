@@ -35,6 +35,7 @@ class ControlsOverlay extends StatelessWidget {
   final String? centerText;
   final bool showCenterIcon;
   final bool showCenterText;
+  final double trailingWidth;
 
   final VoidCallback onBack;
   final VoidCallback onPlayPause;
@@ -68,6 +69,7 @@ class ControlsOverlay extends StatelessWidget {
     required this.centerText,
     required this.showCenterIcon,
     required this.showCenterText,
+    this.trailingWidth = 0,
     required this.onBack,
     required this.onPlayPause,
     required this.onPrevious,
@@ -87,28 +89,28 @@ class ControlsOverlay extends StatelessWidget {
         : title;
     return IgnorePointer(
       ignoring: !visible,
-      child: SafeArea(child: AnimatedOpacity(
+      child: AnimatedOpacity(
         opacity: visible ? 1 : 0,
         duration: const Duration(milliseconds: 160),
         child: SizedBox.expand(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final height = constraints.maxHeight.isFinite
-                  ? constraints.maxHeight
-                  : MediaQuery.sizeOf(context).height;
-              final bottomHeight = constraints.maxWidth < 650 ? 124.0 : 88.0;
+              final insets = MediaQuery.viewPaddingOf(context);
+              final compact = constraints.maxWidth - insets.horizontal < 650;
+              final bottomHeight = (compact ? 124.0 : 88.0) + insets.bottom;
               return Stack(
                 children: [
                   Positioned(
                     top: 0,
                     left: 0,
                     right: 0,
-                    child: _TopBar(title: fullTitle, onBack: onBack),
+                    child: _TopBar(title: fullTitle, onBack: onBack,
+                      insets: insets, trailingWidth: trailingWidth),
                   ),
                   Positioned(
-                    top: 72,
-                    left: 0,
-                    right: 0,
+                    top: 72 + insets.top,
+                    left: insets.left,
+                    right: insets.right,
                     bottom: bottomHeight,
                     child: IgnorePointer(
                       child: Center(
@@ -161,11 +163,12 @@ class ControlsOverlay extends StatelessWidget {
                     ),
                   ),
                   Positioned(
-                    top: height - bottomHeight,
+                    bottom: 0,
                     left: 0,
                     right: 0,
                     child: _BottomBar(
-                      compact: constraints.maxWidth < 650,
+                      compact: compact,
+                      insets: insets,
                       position: position,
                       duration: duration,
                       bufferedRanges: bufferedRanges,
@@ -188,9 +191,9 @@ class ControlsOverlay extends StatelessWidget {
                   ),
                   if (speedBoost)
                     Positioned(
-                      top: 78,
-                      left: 0,
-                      right: 0,
+                      top: 78 + insets.top,
+                      left: insets.left,
+                      right: insets.right,
                       child: Center(
                         child: Container(
                           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -215,7 +218,7 @@ class ControlsOverlay extends StatelessWidget {
             },
           ),
         ),
-      )),
+      ),
     );
   }
 
@@ -228,14 +231,19 @@ class ControlsOverlay extends StatelessWidget {
 class _TopBar extends StatelessWidget {
   final String title;
   final VoidCallback onBack;
+  final EdgeInsets insets;
+  final double trailingWidth;
 
-  const _TopBar({required this.title, required this.onBack});
+  const _TopBar({required this.title, required this.onBack,
+    required this.insets, required this.trailingWidth});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 72,
-      padding: const EdgeInsets.only(left: 20, right: 20, top: 14),
+      key: const ValueKey('player-top-bar'),
+      height: 72 + insets.top,
+      padding: EdgeInsets.only(left: 20 + insets.left,
+        right: 20 + insets.right + trailingWidth, top: 14 + insets.top),
       decoration: const BoxDecoration(
         gradient: LinearGradient(
           begin: Alignment.topCenter,
@@ -300,6 +308,7 @@ class _CircleButton extends StatelessWidget {
 }
 
 class _BottomBar extends StatelessWidget {
+  final EdgeInsets insets;
   final bool compact;
   final double position;
   final double duration;
@@ -321,6 +330,7 @@ class _BottomBar extends StatelessWidget {
   final VoidCallback onFullscreen;
 
   const _BottomBar({
+    required this.insets,
     required this.compact,
     required this.position,
     required this.duration,
@@ -351,8 +361,10 @@ class _BottomBar extends StatelessWidget {
     final network = Text(formatNetworkSpeed(networkSpeed),
       style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 12));
     return Container(
-      height: compact ? 124 : 88,
-      padding: EdgeInsets.fromLTRB(compact ? 12 : 20, 0, compact ? 12 : 20, 12),
+      key: const ValueKey('player-bottom-bar'),
+      height: (compact ? 124 : 88) + insets.bottom,
+      padding: EdgeInsets.fromLTRB((compact ? 12 : 20) + insets.left, 0,
+        (compact ? 12 : 20) + insets.right, 12 + insets.bottom),
       decoration: const BoxDecoration(gradient: LinearGradient(
         begin: Alignment.topCenter, end: Alignment.bottomCenter,
         colors: [Color(0x00000000), Color(0xDC000000)],

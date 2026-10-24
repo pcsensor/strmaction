@@ -370,6 +370,7 @@ class _WebShellPageState extends State<WebShellPage> {
       supportMultipleWindows: false,
       isInspectable: kDebugMode,
       transparentBackground: false,
+      contentInsetAdjustmentBehavior: ScrollViewContentInsetAdjustmentBehavior.NEVER,
     );
   }
 
@@ -480,7 +481,7 @@ class _WebShellPageState extends State<WebShellPage> {
       canPop: false,
       child: Scaffold(
         backgroundColor: const Color(0xFF0B0E13),
-        body: Stack(
+        body: LibraryViewport(child: Stack(
           fit: StackFit.expand,
           children: [
             _buildWebView(),
@@ -498,10 +499,20 @@ class _WebShellPageState extends State<WebShellPage> {
                 onSettings: () => _showSettings(allowCancel: true),
               ),
           ],
-        ),
+        )),
       ),
     );
   }
+}
+
+/// Flutter owns the system insets; the embedded page occupies this safe frame.
+class LibraryViewport extends StatelessWidget {
+  final Widget child;
+
+  const LibraryViewport({super.key, required this.child});
+
+  @override
+  Widget build(BuildContext context) => SafeArea(child: child);
 }
 
 class _SetupPrompt extends StatelessWidget {

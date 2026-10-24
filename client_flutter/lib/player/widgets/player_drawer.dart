@@ -79,7 +79,9 @@ class PlayerDrawerState extends State<PlayerDrawer> {
   Widget build(BuildContext context) {
     return LayoutBuilder(
       builder: (context, constraints) {
-        final width = math.max(300.0, constraints.maxWidth * 0.4);
+        final insets = MediaQuery.viewPaddingOf(context);
+        final width = math.min(constraints.maxWidth - insets.left,
+          math.max(300.0, constraints.maxWidth * 0.4) + insets.right);
         return IgnorePointer(
           ignoring: !widget.visible,
           child: AnimatedOpacity(
@@ -180,7 +182,8 @@ class _DrawerPanel extends StatelessWidget {
         color: Color(0xF713161F),
         borderRadius: BorderRadius.only(topLeft: Radius.circular(16), bottomLeft: Radius.circular(16)),
       ),
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+      padding: EdgeInsets.fromLTRB(20, 24 + MediaQuery.viewPaddingOf(context).top,
+        20 + MediaQuery.viewPaddingOf(context).right, 24 + MediaQuery.viewPaddingOf(context).bottom),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
