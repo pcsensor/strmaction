@@ -15,6 +15,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var subtitleTask: Task<Void, Never>?
     private var subtitles: [SubtitleEntry] = []
     private var selectedExternal: String?
+    private var notice: String?
     private var completed = false
     private var title = "StrmAction"
     private var loaded = false
@@ -123,6 +124,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
 
     private func selectSubtitle(_ id: String?) {
         subtitleTask?.cancel()
+        notice = nil
         selectedExternal = nil
         controller.clearSubtitle()
         guard let id else { return }
@@ -132,7 +134,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             subtitleTask = Task { [weak self] in
                 guard let self else { return }
                 do { try await self.controller.loadSubtitle(entry, serverUrl: "") }
-                catch { if !Task.isCancelled { self.controller.reportUnplayableSource("字幕加载失败：\(error.localizedDescription)") } }
+                catch { if !Task.isCancelled { self.notice = "字幕加载失败：\(error.localizedDescription)"; self.selectedExternal = nil } }
                 self.emit()
             }
         } else {
@@ -150,6 +152,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             "position_ms": controller.currentPositionMs, "duration_ms": controller.durationMs,
             "buffered_ms": controller.bufferedPositionMs, "playing": controller.isPlaying,
             "loading": loading, "buffering": controller.phase == .buffering,
+            "notice": notice as Any? ?? NSNull(),
             "completed": completed, "error": controller.errorMessage as Any? ?? NSNull(),
             "speed": controller.playbackSpeed, "volume": Double(SystemVolumeController.shared.current) * 100,
             "network_speed": controller.networkSpeedBps, "pip": controller.isPiPActive,

@@ -10,7 +10,7 @@
   <img src="https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/React-18-61DAFB?logo=react&logoColor=black" alt="React">
   <img src="https://img.shields.io/badge/TypeScript-5-3178C6?logo=typescript&logoColor=white" alt="TypeScript">
-  <img src="https://img.shields.io/badge/Flutter-Desktop-02569B?logo=flutter&logoColor=white" alt="Flutter">
+  <img src="https://img.shields.io/badge/Flutter-Android_iOS_Desktop-02569B?logo=flutter&logoColor=white" alt="Flutter">
   <img src="https://img.shields.io/badge/Docker-Ready-2496ED?logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/License-MIT-green.svg" alt="License">
 </p>
@@ -58,8 +58,8 @@ StrmAction 服务端（扫描目录 → 智能解析 → TMDB/TVDB 刮削 → �
 ### ⚡ 播放体系与全端支持
 - **播放分发模式**：
   - **伴侣 App（`builtin`，推荐）**：专为手机与 Android TV 打造，内置 Google Media3 播放器，原生携带请求头、断点续播、无缝连播、40% 侧滑抽屉与手势控制。
-  - **桌面端（`direct`）**：基于 Flutter + `media_kit`（libmpv 原生硬件加速），无缝内嵌播放，全套键盘控制。
-  - **浏览器降级（`browser_intent` / `copy`）**：Android 浏览器可唤起系统外部播放器，桌面浏览器提供地址复制兜底。
+  - **统一 App 内部播放（`builtin`）**：Android、iOS、Windows、macOS 共用 Flutter 界面，保留各平台原生播放内核与系统服务。
+  - **复制链接（`copy`）**：复制所选媒体版本的真实直链；普通浏览器禁用内部播放并提示使用 App。
 - **准实时进度系统**：
   - 播放器每 5 秒自动上报进度心跳，暂停、后台切出或播放结束时立即补写；
   - 达到 90% 自动标记完播；提供 12 小时 `play_token` 幂等鉴权，客户端无需接触会话 Cookie；
@@ -157,25 +157,20 @@ docker compose up -d --build
 
 ## 📱 客户端配套
 
-### 1. Android 伴侣 App（手机 & Android TV）
-- **源码目录**：[`companion/`](companion/README.md)
-- **技术栈**：Android 原生 + Google Media3（ExoPlayer）+ WebView 桥接
-- **特性**：
-  - 手机端自动竖屏与手势触控，电视端自动适配 10-foot 大屏布局并启用方向键焦点导航；
-  - 内置播放器完整透传防盗链请求头，支持硬解自动降级软解、长按 1.5x~3.0x 极速倍速、选集抽屉、双击快进退。
-- **打包构建**：
-  ```bash
-  cd companion
-  ./gradlew assembleRelease
-  ```
+四端客户端统一维护在 [`client_flutter/`](client_flutter/README.md)，媒体库继续复用云端 Web。
 
-### 2. 桌面客户端（Windows & macOS）
-- **源码目录**：[`desktop_flutter/`](desktop_flutter/README.md)
-- **技术栈**：Flutter + `media_kit`（libmpv 原生硬件加速）
-- **特性**：
-  - 随包集成原生渲染引擎，无外部播放器路径配置烦恼；
-  - 支持全键盘快捷操作（空格暂停、方向键快进退、右键 2.0x 极速播、全屏切换）；
-  - 完整保持登录态与 WebView 缓存，支持自签名证书。
+| 平台 | 最低版本 | 内部播放内核 | CI 产物 |
+|---|---|---|---|
+| Android / Android TV | Android 7 / API 24 | Media3 | 测试 APK、Release APK |
+| iPhone / iPad | iOS 16 | KSPlayer | 可重签的未签名 IPA |
+| Windows | Windows 10 | media_kit / libmpv | 完整 ZIP |
+| macOS | macOS 12 | media_kit / libmpv | 完整 .app ZIP |
+
+所有客户端 SDK、原生项目生成、检查和构建仅在 [Clients CI](https://github.com/pcsensor/strmaction/actions/workflows/clients.yml) 执行。下载安装包无需在本地安装 SDK。
+
+播放方式采用本机覆盖 → 账号默认 → 全局默认。缓存采用本机覆盖 → 云端默认 → 平台预算；只缓存当前视频，退出或切集清空。私有 HTTPS 使用导入根 CA 的方式，持续校验证书链与主机名。
+
+Android 正式签名通过 GitHub Secrets 注入；未配置时明确提供测试包与未签名 Release。原 iOS 仓库在迁移真机验收完成前保留独立历史与构建。详见[迁移与验收说明](docs/CLIENT_MIGRATION.md)。
 
 ---
 
@@ -232,8 +227,10 @@ strmaction/
 │   │   ├── pages/            # 路由页面（首页、详情、搜索、用户、设置）
 │   │   └── store/            # 客户端状态管理
 │   └── package.json
-├── companion/                # Android 伴侣 App（手机 / Android TV）
-├── desktop_flutter/          # 桌面客户端源码（Windows / macOS）
+├── companion/                # Android 旧客户端与复用的 Media3 缓存核心
+├── client_flutter/           # 四端 Flutter 客户端、原生桥接和公共测试
+├── native/ios/               # 导入的 iOS 播放 / 缓存 / 证书核心
+├── ci/                       # 四端构建准备、签名与产物追踪
 ├── deploy/                   # Caddy 反向代理配置示例
 ├── scripts/                  # 样本生成与演示数据工具
 ├── Dockerfile                # 多阶段生产容器构建定义

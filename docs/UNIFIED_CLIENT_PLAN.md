@@ -1,6 +1,6 @@
 # StrmAction 四端统一方案（2026-10-24）
 
-状态：产品选择已确定；本文件为实施方案与验收标准，尚未修改两个仓库的业务代码。
+状态：已进入代码实施与四端 CI 验证；本文件保留已确认的产品选择和验收标准。实施状态及真机待验收项目见 [CLIENT_MIGRATION.md](CLIENT_MIGRATION.md)。
 
 用户已确定的范围：Android、iOS、Windows、macOS 共用一个 Flutter 客户端；媒体库页面继续复用云端 Web；首版保留现有画中画、后台播放、Android TV 遥控、音轨字幕、请求头与缓存能力。普通浏览器不新增网页播放器。
 
@@ -85,7 +85,7 @@ client_flutter（Android / iOS / Windows / macOS）
 
 ## CI 构建与交付
 
-现状检查：strmaction 的 `.github/workflows/desktop-flutter.yml` 已有 Windows / macOS 的 Flutter 构建、测试与产物上传；strmaction-ios 的 `.github/workflows/build.yml` 已有原生 iOS 构建和未签名 IPA 打包；strmaction 当前没有 Android 构建 workflow。现有流水线使用 floating stable / latest 等环境，需在实施中锁定经验证的 Flutter、JDK、构建工具与 runner 镜像组合。
+迁移前基线：strmaction 的 `.github/workflows/desktop-flutter.yml` 已有 Windows / macOS 的 Flutter 构建、测试与产物上传；strmaction-ios 的 `.github/workflows/build.yml` 已有原生 iOS 构建和未签名 IPA 打包；strmaction 当前没有 Android 构建 workflow。现有流水线使用 floating stable / latest 等环境，需在实施中锁定经验证的 Flutter、JDK、构建工具与 runner 镜像组合。
 
 | 构建目标 | CI 环境 | 必须上传的主要产物 |
 |---|---|---|

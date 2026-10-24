@@ -44,19 +44,22 @@ void validateCaBundle(String pem) {
     trustContext(pem);
   } on ConfigException {
     rethrow;
-  } on Object {
-    throw const ConfigException('CA 证书无法解析，请检查 PEM 内容。');
+  } on Object catch (error) {
+    throw ConfigException('CA 证书无法解析，请检查 PEM 内容：$error');
   }
 }
 
-Future<bool> verifyWebViewHost(AppConfig config, String host, int port) async {
+Future<bool> verifyWebViewHost(AppConfig config, String host, int port, {List<int>? certificateDer}) async {
   try {
     final socket = await SecureSocket.connect(
       host, port, context: trustContext(config.trustedCaPem),
       timeout: const Duration(seconds: 5),
     );
+    final peer = socket.peerCertificate?.der;
+    final matches = certificateDer == null || (peer != null && peer.length == certificateDer.length &&
+      List.generate(peer.length, (index) => peer[index] == certificateDer[index]).every((value) => value));
     socket.destroy();
-    return true;
+    return matches;
   } on Object {
     return false;
   }

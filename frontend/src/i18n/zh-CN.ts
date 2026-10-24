@@ -313,26 +313,17 @@ export const zhCN = {
       unsupportedHere: '当前设备不支持',
       degradeWarning: '当前设备不支持所选播放方式，播放时会自动降级为「{mode}」。',
       needCompanion: '内置播放器只在伴侣 App 内生效。',
-      needAndroid: 'intent:// 仅支持 Android 浏览器。',
       desktopNotice:
-        '当前为 StrmAction 桌面端：视频由内嵌播放器播放，进度自动回传；以下偏好仅影响网页与伴侣 App。',
+        '账号默认播放方式适用于所有 App；本机设置可单独覆盖。',
       desktopSettings: '打开桌面端设置',
       inherit: '跟随全局默认（{mode}）',
       global: '全局播放器默认',
       globalNav: '全局播放器',
       globalHint:
         '对未设置个人偏好的用户生效；包含默认播放方式、进度心跳与请求头等服务端参数。',
-      fallbackInherit: '跟随全局默认',
-      fallbackOn: '开启：播放失败时给出提示',
-      fallbackOff: '关闭：不提示',
-      fallbackOnShort: '开启',
-      fallbackOffShort: '关闭',
-      effective: '当前生效：{mode} · 失败提示{fallback}',
+      effective: '当前生效：{mode}',
       loadFailed: '播放偏好加载失败',
-      auto: '自动选择',
       builtin: '内部播放',
-      browserIntent: 'Android 外部播放器（intent://）',
-      intent: '浏览器 intent://（旧）',
       copy: '复制链接',
       modeHint:
         'App 支持内部播放与复制链接；普通浏览器支持复制链接。',
@@ -343,7 +334,6 @@ export const zhCN = {
       cacheLimit: '播放缓存上限（MB）',
       cacheLimitHint:
         '旧版客户端的兼容缓存值；新客户端使用下面的预读和磁盘默认值。',
-      fallback: '播放失败时给出提示',
       headers: '全局播放请求头（每行 Key: Value）',
       headersHint:
         '库级请求头优先；留空则用这里。不同网盘/架子要求不同，示例：User-Agent: pan.baidu.com',
@@ -452,15 +442,12 @@ export const zhCN = {
   },
   player: {
     launching: '正在唤起播放器…',
-    intent: '即将用系统播放器打开',
-    intentTip: '如果浏览器没有反应，请使用 Chrome 或安装伴侣 App。',
     copyTitle: '播放地址已复制',
     copyTip: '已复制播放地址，可粘贴到支持该链接的播放器中打开。',
     backend: '已交给桌面端播放器',
     backendTip: '播放进度会每 5 秒自动回传。',
     companion: '已打开伴侣 App 内置播放器',
     companionTip: '播放进度每 5 秒自动回传。',
-    externalOpened: '已交给外部播放器',
     externalHint: '网页模式不能启动内置播放器；请在伴侣 App 或桌面端内播放。',
     companionOnlyTitle: '网页端无法启动本机播放器',
     companionOnlyTip:

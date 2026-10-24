@@ -51,13 +51,12 @@ scanner:
   max_depth: 6
 
 player:
-  mode: builtin                           # builtin | browser_intent | copy | auto
-                                          # builtin 只在伴侣 App 内生效；浏览器自动降级为 intent:// 或复制链接
-                                          # 桌面端固定使用 direct（服务端只下发 URL/headers/token）
-  progress_interval_ms: 5000              # 内置播放器进度心跳间隔
-  play_token_ttl_hours: 12                # 播放凭证有效期
-  cache_limit_mb: 128                     # 播放缓存上限；0=客户端默认，非 0 按 16–2048MB
-  fallback_on_error: true                 # 播放失败时给出提示
+  mode: builtin                           # builtin | copy；普通浏览器仅支持复制链接
+  progress_interval_ms: 5000              # 进度心跳，2–60 秒
+  play_token_ttl_hours: 12                 # 播放凭证有效期，最长 72 小时
+  cache_limit_mb: 128                      # 旧客户端兼容值
+  buffer_limit_mb: null                    # 云端预读默认值；null 保留平台预算，0 关闭预读
+  disk_cache_limit_mb: null                # 云端磁盘默认值；null 保留平台预算，0 关闭落盘
   # 全局播放请求头（库设置里可覆盖；不同网盘/架子要求不同）
   play_headers:
     User-Agent: pan.baidu.com

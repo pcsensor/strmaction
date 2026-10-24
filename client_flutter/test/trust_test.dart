@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -27,6 +28,10 @@ void main() {
     expect(await verifyWebViewHost(const AppConfig(), 'localhost', port), isFalse);
     expect(await verifyWebViewHost(config, 'localhost', port), isTrue);
     expect(await verifyWebViewHost(config, '127.0.0.1', port), isFalse);
+    final leaf = File('test/fixtures/server.pem').readAsStringSync();
+    final leafDer = base64.decode(leaf.split('-----')[2].replaceAll(RegExp(r'\s'), ''));
+    expect(await verifyWebViewHost(config, 'localhost', port, certificateDer: leafDer), isTrue);
+    expect(await verifyWebViewHost(config, 'localhost', port, certificateDer: [1, 2, 3]), isFalse);
     final client = trustedClient(config);
     final request = await client.getUrl(Uri.parse(config.serverUrl));
     final response = await request.close();

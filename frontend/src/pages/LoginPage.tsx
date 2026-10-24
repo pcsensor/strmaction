@@ -48,7 +48,7 @@ export function LoginPage() {
           </p>
           <div className="mt-8 space-y-3">
             {[
-              [PlayCircle, '点播放 → 外部播放器直连网盘'],
+              [PlayCircle, 'App 内部播放，或复制所选版本链接'],
               [Clapperboard, '电影 / 剧集 / 家庭视频 / 课程'],
               [ShieldCheck, '播放地址视为凭证，全程鉴权'],
             ].map(([Icon, text]) => {

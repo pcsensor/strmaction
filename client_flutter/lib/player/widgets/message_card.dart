@@ -11,6 +11,7 @@ class MessageCard extends StatefulWidget {
   final int? countdown;
   final VoidCallback? onPrimary;
   final VoidCallback? onSecondary;
+  final VoidCallback? onCopyLink;
 
   const MessageCard({
     super.key,
@@ -22,6 +23,7 @@ class MessageCard extends StatefulWidget {
     required this.countdown,
     required this.onPrimary,
     required this.onSecondary,
+    this.onCopyLink,
   });
 
   @override
@@ -119,8 +121,10 @@ class _MessageCardState extends State<MessageCard> {
                     ),
                   ],
                   const SizedBox(height: 16),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                  Wrap(
+                    alignment: WrapAlignment.center,
+                    spacing: 10,
+                    runSpacing: 8,
                     children: [
                       if (primaryText != null)
                         FilledButton(
@@ -138,8 +142,6 @@ class _MessageCardState extends State<MessageCard> {
                             style: const TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
                           ),
                         ),
-                      if (primaryText != null && widget.secondary != null)
-                        const SizedBox(width: 10),
                       if (widget.secondary != null)
                         OutlinedButton(
                           style: OutlinedButton.styleFrom(
@@ -153,6 +155,7 @@ class _MessageCardState extends State<MessageCard> {
                           onPressed: widget.onSecondary,
                           child: Text(widget.secondary!, style: const TextStyle(fontSize: 14)),
                         ),
+                      if (widget.onCopyLink != null) TextButton(onPressed: widget.onCopyLink, child: const Text('复制链接')),
                     ],
                   ),
                 ],

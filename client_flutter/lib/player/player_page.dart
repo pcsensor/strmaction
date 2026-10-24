@@ -65,6 +65,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool _messageVisible = false;
   String? _cardMode;
   String? _lastError;
+  String? _lastNotice;
   bool _closing = false;
   bool _shutdownDone = false;
 
@@ -86,6 +87,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     _engine = _mobile ? NativePlayerEngine() : MediaKitEngine(
       caBundlePath: '${widget.app.paths.baseDir}/media-ca.pem',
+      trustedCaPem: widget.app.config.trustedCaPem,
       cacheDirectory: '${widget.app.paths.baseDir}/playback-${DateTime.now().microsecondsSinceEpoch}',
       diskLimitMb: widget.payload.diskCacheLimitMb ?? widget.app.config.diskCacheLimitMb,
       logger: widget.app.logger,
@@ -183,6 +185,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _wasPaused = _engine.isPaused;
     if (_engine.completed && !_completionHandled) {
       _onCompleted();
+    }
+    final notice = _engine.notice;
+    if (notice != null && notice != _lastNotice) {
+      _lastNotice = notice;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(notice)));
     }
     final error = _engine.errorMessage;
     if (error != null && error != _lastError) {
@@ -730,6 +737,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   countdown: _cardCountdown,
                   onPrimary: _onCardPrimary,
                   onSecondary: _onCardSecondary,
+                  onCopyLink: _cardMode == 'error' ? () async {
+                    await Clipboard.setData(ClipboardData(text: widget.payload.playUrl));
+                    if (mounted) _flashCenterText('已复制播放链接');
+                  } : null,
                 ),
               ],
             ),

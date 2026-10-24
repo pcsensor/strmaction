@@ -8,6 +8,7 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../core/app_logger.dart';
 import '../models/playback_payload.dart';
+import '../services/bounded_media_cache.dart';
 import 'playback_engine.dart';
 
 class MediaKitEngine extends PlaybackEngine {
@@ -39,10 +40,12 @@ class MediaKitEngine extends PlaybackEngine {
   Track? _track;
   bool _disposed = false;
 
+  BoundedMediaCache? _diskCache;
+  final String trustedCaPem;
   final String? caBundlePath;
   final String? cacheDirectory;
   final int diskLimitMb;
-  MediaKitEngine({this.logger, this.hardwareAcceleration = false, this.caBundlePath, this.cacheDirectory, this.diskLimitMb = 2048}) {
+  MediaKitEngine({this.logger, this.hardwareAcceleration = false, this.caBundlePath, this.cacheDirectory, this.diskLimitMb = 2048, this.trustedCaPem = ''}) {
     _player = Player();
     // The GPU (ANGLE/DXGI shared-handle) output registers and swaps external
     // textures from media_kit's worker thread while the Flutter raster thread
@@ -253,14 +256,20 @@ class MediaKitEngine extends PlaybackEngine {
     _notify();
 
     await applySettings(cacheLimitMb: cacheLimitMb, tlsVerify: tlsVerify);
+    try {
+    await _diskCache?.close();
+    _diskCache = null;
+    if (cacheDirectory != null && diskLimitMb > 0) {
+      _diskCache = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
+        trustedCaPem: trustedCaPem, directory: cacheDirectory!, budgetBytes: diskLimitMb * 1024 * 1024);
+    }
     final media = Media(
-      payload.playUrl,
+      _diskCache?.localUrl.toString() ?? payload.playUrl,
       httpHeaders: payload.headers.isEmpty ? null : payload.headers,
       start: payload.resumeMs > 0
           ? Duration(milliseconds: payload.resumeMs)
           : null,
     );
-    try {
       await _player.open(media, play: true);
       _loading = false;
       await _addExternalSubtitles(payload.subtitles);
@@ -313,16 +322,7 @@ class MediaKitEngine extends PlaybackEngine {
       }
       await platform.setProperty('tls-verify', 'yes');
       if (caBundlePath != null) await platform.setProperty('tls-ca-file', caBundlePath!);
-      if (cacheDirectory != null && diskLimitMb > 0) {
-        await Directory(cacheDirectory!).create(recursive: true);
-        await platform.setProperty('demuxer-cache-dir', cacheDirectory!);
-        await platform.setProperty('cache-on-disk', 'yes');
-        final forward = math.min(cacheLimitMb, diskLimitMb);
-        await platform.setProperty('demuxer-max-bytes', '${forward}MiB');
-        await platform.setProperty('demuxer-max-back-bytes', '${math.max(0, diskLimitMb - forward)}MiB');
-      } else {
-        await platform.setProperty('cache-on-disk', 'no');
-      }
+      await platform.setProperty('cache-on-disk', 'no');
       await platform.setProperty('hwdec', 'auto-safe');
       await platform.setProperty('keep-open', 'always');
     } on Object catch (error) {
@@ -368,7 +368,12 @@ class MediaKitEngine extends PlaybackEngine {
         _refreshBufferFallback();
       }
 
-      final speed = _asDouble(decoded['raw-input-rate']);
+      final disk = _diskCache;
+      if (disk != null && _duration > 0) {
+        final diskRanges = disk.ranges.map((r) => BufferedRange(r.$1 / disk.length * _duration, r.$2 / disk.length * _duration));
+        _bufferedRanges = _mergeRanges([...merged, ...diskRanges]);
+      }
+      final speed = disk?.networkSpeed ?? _asDouble(decoded['raw-input-rate']);
       if (speed != null && speed >= 0 && speed != _networkSpeed) {
         _networkSpeed = speed;
         _notify();
@@ -580,6 +585,8 @@ class MediaKitEngine extends PlaybackEngine {
     } on Object {
       // Best effort.
     }
+    await _diskCache?.close();
+    _diskCache = null;
     if (cacheDirectory != null) {
       final directory = Directory(cacheDirectory!);
       try { if (await directory.exists()) await directory.delete(recursive: true); }

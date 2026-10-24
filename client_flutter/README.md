@@ -1,158 +1,29 @@
-# StrmAction Desktop（Flutter + media_kit）
+# StrmAction 统一客户端
 
-这是 StrmAction 官方桌面端应用：
+Android、iOS、Windows、macOS 共用 Flutter 的 Web 外壳、设置、播放控件、选集规则和进度队列。媒体库复用服务器 Web；内部播放保留 Media3（Android）、KSPlayer（iOS）与 media_kit（桌面）内核。
 
-- Flutter 桌面壳，复用现有服务端 Web UI；
-- WebView 负责登录、媒体库、详情、设置；
-- media_kit（libmpv）负责内嵌原生硬件加速视频播放；
-- 云服务器下发的 `User-Agent` / `Referer` 会附加到媒体请求；
-- 支持缓存预算、TLS、音轨/字幕、外挂字幕、5 秒进度上报；
-- 现代矢量播放器 UI（40% 抽屉/三层缓冲进度条/全套快捷键）。
+客户端只提供**内部播放 / 复制链接**。普通浏览器的内部播放不可用。账号默认值适用于全部 App，本机可按服务器和账号覆盖。
 
-## 环境要求
+## 构建与下载
 
-| 项目 | 要求 |
-|---|---|
-| Flutter | 3.47+ / Dart 3.13+ |
-| macOS | macOS 11+，Xcode 15+ |
-| Windows | Windows 10/11，Visual Studio 2022（Desktop development with C++） |
-| Windows 构建 | NuGet CLI（构建脚本会自动下载） |
-| Windows 运行 | WebView2 Runtime（Win10/11 通常已自带） |
+打开 [Clients CI](https://github.com/pcsensor/strmaction/actions/workflows/clients.yml)，选择成功运行，在 Artifacts 下载 Android APK、iOS IPA、Windows ZIP、macOS ZIP。每个包附带提交号、签名状态、构建来源和 SHA-256。
 
-## 运行
+本地不需要 SDK。Flutter 3.47.0、Android、Xcode、Windows SDK、原生项目生成、依赖解析、分析、测试和 Release 构建都在 CI 执行。`platform/` 中的原生桥接在 CI 生成的 Android / iOS runner 中编译；桌面 runner 保持既有应用身份。
 
-从 `desktop_flutter/` 目录执行：
+最低系统版本为 Android 7 / API 24、iOS 16、Windows 10、macOS 12。Windows 运行需要 WebView2 Runtime。
 
-```bash
-flutter pub get
-flutter run -d macos       # macOS
-flutter run -d windows     # Windows
-```
+测试 APK 使用测试签名；覆盖旧正式应用需要原 keystore。未签名 IPA 延续原有重签安装流程。正式签名配置、设置迁移、验收矩阵见[迁移说明](../docs/CLIENT_MIGRATION.md)。
 
-命令行参数：
+## 功能与设置
 
-```text
---server URL     设置并保存服务器地址
---settings       启动后打开设置
---debug          调试日志
---version        输出版本号
-```
+- 本机缓存覆盖 → 云端默认 → 平台原默认预算。预读与磁盘容量分开；0 关闭相应层；退出 / 切集清理当前视频缓存。
+- 设置页粘贴 PEM 根 CA。API、网页和媒体连接都校验证书链和主机名，支持多张根 CA；旧“允许自签名”开关不再生效。
+- 暂停、后台、拖动、结束、退出和切集补报进度。发送前持久化，收到服务端确认后删除，启动时恢复失败记录。播放凭证过期后停止补报并提示重新打开播放。
+- 自动连播使用服务端跳过已看的下一集；手动上下集按相邻顺序；课程按自然顺序播放。
+- 手机支持双击快进退、长按倍速、拖动进度 / 亮度 / 音量、锁定和画中画；Android TV 支持方向键、确认 / 返回、音轨与选集抽屉；桌面保留原有快捷键。
 
-## 构建
+桌面命令行参数：`--server URL`、`--settings`、`--debug`、`--version`。
 
-### Windows
+## 测试位置
 
-```powershell
-cd desktop_flutter
-.\scripts\build_windows.ps1
-```
-
-产物：
-
-```text
-dist/StrmAction-Windows/StrmAction.exe
-dist/StrmAction-Windows.zip
-```
-
-脚本会自动准备 NuGet、执行 analyze/test、构建 release，并把 exe 重命名为 `StrmAction.exe`。
-
-### macOS
-
-```bash
-cd desktop_flutter
-chmod +x scripts/build_macos.sh
-./scripts/build_macos.sh
-```
-
-产物：
-
-```text
-build/macos/Build/Products/Release/StrmAction.app
-dist/StrmAction-macOS.zip
-```
-
-签名/公证：
-
-```bash
-CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
-NOTARY_PROFILE="strmaction-notary" \
-./scripts/build_macos.sh
-```
-
-> 正式分发前请在 macOS 上验证 `codesign --verify --deep --strict`、`spctl` 和公证结果。
-
-## 关键实现
-
-### 请求头（UA / Referer）
-
-播放时使用：
-
-```dart
-Media(
-  payload.playUrl,
-  httpHeaders: payload.headers,
-  start: payload.resumeMs > 0 ? Duration(milliseconds: payload.resumeMs) : null,
-)
-```
-
-media_kit 会把 `httpHeaders` 写入 libmpv 的 `http-header-fields`，对首个请求、302 后的请求以及 HLS 分片生效。工程内已用本地 302 测试服务器验证过。
-
-### 缓存与 TLS
-
-通过 `NativePlayer` 设置：
-
-```dart
-await platform.setProperty('cache', cacheLimitMb > 0 ? 'yes' : 'no');
-await platform.setProperty('demuxer-max-bytes', '${cacheLimitMb}MiB');
-await platform.setProperty('demuxer-max-back-bytes', '${max(1, cacheLimitMb ~/ 4)}MiB');
-await platform.setProperty('tls-verify', tlsVerify ? 'yes' : 'no');
-await platform.setProperty('hwdec', 'auto-safe');
-```
-
-每 500ms 读取 `demuxer-cache-state`，解析 `seekable-ranges` 和 `raw-input-rate`，用于三层进度条和网速显示。
-
-### 进度上报
-
-`services/progress_reporter.dart` 对齐旧版 Python 逻辑：
-
-- Bearer `play_token`；
-- 2–60 秒间隔；
-- 单飞 + 合并请求；
-- 暂停/seek/退出/播完立即 flush；
-- 90% 自动标记 finished；
-- 401/403 停止上报并提示。
-
-### WebView Bridge
-
-`web/bridge_script.dart` 注入兼容层，保留：
-
-- `window.StrmActionNative`
-- `window.pywebview.api`
-- `window._strmaction_api`
-
-因此现有前端不需要修改。
-
-### 播放器 UI
-
-- `player/widgets/controls_overlay.dart`：顶栏、底栏、中心反馈；
-- `player/widgets/buffered_seekbar.dart`：复刻旧版三层进度条；
-- `player/widgets/player_drawer.dart`：40% 选集/倍速/音轨抽屉；
-- `player/widgets/message_card.dart`：播完/错误卡片；
-- `player/input/player_keyboard.dart`：快捷键与长按右键 2.0x。
-
-底栏使用 `LayoutBuilder` 按实际约束高度定位，避免 Windows 窗口/DPI 组合下 `Positioned(bottom: 0)` 把控制栏排到窗口外。
-
-## 测试
-
-```bash
-flutter analyze
-flutter test
-```
-
-当前测试覆盖配置、payload 校验、请求头格式化、进度上报 body/鉴权头、进度条时间格式和控制层布局。
-
-## 已知事项
-
-- 旧 QtWebEngine 的 Cookie 不能迁移到 WKWebView/WebView2，首次使用需要重新登录一次；
-- Windows 端当前使用 DPI unaware manifest 以保证窗口坐标和 Flutter 布局一致，后续可改为 PerMonitorV2 + 显式坐标换算；
-- macOS 构建/签名/公证需要在 macOS 机器上执行，本仓库的 Windows 开发环境无法实际运行 Xcode。
+`test/` 覆盖设置 / payload、长播放列表、窄屏控件、进度退出与重试队列、私有 CA 与主机名校验。`platform/android/test/` 验证私有 CA、错误主机名、叶子证书拒绝和重定向请求头。设备专属行为按迁移说明下载 CI 安装包验收。

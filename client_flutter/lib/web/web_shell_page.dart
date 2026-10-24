@@ -463,8 +463,10 @@ class _WebShellPageState extends State<WebShellPage> {
       },
       onCreateWindow: (controller, action) async => false,
       onReceivedServerTrustAuthRequest: (controller, challenge) async {
+        final certificate = challenge.protectionSpace.sslCertificate?.x509Certificate?.encoded;
+        if (certificate == null || certificate.isEmpty) return ServerTrustAuthResponse(action: ServerTrustAuthResponseAction.CANCEL);
         return ServerTrustAuthResponse(
-          action: await verifyWebViewHost(app.config, challenge.protectionSpace.host, challenge.protectionSpace.port ?? 443)
+          action: await verifyWebViewHost(app.config, challenge.protectionSpace.host, challenge.protectionSpace.port ?? 443, certificateDer: certificate)
               ? ServerTrustAuthResponseAction.PROCEED : ServerTrustAuthResponseAction.CANCEL,
         );
       },
