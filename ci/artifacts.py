@@ -5,6 +5,7 @@ import json
 import os
 import platform
 import re
+import ssl
 from pathlib import Path
 
 parser = argparse.ArgumentParser()
@@ -26,4 +27,7 @@ metadata = {
     'signing': args.signing,
     'packages': [{'name': p.name, 'bytes': p.stat().st_size, 'sha256': hashlib.sha256(p.read_bytes()).hexdigest()} for p in packages],
 }
+if args.platform == 'android' and args.signing == 'release-key':
+    certificate = Path(__file__).with_name('android-release-certificate.pem')
+    metadata['signing_certificate_sha256'] = hashlib.sha256(ssl.PEM_cert_to_DER_cert(certificate.read_text())).hexdigest()
 (args.directory / 'build-info.json').write_text(json.dumps(metadata, indent=2) + '\n')

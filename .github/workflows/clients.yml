@@ -69,9 +69,12 @@ jobs:
         with:
           path: ~/.android/debug.keystore
           key: strmaction-android-test-key-v1
-      - name: Prepare existing release signing identity
+      - name: Prepare release signing identity
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: python3 ci/android_signing.py
       - name: Prepare Flutter Android runner
         run: |
@@ -92,8 +95,9 @@ jobs:
         run: |
           mkdir -p dist
           cp client_flutter/build/app/outputs/flutter-apk/app-debug.apk dist/StrmAction-Android-test.apk
-          if [ "$ANDROID_SIGNING_STATUS" = "existing-release-key" ]; then
+          if [ "$ANDROID_SIGNING_STATUS" = "release-key" ]; then
             cp client_flutter/build/app/outputs/flutter-apk/app-release.apk dist/StrmAction-Android.apk
+            python3 ci/verify_android_signing.py dist/StrmAction-Android.apk
           else
             cp client_flutter/build/app/outputs/flutter-apk/app-release.apk dist/StrmAction-Android-unsigned.apk
           fi

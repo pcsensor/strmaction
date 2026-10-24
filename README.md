@@ -170,7 +170,7 @@ docker compose up -d --build
 
 播放方式采用本机覆盖 → 账号默认 → 全局默认。缓存采用本机覆盖 → 云端默认 → 平台预算；只缓存当前视频，退出或切集清空。私有 HTTPS 使用导入根 CA 的方式，持续校验证书链与主机名。
 
-Android 正式签名通过 GitHub Secrets 注入；未配置时明确提供测试包与未签名 Release。原 iOS 仓库在迁移真机验收完成前保留独立历史与构建。详见[迁移与验收说明](docs/CLIENT_MIGRATION.md)。
+Android 正式签名使用新生成的固定发布密钥，通过 GitHub Secrets 注入并校验最终 APK 证书；首次切换需卸载旧签名版 / 测试版。全部未配置时明确提供测试包与未签名 Release。原 iOS 仓库在迁移真机验收完成前保留独立历史与构建。详见[迁移与验收说明](docs/CLIENT_MIGRATION.md)。
 
 ---
 

@@ -12,7 +12,7 @@ Android、iOS、Windows、macOS 共用 Flutter 的 Web 外壳、设置、播放�
 
 最低系统版本为 Android 7 / API 24、iOS 16、Windows 10、macOS 12。Windows 运行需要 WebView2 Runtime。
 
-测试 APK 使用测试签名；覆盖旧正式应用需要原 keystore。未签名 IPA 延续原有重签安装流程。正式签名配置、设置迁移、验收矩阵见[迁移说明](../docs/CLIENT_MIGRATION.md)。
+正式 APK 使用新生成并固定保存在 CI Secrets 的发布密钥；旧签名版 / 测试版需卸载后首次安装，后续正式包可持续覆盖升级。测试 APK 使用独立测试签名。未签名 IPA 延续原有重签安装流程。正式签名配置、设置迁移、验收矩阵见[迁移说明](../docs/CLIENT_MIGRATION.md)。
 
 ## 功能与设置
 

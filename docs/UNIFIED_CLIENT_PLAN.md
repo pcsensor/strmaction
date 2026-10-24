@@ -1,6 +1,6 @@
 # StrmAction 四端统一方案（2026-10-24）
 
-状态：已进入代码实施与四端 CI 验证；本文件保留已确认的产品选择和验收标准。实施状态及真机待验收项目见 [CLIENT_MIGRATION.md](CLIENT_MIGRATION.md)。
+状态：四端迁移代码已通过 CI，进入安装包与真机验收；2026-10-24 补充确认 Android 更换为新的固定发布密钥。实施状态及真机待验收项目见 [CLIENT_MIGRATION.md](CLIENT_MIGRATION.md)。
 
 用户已确定的范围：Android、iOS、Windows、macOS 共用一个 Flutter 客户端；媒体库页面继续复用云端 Web；首版保留现有画中画、后台播放、Android TV 遥控、音轨字幕、请求头与缓存能力。普通浏览器不新增网页播放器。
 
@@ -23,7 +23,7 @@
 | 缓存语义 | 明确区分预读容量与磁盘容量；仅保留当前视频缓存，退出播放清空；切集清理上一集 |
 | 证书信任 | 公共 CA 正常验证；私有站点导入私有 CA，同样校验证书链与主机名；四端统一规则 |
 | 最低系统 | Android 7 / API 24；iOS 16；Windows 10；macOS 12 |
-| 升级 | 保留应用标识，迁移服务器地址、已导入 CA 和可转换的本地设置；允许重新登录 |
+| 升级 | 保留应用标识；同签名身份可迁移设置、允许重新登录。Android 已选择新发布密钥，旧版需卸载后安装 |
 | 代码归属 | 统一客户端放在 strmaction 仓库；原 iOS 仓库保留历史，迁移验收后停止独立开发 |
 | 分发 | 延续 APK、IPA 安装包；Windows/macOS 保留现有构建产物 |
 | 构建位置 | 四端统一由 GitHub Actions 构建，SDK 只安装在 CI runner 上 |
@@ -66,7 +66,7 @@ client_flutter（Android / iOS / Windows / macOS）
 3. 明确区分自动连播目标与手动相邻目标。自动目标为空表示停止，不允许客户端再用相邻条目代替。所有目标从有效、未删除、存在可播放媒体的序列计算。
 4. 长列表保留完整索引关系；如做分页则按条目 ID 定位，不能截断列表后沿用原索引。
 5. 新增明确的预读 / 磁盘设置及来源状态。旧 cache_limit_mb 的转换按原平台含义处理，不把内存预算误当磁盘容量。
-6. 迁移原 Android SharedPreferences、iOS UserDefaults 和桌面 config.json 中的服务器及可用设置；保留既有 applicationId / bundle identifier，并沿用原升级签名身份。
+6. 迁移原 Android SharedPreferences、iOS UserDefaults 和桌面 config.json 中的服务器及可用设置；保留既有 applicationId / bundle identifier。同签名身份支持迁移；Android 已选择新的发布密钥，旧安装无法覆盖升级。
 7. iOS 已导入的 CA 可以迁移。旧 Android / 桌面“允许自签名”布尔开关没有证书内容，不能转换成 CA；升级引导应明确提示使用此类站点的用户导入根 CA，不自动信任未知证书。
 
 ## 实施顺序与交付物
@@ -89,7 +89,7 @@ client_flutter（Android / iOS / Windows / macOS）
 
 | 构建目标 | CI 环境 | 必须上传的主要产物 |
 |---|---|---|
-| Android 手机 / Android TV | Linux runner，配置 Flutter、JDK、Android SDK / NDK | APK；需要时按 ABI 另提供安装包；正式升级包沿用原签名身份 |
+| Android 手机 / Android TV | Linux runner，配置 Flutter、JDK、Android SDK / NDK | APK；需要时按 ABI 另提供安装包；正式包使用新生成的固定发布密钥 |
 | iPhone / iPad | macOS runner，配置 Flutter、Xcode、原生依赖工具 | IPA，必要的归档 / 符号及签名状态说明 |
 | Windows | Windows runner，配置 Flutter、Visual Studio C++ 工具链、NuGet | 含 exe、DLL 与资源的完整 ZIP，不能只上传 exe |
 | macOS | macOS runner，配置 Flutter、Xcode 与原生依赖工具 | 包含完整 .app 的 ZIP；配置发布签名时同时完成相应签名流程 |
@@ -101,7 +101,7 @@ client_flutter（Android / iOS / Windows / macOS）
 - 用质量检查 job 运行后端回归、Web 类型检查 / 生产构建和 Flutter 分析 / 单元测试；平台构建 job 编译真实 Release 应用并验证产物存在。
 - 配置依赖缓存、并发取消过期构建、合理超时、产物保留时间、缺失产物报错；失败时保留诊断日志。固定版本号和 build number 的生成规则，记录提交 SHA 与构建环境。
 - 原生插件、平台工程及必要生成配置纳入版本管理。可重复的生成步骤可以在 CI 执行，不要求用户本地执行 flutter create、Gradle wrapper、XcodeGen 或 SDK 生成命令。
-- 正式签名材料通过 GitHub Secrets 注入 CI。Android 使用原有 keystore；不能为了让 CI 变绿而换成新签名身份。未配置发布密钥时，测试包与未签名产物应清楚标记，不能冒充可覆盖升级的正式包。
+- 正式签名材料通过 GitHub Secrets 注入 CI。Android 经用户明确授权改用新生成的固定 keystore，旧安装需卸载；后续构建不能反复生成新密钥。未配置发布密钥时，测试包与未签名产物应清楚标记，不能冒充可覆盖升级的正式包。
 - iOS 首版延续现有未签名 IPA 交付方式，下载后通过既有重签 / 安装链路使用。若配置证书和描述文件，则在 CI 另生成符合该分发方式的已签名 IPA；未签名 IPA 不视为可直接安装的签名包。
 - 构建通过与设备验收分开记录：CI 必须证明编译和打包成功；画中画、后台、电视操作和真实片源兼容性仍通过下载安装包在设备上验证，用户不承担本地编译步骤。
 
@@ -137,7 +137,7 @@ client_flutter（Android / iOS / Windows / macOS）
 - 手机 PiP、后台播放、系统媒体控制、横竖屏、长按倍速与手势可用；Android TV 遥控焦点、返回和选集可用；桌面键盘与窗口操作可用。
 - 云缓存默认和设备覆盖可观察生效；退出播放清理本视频缓存；不同内核的实际内存占用与磁盘预算分别验证。
 - WebView、API、字幕、媒体和重定向后的 TLS 行为遵循同一 CA 策略；主机名错误或未知 CA 被拒绝，正确导入 CA 后可连接。
-- 原应用可按相同应用标识和签名身份升级，服务器 / CA / 可迁移设置保留，必要时重新登录；生成可检查的 APK、IPA 和桌面产物。
+- 相同应用标识和签名身份下验证升级与设置迁移；Android 改用新发布密钥后首次需卸载旧安装，后续新正式版间可覆盖升级。生成可检查的 APK、IPA 和桌面产物。
 - 从无本地客户端 SDK 的工作环境提交代码后，可在 CI 获取同一提交的 Android APK、iOS IPA、Windows ZIP、macOS ZIP；四个构建 job 均成功，产物可下载且签名状态明确。
 
 当前审查证据及问题位置见 [检查报告](/Users/pcsensor/justin/test/alignment-review/report.md)。

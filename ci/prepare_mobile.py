@@ -48,7 +48,7 @@ def android():
     if 'id("org.jetbrains.kotlin.android")' not in text:
         text = text.replace('id("com.android.application")', 'id("com.android.application")\n    id("org.jetbrains.kotlin.android")')
     text = text.replace('minSdk = flutter.minSdkVersion', 'minSdk = 24')
-    # Unsigned releases can be re-signed with the existing installation key.
+    # Never fall back to the debug identity for release builds.
     text = text.replace('signingConfig = signingConfigs.getByName("debug")', 'signingConfig = null')
     text += '''
 android {
@@ -56,14 +56,15 @@ android {
     val releaseKey = System.getenv("STRMACTION_KEYSTORE_PATH")
     if (!releaseKey.isNullOrBlank()) {
         signingConfigs {
-            create("existing") {
+            create("releaseIdentity") {
                 storeFile = file(releaseKey)
+                storeType = "PKCS12"
                 storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS")
                 keyPassword = System.getenv("ANDROID_KEY_PASSWORD")
             }
         }
-        buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("existing") } }
+        buildTypes { getByName("release") { signingConfig = signingConfigs.getByName("releaseIdentity") } }
     }
 }
 dependencies {

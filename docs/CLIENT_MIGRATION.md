@@ -8,7 +8,7 @@
 
 | Artifact | 内容 | 签名状态 |
 |---|---|---|
-| StrmAction-Android | 可安装测试 APK、Release APK | 未配置原密钥时 Release 明确标为 unsigned |
+| StrmAction-Android | 已签名 Release APK、测试 APK | Release 使用固定的新发布密钥；缺少全部签名配置时才输出 unsigned |
 | StrmAction-iOS | 未签名 IPA | 下载后使用既有重签安装工具 |
 | StrmAction-windows | exe、DLL、资源完整 ZIP | 未签名 |
 | StrmAction-macos | 完整 .app ZIP | ad hoc；尚未做 Developer ID 公证 |
@@ -17,9 +17,13 @@
 
 工具链固定 Flutter 3.47.0 / Dart 3.13；Android 使用 JDK 17、AGP 8.11.1、Kotlin 2.2.20、Gradle 8.14，保持与稳定版 WebView 插件兼容；iOS KSPlayer 固定 2.3.4。Windows 稳定版 WebView 插件缺少原生证书挑战派发，CI 应用仓库内的小范围 WebView2 回调补丁；默认拒绝，只有共享严格验证回调通过才接受，并清除会话中的证书例外缓存。最低系统为 Android 7、iOS 16、Windows 10、macOS 12。
 
-用户已选择本轮先验收测试包，正式升级签名后续处理。测试 APK 不能覆盖以其他密钥签名的旧正式应用；当前仓库及 CI 没有原发布密钥，不能据此宣称完成旧正式包覆盖升级验证。
+用户已于 2026-10-24 明确选择重新生成 Android 正式发布密钥，不再沿用旧密钥。新密钥为 RSA 3072 位，PKCS#12 格式，别名 `strmaction`，证书有效期至 2054-03-11。私钥和密码备份在 Git 仓库之外，并注入 Actions Secrets；仓库只保存公开证书 [android-release-certificate.pem](../ci/android-release-certificate.pem)。
 
-后续沿用原 Android 身份时，在仓库 Actions Secrets 配置 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`，重新运行 CI 即可。缺少这些值时不会生成或替换正式签名。测试签名单独缓存以支持测试包之间升级。
+证书 SHA-256：`7a70bea533a5a3d0c3e91f0ce9412926f6349df4263db77713b48804281248b0`。CI 对最终 Release APK 运行 `apksigner verify`，要求签名与该公开证书一致，`build-info.json` 也记录此指纹。下载安装时选择 `StrmAction-Android.apk`；测试 APK 仍使用独立测试签名。
+
+同一包名的旧签名版或测试版不能被新正式签名覆盖，首次切换需要卸载旧版，卸载会清除沙盒设置；新正式版之间继续用这套固定密钥升级。重新生成密钥不提供旧版设置自动迁移保证。
+
+仓库 Actions Secrets 使用 `ANDROID_KEYSTORE_BASE64`、`ANDROID_KEYSTORE_PASSWORD`、`ANDROID_KEY_ALIAS`、`ANDROID_KEY_PASSWORD`。全部缺失时生成明确标记的未签名 Release，部分缺失则报错；CI 不会每次生成新发布密钥。请另行妥善保存仓库外的密钥和密码备份，GitHub Secrets 无法回读导出。
 
 ## 设置和行为
 
@@ -34,7 +38,7 @@
 
 Android / iOS applicationId 与 bundle identifier 均保留 `top.strmaction.companion`；桌面身份和配置目录保留。允许重新登录。Android 从原 SharedPreferences、iOS 从 UserDefaults 迁移服务器和本地预算，iOS 原 CA 根信任库一并迁移。
 
-迁移与覆盖安装依赖相同的签名身份；卸载旧应用会清除其沙盒数据，应在有原签名的升级包上验证自动迁移。旧 Android / 桌面的“信任任意证书”开关没有证书内容，不能迁移为 CA；私有站点需导入对应根 CA。
+迁移与覆盖安装依赖相同的签名身份；本次 Android 已选择更换发布密钥，旧安装必须卸载，因此不能自动保留其沙盒数据。iOS 和桌面的迁移仍应在相同身份的升级包上验证。旧 Android / 桌面的“信任任意证书”开关没有证书内容，不能迁移为 CA；私有站点需导入对应根 CA。
 
 原 `strmaction-ios` 仓库保持历史与独立构建。此次仅将所需原生核心导入主仓库，完成真机迁移验收后再停止独立开发，不提前归档。
 
