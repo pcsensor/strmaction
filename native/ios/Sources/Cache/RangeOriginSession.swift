@@ -22,7 +22,8 @@ final class RangeDownloadPolicy {
         }
         lastRate = rate
     }
-    func failed() { concurrency = max(1, concurrency - 1); segmentBytes = 4 * 1_048_576; healthy = 0; lastRate = 0 }
+    func failed() { concurrency = max(2, concurrency - 1); segmentBytes = 4 * 1_048_576; healthy = 0; lastRate = 0 }
+    func urgent() { concurrency = 2; segmentBytes = 4 * 1_048_576; healthy = 0; lastRate = 0 }
 }
 
 final class OriginRequest {
@@ -36,6 +37,12 @@ final class OriginRequest {
     var client: OriginClient?
     var cancelled = false
     var retried = false
+    var demand = true
+    var received: Int64 = 0
+    var metaDelivered = false
+    var lastProgress = ProcessInfo.processInfo.systemUptime
+    var recoveries = 0
+    var suspended = false
     var cancelAction: (() -> Void)?
     init(start: Int64, end: Int64?, pace: @escaping (Int64) -> PaceDecision,
          onMeta: @escaping (OriginClient.Meta) -> Void, onData: @escaping (Data) -> Void,
@@ -44,7 +51,7 @@ final class OriginRequest {
         self.onMeta = onMeta; self.onData = onData; self.onEnd = onEnd
     }
     func cancel() { cancelAction?() }
-    func resume() { client?.resume() }
+    func resume() { suspended = false; lastProgress = ProcessInfo.processInfo.systemUptime; client?.resume() }
 }
 
 /// Queue-confined URL lease and connection scheduler. An expired link triggers
@@ -75,15 +82,18 @@ final class RangeOriginSession {
     private var probe: OriginClient?
     private var closed = false
     private var failure: Error?
+    private let demandStallSeconds: TimeInterval
 
-    init(url: URL, headers: [String: String], queue: DispatchQueue) {
+    init(url: URL, headers: [String: String], queue: DispatchQueue, demandStallSeconds: TimeInterval = 3) {
         sourceURL = url; self.headers = headers; self.queue = queue
+        self.demandStallSeconds = demandStallSeconds
     }
     @discardableResult
-    func fetch(start: Int64, end: Int64?, pace: @escaping (Int64) -> PaceDecision,
+    func fetch(start: Int64, end: Int64?, demand: Bool = true, pace: @escaping (Int64) -> PaceDecision,
                onMeta: @escaping (OriginClient.Meta) -> Void, onData: @escaping (Data) -> Void,
                onEnd: @escaping (Error?) -> Void) -> OriginRequest {
         let request = OriginRequest(start: start, end: end, pace: pace, onMeta: onMeta, onData: onData, onEnd: onEnd)
+        request.demand = demand
         request.cancelAction = { [weak self, weak request] in
             guard let self, let request else { return }
             self.queue.async {
@@ -93,6 +103,15 @@ final class RangeOriginSession {
             }
         }
         pending.append(request); pump(); return request
+    }
+    func promote(_ request: OriginRequest) {
+        guard !request.cancelled else { return }
+        request.demand = true
+        policy.urgent()
+        pump()
+    }
+    func setPlaybackUrgent(_ value: Bool) {
+        if value { policy.urgent(); pump() }
     }
     func stop() {
         closed = true; probe?.cancel(); probe = nil
@@ -105,12 +124,25 @@ final class RangeOriginSession {
             let waiting = pending; pending.removeAll()
             waiting.filter { !$0.cancelled }.forEach { $0.onEnd(failure) }; return
         }
+        while active.count > policy.concurrency,
+              let victim = active.values.filter({ !$0.demand }).max(by: { $0.start < $1.start }) {
+            victim.client?.cancel(); victim.client = nil
+            active.removeValue(forKey: victim.id); pending.append(victim)
+        }
         guard !pending.isEmpty else { return }
         if resolved == nil {
             if probe == nil && active.count < policy.concurrency { resolve() }
             return
         }
         guard probe == nil else { return }
+        // Demand can reclaim a slot from the farthest speculative transfer.
+        // Keep the same request and resume from its received prefix later.
+        if pending.contains(where: { $0.demand && !$0.cancelled }), active.count >= policy.concurrency,
+           let victim = active.values.filter({ !$0.demand }).max(by: { $0.start < $1.start }) {
+            victim.client?.cancel(); victim.client = nil
+            active.removeValue(forKey: victim.id); pending.append(victim)
+        }
+        pending.sort { a, b in a.demand != b.demand ? a.demand : a.start < b.start }
         while active.count < policy.concurrency && !pending.isEmpty {
             let request = pending.removeFirst()
             if !request.cancelled { start(request) }
@@ -165,26 +197,40 @@ final class RangeOriginSession {
         active[request.id] = request
         let leaseVersion = version
         let client = OriginClient(queue: queue, pool: pool); request.client = client
+        request.lastProgress = ProcessInfo.processInfo.systemUptime
+        request.suspended = false
         let started = ProcessInfo.processInfo.systemUptime
         var received: Int64 = 0
         var delivered = false
         var requestHeaders = headers.filter { $0.key.lowercased() != "if-range" }
         if let validator, supportsRanges { requestHeaders["If-Range"] = validator }
-        client.fetch(url: url, headers: requestHeaders, start: request.start, end: request.end,
-                     pace: request.pace, validate: { [weak self] meta in
+        let offset = request.start + request.received
+        client.fetch(url: url, headers: requestHeaders, start: offset, end: request.end,
+                     pace: { size in
+            let decision = request.pace(size)
+            if case .suspend = decision { request.suspended = true }
+            return decision
+        }, validate: { [weak self] meta in
             guard let self else { return CancellationError() }
             guard self.supportsRanges else { return nil }
             guard let total = meta.totalLength, total == self.totalLength,
                   self.validator == nil || self.validator == self.tag(meta) else { return SessionError.changed }
             let upper = min(request.end ?? total, total)
-            guard meta.status == 206, upper > request.start,
-                  meta.headers["content-range"] == "bytes \(request.start)-\(upper - 1)/\(total)",
-                  meta.headers["content-length"].flatMap(Int64.init) == upper - request.start else { return SessionError.rangeMismatch }
+            guard meta.status == 206, upper > offset,
+                  meta.headers["content-range"] == "bytes \(offset)-\(upper - 1)/\(total)",
+                  meta.headers["content-length"].flatMap(Int64.init) == upper - offset else { return SessionError.rangeMismatch }
             return nil
-        }, onMeta: { meta in delivered = true; request.onMeta(meta) }, onData: { data in
-            received += Int64(data.count); request.onData(data)
+        }, onMeta: { meta in
+            guard request.client === client else { return }
+            delivered = true
+            if !request.metaDelivered { request.metaDelivered = true; request.onMeta(meta) }
+        }, onData: { data in
+            guard request.client === client else { return }
+            received += Int64(data.count); request.received += Int64(data.count)
+            request.lastProgress = ProcessInfo.processInfo.systemUptime
+            request.onData(data)
         }, onEnd: { [weak self, weak request] error in
-            guard let self, let request, !self.closed, !request.cancelled else { return }
+            guard let self, let request, !self.closed, !request.cancelled, request.client === client else { return }
             self.active.removeValue(forKey: request.id); request.client = nil
             if let error, !delivered, !request.retried {
                 var refresh = false
@@ -203,5 +249,22 @@ final class RangeOriginSession {
             else { self.policy.failed() }
             request.onEnd(error); self.pump()
         })
+        watch(request, client: client)
+    }
+
+    private func watch(_ request: OriginRequest, client: OriginClient) {
+        queue.asyncAfter(deadline: .now() + min(0.5, demandStallSeconds)) { [weak self, weak request, weak client] in
+            guard let self, let request, let client, !self.closed, !request.cancelled,
+                  request.client === client else { return }
+            if request.demand && !request.suspended && self.supportsRanges &&
+                ProcessInfo.processInfo.systemUptime - request.lastProgress >= self.demandStallSeconds {
+                client.cancel(); request.client = nil; self.active.removeValue(forKey: request.id)
+                self.policy.failed()
+                if request.recoveries < 2 {
+                    request.recoveries += 1; self.pending.insert(request, at: 0)
+                } else { request.onEnd(OriginClient.OriginError.timedOut) }
+                self.pump()
+            } else { self.watch(request, client: client) }
+        }
     }
 }

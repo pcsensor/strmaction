@@ -511,6 +511,7 @@ public final class VideoPlayerController: ObservableObject {
         // 没有这个输入就判断不了预拉取是否超前。
         let consumed = Int64(Double(currentPositionMs) / Double(durationMs) * Double(snapshot.totalBytes))
         session.setConsumedBytes(consumed)
+        session.setBufferAhead(max(0, bufferedPositionMs - currentPositionMs))
 
         // 兜底打开流控：拿得到总时长就说明容器已经解析完，
         // 探测读取阶段结束了，此后限流不会再误伤 FFmpeg。

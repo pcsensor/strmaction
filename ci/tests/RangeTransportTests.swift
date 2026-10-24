@@ -65,6 +65,35 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         try require(String(data: plainData, encoding: .utf8) == "plain-video", "non-Range fallback failed")
         queue.sync { plain.stop() }
 
+        let recovering = RangeOriginSession(url: base.appendingPathComponent("head-stall"), headers: headers,
+            queue: queue, demandStallSeconds: 0.3)
+        let recoveryStarted = ProcessInfo.processInfo.systemUptime
+        let recovered: Data = try await withCheckedThrowingContinuation { continuation in
+            queue.async {
+                var data = Data()
+                var owner: OriginRequest?
+                var metas = 0
+                owner = recovering.fetch(start: 0, end: 4 * 1_048_576, demand: false,
+                    pace: { _ in .now }, onMeta: { _ in metas += 1 }, onData: { bytes in
+                        data.append(bytes)
+                        if let owner { recovering.promote(owner) }
+                    }, onEnd: { error in
+                        owner = nil
+                        if let error { continuation.resume(throwing: error) }
+                        else if metas != 1 { continuation.resume(throwing: NSError(domain: "duplicate headers", code: 1)) }
+                        else { continuation.resume(returning: data) }
+                    })
+            }
+        }
+        try require(recovered.count == 4 * 1_048_576 && recovered[65_536] == UInt8(65_536 % 251), "resumed prefix duplicated or lost")
+        try require(ProcessInfo.processInfo.systemUptime - recoveryStarted < 3, "promoted slow prefetch was not rescued")
+        let recoveryStats = try JSONSerialization.jsonObject(with: Data(contentsOf: base.appendingPathComponent("stats"))) as! [String: Any]
+        try require((recoveryStats["head_starts"] as! [Int]) == [0, 65_536], "recovery did not resume at the exact missing byte")
+        queue.sync { recovering.stop() }
+        let policy = RangeDownloadPolicy()
+        for _ in 0..<20 { policy.failed() }
+        try require(policy.concurrency == 2, "backoff fell back to a single connection")
+
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         let store = RangeStore(directory: root, limitBytes: 2 * 1_048_576)
         try store.prepare()
@@ -95,6 +124,23 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
         try await Task.sleep(nanoseconds: 500_000_000)
         try require(cacheStore.storedBytes <= 8 * 1_048_576, "proxy prefetch exceeded capacity")
         cache.seek(); cache.stop(); cacheStore.removeFiles(); try? FileManager.default.removeItem(at: root)
+
+        let prefixStore = RangeStore(directory: root, limitBytes: 8 * 1_048_576); try prefixStore.prepare()
+        let prefixCache = try CacheServer(sourceURL: base.appendingPathComponent("stream-prefix"), headers: headers,
+            store: prefixStore, token: "prefix-token", targetAheadMb: 8, targetAheadSeconds: 10)
+        let prefixPort = try await prefixCache.start(); prefixCache.setPacingEnabled(true)
+        var prefixRequest = URLRequest(url: URL(string: "http://127.0.0.1:\(prefixPort)/prefix-token")!)
+        prefixRequest.setValue("bytes=0-999", forHTTPHeaderField: "Range")
+        _ = try await URLSession.shared.data(for: prefixRequest)
+        for _ in 0..<100 {
+            if prefixStore.cachedEnd(from: 1000) > 1000 { break }
+            try await Task.sleep(nanoseconds: 10_000_000)
+        }
+        try require(prefixStore.cachedEnd(from: 1000) > 1000, "prefetch did not publish its prefix")
+        prefixRequest.setValue("bytes=1000-1099", forHTTPHeaderField: "Range"); prefixRequest.timeoutInterval = 1
+        let (prefix, _) = try await URLSession.shared.data(for: prefixRequest)
+        try require(prefix.count == 100 && prefix[0] == UInt8(1000 % 251), "reader waited for the speculative tail")
+        prefixCache.stop(); prefixStore.removeFiles(); try? FileManager.default.removeItem(at: root)
         let slowStore = RangeStore(directory: root, limitBytes: 8 * 1_048_576); try slowStore.prepare()
         let slowCache = try CacheServer(sourceURL: base.appendingPathComponent("slow"), headers: headers,
             store: slowStore, token: "slow-token", targetAheadMb: 8, targetAheadSeconds: 10)

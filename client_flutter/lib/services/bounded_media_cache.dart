@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
-import 'dart:typed_data';
 
 import '../core/trust.dart';
 import 'download_policy.dart';
@@ -20,6 +19,8 @@ class BoundedMediaCache {
   final policy = DownloadPolicy();
   final _rate = NetworkRate();
   final Map<int, File> _blocks = {};
+  final Map<int, int> _blockLengths = {};
+  final Map<int, int> _readers = {};
   final Set<_Download> _jobs = {};
   Future<void>? _resolving;
   Uri? _resolved;
@@ -34,28 +35,31 @@ class BoundedMediaCache {
   var _focus = 0;
   int? _consumedBlock;
   var _closed = false;
+  var _urgent = false;
+  final Duration demandStallTimeout;
 
   BoundedMediaCache._(this._client, this._origin, this._headers,
-      this._directory, this.budgetBytes, this.prefetchBytes);
+      this._directory, this.budgetBytes, this.prefetchBytes, this.demandStallTimeout);
 
   Uri get localUrl => Uri.parse('http://127.0.0.1:${_server.port}/$_token');
   int get storedBytes => _bytes;
-  int get reservedBytes => _jobs.fold(0, (sum, job) => sum + job.size);
+  int get reservedBytes => _jobs.fold(0, (sum, job) => sum + job.size - job.received);
   int get activeDownloads => _jobs.length;
   bool get cacheReady => _jobs.isEmpty && _blocks.containsKey(_focus);
   double get networkSpeed => _rate.bytesPerSecond;
   List<(int, int)> get ranges => _blocks.keys
-      .map((n) => (n * blockSize, min(length, (n + 1) * blockSize))).toList();
+      .map((n) => (n * blockSize, n * blockSize + _blockLengths[n]!)).toList();
 
   static Future<BoundedMediaCache?> open({required String url,
       required Map<String, String> headers, required String trustedCaPem,
-      required String directory, required int budgetBytes, int? prefetchBytes}) async {
+      required String directory, required int budgetBytes, int? prefetchBytes,
+      Duration demandStallTimeout = const Duration(seconds: 3)}) async {
     if (budgetBytes <= 0 || RegExp(r'\.(m3u8|mpd)$', caseSensitive: false).hasMatch(Uri.parse(url).path)) return null;
     final client = HttpClient(context: trustContext(trustedCaPem))
       ..connectionTimeout = const Duration(seconds: 10)
       ..maxConnectionsPerHost = 4;
     final cache = BoundedMediaCache._(client, Uri.parse(url), headers,
-        Directory(directory), budgetBytes, prefetchBytes ?? budgetBytes);
+        Directory(directory), budgetBytes, prefetchBytes ?? budgetBytes, demandStallTimeout);
     try {
       if (!await cache._resolve()) { client.close(force: true); return null; }
       if (budgetBytes < min(blockSize, cache.length)) { client.close(force: true); return null; }
@@ -151,8 +155,10 @@ class BoundedMediaCache {
       }
       if (response.statusCode != 206 ||
           response.headers.value(HttpHeaders.contentRangeHeader) != 'bytes ${job.start}-${job.end - 1}/$length' ||
-          (response.headers.value(HttpHeaders.etagHeader) != null && _validator?.startsWith('"') == true &&
-              response.headers.value(HttpHeaders.etagHeader) != _validator)) {
+          (_validator != null && (response.headers.value(HttpHeaders.etagHeader)?.startsWith('W/') == false
+              ? response.headers.value(HttpHeaders.etagHeader)
+              : response.headers.value(HttpHeaders.lastModifiedHeader)) != _validator) ||
+          (response.contentLength >= 0 && response.contentLength != job.size)) {
         await response.listen((_) {}).cancel();
         throw const HttpException('片源范围或文件身份不一致');
       }
@@ -162,15 +168,18 @@ class BoundedMediaCache {
     throw const HttpException('直链刷新失败');
   }
 
-  bool _covered(int block) => _blocks.containsKey(block) || _jobs.any((job) => job.contains(block));
+  bool _covered(int block) => _blockLengths[block] == _size(block) || _jobs.any((job) => job.contains(block));
   int _size(int block) => min(blockSize, length - block * blockSize);
 
   bool _reserve(int bytes, {required bool demand}) {
     while (_bytes + reservedBytes + bytes > budgetBytes && _blocks.isNotEmpty) {
-      final key = _blocks.keys.where((n) => demand || n < _focus).firstOrNull;
+      final candidates = _blocks.keys.where((n) => !_readers.containsKey(n) &&
+          !_jobs.any((job) => job.contains(n)) && (demand || n < _focus)).toList();
+      if (demand) candidates.sort((a, b) => (b - _focus).abs().compareTo((a - _focus).abs()));
+      final key = candidates.firstOrNull;
       if (key == null) break;
       final file = _blocks.remove(key)!;
-      _bytes -= _size(key);
+      _bytes -= _blockLengths.remove(key)!;
       if (file.existsSync()) file.deleteSync();
     }
     return _bytes + reservedBytes + bytes <= budgetBytes;
@@ -182,7 +191,8 @@ class BoundedMediaCache {
     for (var next = first + 1; next < last; next++) {
       if (_covered(next)) { last = next; break; }
     }
-    while (last > first && !_reserve(min(length, last * blockSize) - first * blockSize, demand: demand)) { last--; }
+    final start = first * blockSize + (_blockLengths[first] ?? 0);
+    while (last > first && !_reserve(min(length, last * blockSize) - start, demand: demand)) { last--; }
     if (last <= first) return null;
     // Wait for a useful amount of consumed space instead of falling back to
     // one HTTP request per 1 MiB as a full cache window moves forward.
@@ -190,7 +200,7 @@ class BoundedMediaCache {
         last * blockSize < length && !_covered(last)) {
       return null;
     }
-    final job = _Download(first * blockSize, min(length, last * blockSize));
+    final job = _Download(start, min(length, last * blockSize))..demand = demand;
     _jobs.add(job);
     job.result = _download(job);
     // Speculation may fail without an awaiting decoder. The demand path still
@@ -204,7 +214,8 @@ class BoundedMediaCache {
     final base = _consumedBlock ?? first;
     final upper = min((length + blockSize - 1) ~/ blockSize,
         base + max(1, window ~/ blockSize));
-    for (var block = first; block < upper && _jobs.length < policy.concurrency;) {
+    final limit = _urgent ? min(2, policy.concurrency) : policy.concurrency;
+    for (var block = first; block < upper && _jobs.length < limit;) {
       if (_covered(block)) { block++; continue; }
       var end = min(upper, block + policy.segmentBytes ~/ blockSize).toInt();
       for (var next = block + 1; next < end; next++) {
@@ -216,69 +227,113 @@ class BoundedMediaCache {
     }
   }
 
-  Future<Uint8List> _download(_Download job) async {
+  Future<void> _download(_Download job) async {
     final clock = Stopwatch()..start();
     try {
       final response = await _request(job);
-      final data = BytesBuilder(copy: false);
       await for (final chunk in response.timeout(const Duration(seconds: 20))) {
         if (_closed || job.cancelled) throw const _Cancelled();
         _rate.add(chunk.length);
-        data.add(chunk);
-        if (data.length > job.size) throw const HttpException('片源返回范围过大');
+        if (job.received + chunk.length > job.size) throw const HttpException('片源返回范围过大');
+        // Publish each received prefix. Readers never wait for the 4–8 MiB tail.
+        for (var offset = 0; offset < chunk.length;) {
+          final absolute = job.start + job.received;
+          final number = absolute ~/ blockSize;
+          final local = absolute % blockSize;
+          final count = min(chunk.length - offset, blockSize - local);
+          if ((_blockLengths[number] ?? 0) != local) throw const HttpException('缓存区间不连续');
+          final file = _blocks[number] ?? File('${_directory.path}/$number.block');
+          final handle = file.openSync(mode: FileMode.append);
+          try { handle.writeFromSync(chunk, offset, offset + count); } finally { handle.closeSync(); }
+          _blocks[number] = file;
+          _blockLengths[number] = local + count;
+          _bytes += count;
+          job.received += count;
+          offset += count;
+        }
+        job.notify();
       }
-      if (data.length != job.size) throw const HttpException('片源范围读取不完整');
-      final bytes = data.takeBytes();
-      if (_closed || job.cancelled) throw const _Cancelled();
-      // The segment reservation becomes disk blocks without changing usage.
-      _jobs.remove(job);
-      for (var offset = 0; offset < bytes.length; offset += blockSize) {
-        final number = (job.start + offset) ~/ blockSize;
-        final file = File('${_directory.path}/$number.block');
-        file.writeAsBytesSync(Uint8List.sublistView(bytes, offset, min(bytes.length, offset + blockSize)));
-        _blocks[number] = file;
-        _bytes += _size(number);
-      }
-      policy.completed(bytes.length, clock.elapsed);
+      if (job.received != job.size) throw const HttpException('片源范围读取不完整');
+      policy.completed(job.received, clock.elapsed);
       scheduleMicrotask(() => _prefetch(_focus));
-      return bytes;
-    } on Object {
+    } on Object catch (error) {
+      job.error = error;
       if (!job.cancelled && !_closed) policy.failed();
       rethrow;
-    } finally { _jobs.remove(job); }
+    } finally { _jobs.remove(job); job.notify(); }
   }
 
-  Future<List<int>> _block(int number, int generation) async {
+  void _makeDemandRoom(int number) {
+    final candidates = _jobs.where((job) => !job.contains(number) &&
+        !_readers.keys.any(job.contains)).toList()
+      ..sort((a, b) => (b.start - number * blockSize).abs().compareTo((a.start - number * blockSize).abs()));
+    for (final job in candidates) {
+      if (_jobs.length < policy.concurrency) break;
+      job.cancel(); _jobs.remove(job);
+    }
+  }
+
+  Future<List<int>> _block(int number, int generation, int begin) async {
+    _readers.update(number, (value) => value + 1, ifAbsent: () => 1);
+    var rescues = 0;
+    final waiting = Stopwatch()..start();
+    try {
     while (!_closed && generation == _generation) {
       _focus = number;
       final file = _blocks.remove(number);
       if (file != null) {
         _blocks[number] = file;
-        final bytes = file.readAsBytesSync();
-        _prefetch(number);
-        return bytes;
+        if (_blockLengths[number]! > begin) {
+          final bytes = file.readAsBytesSync();
+          _prefetch(number);
+          return bytes;
+        }
       }
-      // Demand always wins over speculative work left behind by a seek/probe.
-      if (!_jobs.any((job) => job.contains(number)) && _jobs.length >= policy.concurrency) {
-        final distant = _jobs.last;
-        distant.cancel();
-        _jobs.remove(distant);
-      }
+      _makeDemandRoom(number);
       var job = _jobs.where((job) => job.contains(number)).firstOrNull;
       job ??= _schedule(number, min((length + blockSize - 1) ~/ blockSize,
           number + max(1, min(policy.segmentBytes, max(blockSize, prefetchBytes)) ~/ blockSize)), demand: true);
       _prefetch(number);
       if (job == null) {
         if (_jobs.isEmpty) throw const HttpException('缓存容量不足');
-        await _jobs.first.result;
+        await _jobs.first.changed;
         continue;
       }
-      final bytes = await job.result;
-      if (_closed || generation != _generation) throw const _Cancelled();
-      final offset = number * blockSize - job.start;
-      return Uint8List.sublistView(bytes, offset, min(bytes.length, offset + blockSize));
+      job.demand = true;
+      try {
+        final remaining = demandStallTimeout - waiting.elapsed;
+        await job.changed.timeout(remaining.isNegative ? Duration.zero : remaining);
+      } on TimeoutException {
+        if (++rescues > 2) {
+          job.cancel(); _jobs.remove(job);
+          throw const HttpException('当前播放分段持续无数据');
+        }
+        // Replace only the stalled owner, retaining its published prefix and
+        // all successful later segments. The replacement uses the same budget.
+        job.cancel(); _jobs.remove(job); policy.failed();
+        waiting.reset();
+        _makeDemandRoom(number);
+        continue;
+      }
+      if (job.error != null && !job.cancelled) throw job.error!;
     }
     throw const _Cancelled();
+    } finally {
+      final readers = _readers[number]! - 1;
+      if (readers == 0) { _readers.remove(number); } else { _readers[number] = readers; }
+    }
+  }
+
+  void setPlaybackUrgent(bool value) {
+    _urgent = value;
+    if (value) {
+      final distant = _jobs.where((job) => !job.demand && !_readers.keys.any(job.contains)).toList()
+        ..sort((a, b) => b.start.compareTo(a.start));
+      for (final job in distant) {
+        if (_jobs.length <= 2) break;
+        job.cancel(); _jobs.remove(job);
+      }
+    }
   }
 
   /// The decoder can read far ahead or probe the tail. The speculative window
@@ -320,7 +375,7 @@ class BoundedMediaCache {
       if (raw != null) response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/$length');
       if (request.method != 'HEAD') {
         for (var offset = start; offset <= end && !_closed && generation == _generation;) {
-          final block = await _block(offset ~/ blockSize, generation);
+          final block = await _block(offset ~/ blockSize, generation, offset % blockSize);
           final begin = offset % blockSize;
           final take = min(block.length - begin, end - offset + 1);
           response.add(block.sublist(begin, begin + take));
@@ -348,7 +403,7 @@ class BoundedMediaCache {
     await _server.close(force: true);
     try { await Future.wait(pending.map((job) => job.result)).timeout(const Duration(seconds: 2)); } on Object { /* cancelled */ }
     _jobs.clear();
-    _blocks.clear(); _bytes = 0;
+    _blocks.clear(); _blockLengths.clear(); _bytes = 0;
     if (await _directory.exists()) await _directory.delete(recursive: true);
   }
 }
@@ -357,11 +412,17 @@ class _Download {
   final int start;
   final int end;
   bool cancelled = false;
+  bool demand = false;
+  int received = 0;
+  Object? error;
+  Completer<void> _changed = Completer<void>();
+  Future<void> get changed => _changed.future;
+  void notify() { final before = _changed; _changed = Completer<void>(); before.complete(); }
   HttpClientRequest? request;
-  late Future<Uint8List> result;
+  late Future<void> result;
   _Download(this.start, this.end);
   int get size => end - start;
-  bool contains(int block) => block * BoundedMediaCache.blockSize >= start && block * BoundedMediaCache.blockSize < end;
-  void cancel() { cancelled = true; request?.abort(const _Cancelled()); }
+  bool contains(int block) => (block + 1) * BoundedMediaCache.blockSize > start && block * BoundedMediaCache.blockSize < end;
+  void cancel() { cancelled = true; request?.abort(const _Cancelled()); notify(); }
 }
 class _Cancelled implements Exception { const _Cancelled(); }

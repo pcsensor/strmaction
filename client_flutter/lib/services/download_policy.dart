@@ -14,7 +14,7 @@ class DownloadPolicy {
     if (seconds > 15 || (_lastRate != null && rate < _lastRate! * 0.5)) {
       failed();
     } else if (++_healthy >= 2) {
-      concurrency = (concurrency + 1).clamp(1, 4);
+      concurrency = (concurrency + 1).clamp(2, 4);
       if (rate >= 2 * mib) segmentBytes = 8 * mib;
       _healthy = 0;
     }
@@ -22,7 +22,7 @@ class DownloadPolicy {
   }
 
   void failed() {
-    concurrency = (concurrency - 1).clamp(1, 4);
+    concurrency = (concurrency - 1).clamp(2, 4);
     segmentBytes = 4 * mib;
     _healthy = 0;
     _lastRate = null;

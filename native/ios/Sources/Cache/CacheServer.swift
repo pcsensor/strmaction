@@ -174,6 +174,10 @@ final class CacheServer {
         if enabled { queue.async { self.prefetch() } }
     }
 
+    func setBufferAhead(_ milliseconds: Int64) {
+        queue.async { self.originSession.setPlaybackUrgent(milliseconds < 10_000) }
+    }
+
     /// Update the prefetch byte window without changing the disk capacity.
     func updateTarget(aheadMb: Int, seconds: Double) {
         targetAheadBytes = Int64(max(0, aheadMb)) * 1_048_576
@@ -283,17 +287,19 @@ final class CacheServer {
         focusOffset = start
         let cachedEnd = store.cachedEnd(from: start)
 
-        if reservations.values.contains(where: { $0.contains(start) }) ||
+        if cachedEnd > start, totalLength > 0 {
+            serveFromDisk(connection, start: start, end: range.end, cachedEnd: cachedEnd)
+        } else if reservations.values.contains(where: { $0.contains(start) }) ||
             origins.values.contains(where: { start >= $0.start && start < min($0.end ?? totalLength, totalLength) }) {
+            if let owner = (Array(speculation.values) + Array(origins.values)).first(where: {
+                start >= $0.start && start < min($0.end ?? totalLength, totalLength)
+            }) { originSession.promote(owner) }
             let key = ObjectIdentifier(connection)
             waiting[key] = (connection, start, range.end)
             queue.asyncAfter(deadline: .now() + 30) { [weak self] in
                 guard let self, let pending = self.waiting.removeValue(forKey: key) else { return }
                 pending.0.cancel()
             }
-        } else if cachedEnd > start, totalLength > 0 {
-            // 命中：从磁盘直发，零网络
-            serveFromDisk(connection, start: start, end: range.end, cachedEnd: cachedEnd)
         } else {
             serveFromOrigin(connection, start: start, end: range.end)
         }
@@ -409,7 +415,7 @@ final class CacheServer {
         var pendingBytes = reserved
         var cursor = max(lower ?? focus, store.cachedEnd(from: focus))
         let limit = max(0, originSession.policy.concurrency - 1)
-        while cursor < target && speculation.count < limit {
+        while cursor < target && speculation.values.filter({ !$0.demand }).count < limit {
             let cached = store.cachedEnd(from: cursor)
             if cached > cursor { cursor = cached; continue }
             if let pending = reservations.values.first(where: { $0.contains(cursor) }) { cursor = pending.upperBound; continue }
@@ -427,11 +433,13 @@ final class CacheServer {
             let start = cursor
             reservations[start] = start..<upper; pendingBytes += size
             var position = start
-            let request = originSession.fetch(start: start, end: upper, pace: { _ in .now }, onMeta: { _ in },
+            let request = originSession.fetch(start: start, end: upper, demand: false, pace: { _ in .now }, onMeta: { _ in },
                 onData: { [weak self] data in
                     guard let self, !self.isStopped else { return }
                     self.throughput.add(Int64(data.count)); self.store.write(data, at: position)
                     position += Int64(data.count)
+                    self.reservations[start] = position..<upper
+                    self.wakeReaders()
                 }, onEnd: { [weak self] error in
                     guard let self else { return }
                     self.speculation.removeValue(forKey: start); self.reservations.removeValue(forKey: start)
@@ -463,12 +471,14 @@ final class CacheServer {
 
     private func wakeReaders() {
         for (key, pending) in waiting {
-            if !reservations.values.contains(where: { $0.contains(pending.1) }) &&
+            let cached = store.cachedEnd(from: pending.1)
+            if cached > pending.1 {
+                waiting.removeValue(forKey: key)
+                serveFromDisk(pending.0, start: pending.1, end: pending.2, cachedEnd: cached)
+            } else if !reservations.values.contains(where: { $0.contains(pending.1) }) &&
                 !origins.values.contains(where: { pending.1 >= $0.start && pending.1 < min($0.end ?? totalLength, totalLength) }) {
                 waiting.removeValue(forKey: key)
-                let cached = store.cachedEnd(from: pending.1)
-                if cached > pending.1 { serveFromDisk(pending.0, start: pending.1, end: pending.2, cachedEnd: cached) }
-                else { serveFromOrigin(pending.0, start: pending.1, end: pending.2) }
+                serveFromOrigin(pending.0, start: pending.1, end: pending.2)
             }
         }
     }
@@ -600,6 +610,10 @@ final class MediaCacheSession {
     /// 回写播放位置折算出的已消费字节，供流量控制算水位。
     func setConsumedBytes(_ bytes: Int64) {
         server.setConsumedBytes(bytes)
+    }
+
+    func setBufferAhead(_ milliseconds: Int64) {
+        server.setBufferAhead(milliseconds)
     }
 
     /// 打开预拉取流控。起播与探测阶段关着，避免饿死 FFmpeg。

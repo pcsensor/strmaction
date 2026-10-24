@@ -5,15 +5,33 @@ import okhttp3.Interceptor
 import okhttp3.Request
 import okhttp3.Response
 import okhttp3.ResponseBody
+import okhttp3.Call
 import okio.Buffer
 import okio.ForwardingSource
 import okio.buffer
 import java.io.IOException
 import java.util.concurrent.Semaphore
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /** Per-playback signed URL lease, shared by the decoder and prefetch workers. */
 class MediaTransferSession(private val origin: HttpUrl) : Interceptor {
+    private class Purpose(val speculative: Boolean, val cancelled: (() -> Boolean)?)
+    private val speculation = ConcurrentHashMap<Call, LongRange>()
+    fun callFactory(client: okhttp3.OkHttpClient, speculative: Boolean): Call.Factory = object : Call.Factory {
+        override fun newCall(request: Request): Call {
+            val cancelled = if (speculative) PrefetchCancellation.current.get() else null
+            return client.newCall(request.newBuilder().tag(Purpose::class.java, Purpose(speculative, cancelled)).build())
+                .also { if (cancelled?.invoke() == true) it.cancel() }
+        }
+    }
+    fun onDemand(offset: Long) {
+        speculation.forEach { (call, range) -> if (offset in range) call.cancel() }
+    }
+    fun cancelSpeculation(start: Long, end: Long) {
+        speculation.forEach { (call, range) -> if (range.first < end && range.last >= start) call.cancel() }
+    }
     val policy = AutoDownloadPolicy()
     @Volatile var contentLength = 0L
         private set
@@ -31,12 +49,25 @@ class MediaTransferSession(private val origin: HttpUrl) : Interceptor {
         val original = chain.request()
         // Manifests, subtitles and adaptive-stream segments have separate URLs.
         if (!owns(original.url.toString())) return chain.proceed(original)
-        try { slots.acquire() } catch (error: InterruptedException) {
+        val purpose = original.tag(Purpose::class.java)
+        if (purpose?.speculative == true) {
+            val range = Regex("bytes=(\\d+)-(\\d*)").matchEntire(original.header("Range") ?: "")
+            if (range != null) speculation[chain.call()] = range.groupValues[1].toLong()..
+                (range.groupValues[2].toLongOrNull() ?: Long.MAX_VALUE)
+        }
+        try {
+            while (!slots.tryAcquire(100, TimeUnit.MILLISECONDS)) {
+                if (purpose?.cancelled?.invoke() == true) chain.call().cancel()
+                if (chain.call().isCanceled()) { speculation.remove(chain.call()); throw IOException("播放请求已取消") }
+            }
+        } catch (error: InterruptedException) {
+            speculation.remove(chain.call())
             Thread.currentThread().interrupt(); throw IOException("播放请求已取消", error)
         }
         val released = AtomicBoolean(false)
-        fun release() { if (released.compareAndSet(false, true)) slots.release() }
+        fun release() { if (released.compareAndSet(false, true)) { speculation.remove(chain.call()); slots.release() } }
         try {
+            if (purpose?.cancelled?.invoke() == true) chain.call().cancel()
             val lease: Pair<HttpUrl, Int>
             var first: Response? = null
             synchronized(lock) {

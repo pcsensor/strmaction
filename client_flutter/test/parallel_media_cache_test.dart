@@ -19,11 +19,19 @@ class OriginFixture {
   bool expire = false;
   bool wrongRange = false;
   bool changed = false;
+  bool holdFirst = false;
+  bool holdEveryHead = false;
+  int firstPrefixBytes = 64 * 1024;
+  int firstRequests = 0;
+  final releaseFirst = Completer<void>();
+  final firstHeld = Completer<void>();
+  final laterCompleted = Completer<void>();
   final sizes = <int>[];
   final starts = <int>[];
   Future<void> start() async {
     server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     server.listen((request) async {
+      var counted = false;
       try {
         expect(request.headers.value('User-Agent'), 'pan-fixture');
         expect(request.headers.value('Referer'), 'https://pan.example/');
@@ -42,6 +50,7 @@ class OriginFixture {
         final probe = start == 0 && end == 0;
         if (!probe) {
           active++; peak = max(peak, active); sizes.add(end - start + 1); starts.add(start);
+          counted = true;
           await Future<void>.delayed(const Duration(milliseconds: 30));
         }
         request.response.statusCode = 206;
@@ -49,17 +58,30 @@ class OriginFixture {
         request.response.headers.set('ETag', changed ? '"changed"' : '"original"');
         request.response.headers.set('Content-Range', 'bytes ${wrongRange && !probe ? start + 1 : start}-$end/$length');
         request.response.contentLength = end - start + 1;
-        for (var cursor = start; cursor <= end; cursor += 256 * 1024) {
+        var cursor = start;
+        if (!probe && start == 0 && holdFirst && (firstRequests++ == 0 || holdEveryHead)) {
+          final count = min(firstPrefixBytes, end - start + 1);
+          request.response.add(Uint8List.fromList(List.generate(count, (index) => index % 251)));
+          await request.response.flush();
+          if (!firstHeld.isCompleted) firstHeld.complete();
+          await releaseFirst.future;
+          cursor += count;
+        }
+        for (; cursor <= end; cursor += 256 * 1024) {
           request.response.add(Uint8List.fromList(List<int>.generate(
             min(256 * 1024, end - cursor + 1), (index) => (cursor + index) % 251)));
         }
         await request.response.close();
-        if (!probe) active--;
+        if (!probe && start >= 4 * mib && !laterCompleted.isCompleted) laterCompleted.complete();
       } on Object { unawaited(request.response.close().then<void>((_) {}, onError: (Object _) {})); }
+      finally { if (counted) active--; }
     });
   }
   String get url => 'http://127.0.0.1:${server.port}/entry';
-  Future<void> close() async { await server.close(force: true); }
+  Future<void> close() async {
+    if (!releaseFirst.isCompleted) releaseFirst.complete();
+    await server.close(force: true);
+  }
 }
 
 Future<List<int>> read(HttpClient client, BoundedMediaCache cache, int start, int end) async {
@@ -72,6 +94,57 @@ Future<List<int>> read(HttpClient client, BoundedMediaCache cache, int start, in
 }
 
 void main() {
+  test('publishes a received prefix before its slow segment finishes, then rescues only the gap', () async {
+    final origin = OriginFixture()..holdFirst = true; await origin.start();
+    final root = await Directory.systemTemp.createTemp('prefix-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib,
+      demandStallTimeout: const Duration(milliseconds: 200)))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    expect(await read(client, cache, 0, 99).timeout(const Duration(seconds: 2)), List.generate(100, (i) => i % 251));
+    expect(origin.releaseFirst.isCompleted, isFalse);
+    await origin.laterCompleted.future.timeout(const Duration(seconds: 2));
+    expect(cache.storedBytes + cache.reservedBytes, lessThanOrEqualTo(16 * mib));
+    final offset = origin.firstPrefixBytes;
+    expect(await read(client, cache, offset, offset + 99), List.generate(100, (i) => (offset + i) % 251));
+    expect(origin.starts, contains(offset), reason: 'retry must retain the already delivered prefix');
+    expect(origin.entries, 1);
+    expect(cache.policy.concurrency, inInclusiveRange(2, 4));
+  });
+
+  test('a stalled head is replaced while later segments finish successfully', () async {
+    final origin = OriginFixture()..holdFirst = true..firstPrefixBytes = 0; await origin.start();
+    final root = await Directory.systemTemp.createTemp('head-cache-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib,
+      demandStallTimeout: const Duration(milliseconds: 200)))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    expect(await read(client, cache, 0, 99), List.generate(100, (i) => i % 251));
+    expect(origin.releaseFirst.isCompleted, isFalse);
+    expect(origin.firstRequests, 2);
+    expect(origin.starts.where((start) => start == 0), hasLength(2));
+    expect(cache.storedBytes + cache.reservedBytes, lessThanOrEqualTo(16 * mib));
+  });
+
+  test('a permanently stalled head has a bounded recovery budget and keeps parallel policy', () async {
+    final origin = OriginFixture()..holdFirst = true..holdEveryHead = true..firstPrefixBytes = 0; await origin.start();
+    final root = await Directory.systemTemp.createTemp('bounded-recovery-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib,
+      demandStallTimeout: const Duration(milliseconds: 200)))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    await expectLater(read(client, cache, 0, 99), throwsA(isA<HttpException>()));
+    expect(origin.firstRequests, 3);
+    expect(cache.policy.concurrency, inInclusiveRange(2, 4));
+    expect(cache.storedBytes + cache.reservedBytes, lessThanOrEqualTo(16 * mib));
+  });
+
   test('signed URL is reused; bounded workers coalesce Range reads and preserve data', () async {
     final origin = OriginFixture(); await origin.start();
     final root = await Directory.systemTemp.createTemp('parallel-cache-');
@@ -195,6 +268,6 @@ void main() {
     expect(policy.concurrency, 4); expect(policy.segmentBytes, 8 * mib);
     policy.failed(); expect(policy.concurrency, 3); expect(policy.segmentBytes, 4 * mib);
     for (var i = 0; i < 10; i++) { policy.failed(); }
-    expect(policy.concurrency, 1);
+    expect(policy.concurrency, 2);
   });
 }

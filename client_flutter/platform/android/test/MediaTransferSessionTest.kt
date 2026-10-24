@@ -8,6 +8,7 @@ import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.*
 import org.junit.Test
+import okio.Buffer
 import java.io.IOException
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.Executors
@@ -119,6 +120,42 @@ class MediaTransferSessionTest {
         val policy = AutoDownloadPolicy(); assertEquals(2, policy.concurrency)
         repeat(20) { policy.completed(4L * 1024 * 1024, 1_000_000_000) }
         assertEquals(4, policy.concurrency); assertEquals(8L * 1024 * 1024, policy.segmentBytes)
-        repeat(10) { policy.failed() }; assertEquals(1, policy.concurrency)
+        repeat(10) { policy.failed() }; assertEquals(2, policy.concurrency)
+    }
+
+    @Test fun decoderCanCancelAnOverlappingSlowPrefetchWithoutCancellingTheNextSegment() {
+        Fixture().use { fixture ->
+            val session = MediaTransferSession(fixture.entry.url("/entry")); val client = fixture.client(session)
+            client.newCall(fixture.request()).execute().use { it.body!!.bytes() }
+            val prefetch = session.callFactory(client, true)
+            val slow = prefetch.newCall(fixture.request(4, 7))
+            val next = prefetch.newCall(fixture.request(8, 11))
+            slow.execute().use { slowResponse ->
+                next.execute().use { nextResponse ->
+                    session.onDemand(5)
+                    assertTrue(slow.isCanceled()); assertFalse(next.isCanceled())
+                    assertEquals("ijkl", nextResponse.body!!.string())
+                    session.callFactory(client, false).newCall(fixture.request(4, 7)).execute().use {
+                        assertEquals("efgh", it.body!!.string())
+                    }
+                    // Closing the cancelled owner still releases its transport slot.
+                    runCatching { slowResponse.body!!.source().read(Buffer(), 4) }
+                }
+            }
+            assertEquals(1, fixture.entries.get())
+        }
+    }
+
+    @Test fun aPrefetchCancelledBeforeOpeningNeverStartsANetworkRequest() {
+        Fixture().use { fixture ->
+            val session = MediaTransferSession(fixture.entry.url("/entry"))
+            PrefetchCancellation.current.set { true }
+            try {
+                val call = session.callFactory(fixture.client(session), true).newCall(fixture.request())
+                assertTrue(call.isCanceled())
+                try { call.execute().close(); fail("cancelled prefetch ran") } catch (_: IOException) { }
+                assertEquals(0, fixture.entries.get())
+            } finally { PrefetchCancellation.current.remove() }
+        }
     }
 }

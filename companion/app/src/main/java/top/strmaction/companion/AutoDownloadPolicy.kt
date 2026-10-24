@@ -22,7 +22,7 @@ class AutoDownloadPolicy {
         lastRate = rate
     }
     @Synchronized fun failed() {
-        concurrency = (concurrency - 1).coerceAtLeast(1)
+        concurrency = (concurrency - 1).coerceAtLeast(2)
         segmentBytes = 4L * 1024 * 1024
         healthy = 0
         lastRate = 0.0

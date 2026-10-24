@@ -168,6 +168,7 @@ class MediaKitEngine extends PlaybackEngine {
     _subscriptions.add(
       _player.stream.buffering.listen((value) {
         _buffering = value;
+        _updateDownloadPriority();
         _notify();
       }),
     );
@@ -374,10 +375,15 @@ class MediaKitEngine extends PlaybackEngine {
     _networkTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
       // Independent of MPV property latency and loopback/disk read throughput.
       final disk = _diskCache;
+      _updateDownloadPriority();
       if (disk != null && _duration > 0) disk.setConsumed((disk.length * _position / _duration).round());
       _networkSpeed = _diskCache?.networkSpeed ?? _fallbackRate.bytesPerSecond;
       _notify();
     });
+  }
+
+  void _updateDownloadPriority() {
+    _diskCache?.setPlaybackUrgent(_buffering || _loading || _bufferPosition - _position < 10);
   }
 
   Future<void> _readCacheState() async {

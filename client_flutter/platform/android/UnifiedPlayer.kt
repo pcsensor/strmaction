@@ -19,6 +19,7 @@ import androidx.media3.common.Tracks
 import androidx.media3.datasource.DataSource
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.cache.CacheDataSource
+import androidx.media3.datasource.cache.CacheDataSink
 import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
@@ -97,7 +98,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
         val cache = PlaybackDiskCache.open(activity, diskLimit)
         val session = MediaTransferSession(uri.toString().toHttpUrl())
         transferSession = session
-        prefetch = PlaybackPrefetcher({ PlaybackDiskCache.current() }, session.policy).also {
+        prefetch = PlaybackPrefetcher({ PlaybackDiskCache.current() }, session.policy, session::cancelSpeculation).also {
             it.setWindowMb(if (cache == null) 0 else buffer.coerceAtMost(PlaybackDiskCache.limitMb()))
         }
         val client = PrivateCa.configure(OkHttpClient.Builder())
@@ -106,17 +107,28 @@ class UnifiedPlayer(private val activity: MainActivity) {
             .addInterceptor(session)
             .build()
         transport = client
-        val http = OkHttpDataSource.Factory(client).setDefaultRequestProperties(headers).setTransferListener(NetworkSpeedMeter)
-        headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.let { http.setUserAgent(it.value) }
-        val upstream = DefaultDataSource.Factory(activity, http)
-        val factory: DataSource.Factory = if (cache != null) CacheDataSource.Factory()
-            .setCache(cache).setUpstreamDataSourceFactory(upstream)
-            .setFlags(CacheDataSource.FLAG_BLOCK_ON_CACHE or CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR) else upstream
+        fun dataSource(speculative: Boolean): DataSource.Factory {
+            val transportClient = if (speculative) client else client.newBuilder()
+                .connectTimeout(3, TimeUnit.SECONDS).readTimeout(3, TimeUnit.SECONDS).build()
+            val http = OkHttpDataSource.Factory(session.callFactory(transportClient, speculative))
+                .setDefaultRequestProperties(headers).setTransferListener(NetworkSpeedMeter)
+            headers.entries.firstOrNull { it.key.equals("User-Agent", true) }?.let { http.setUserAgent(it.value) }
+            val upstream = DefaultDataSource.Factory(activity, http)
+            return if (cache != null) CacheDataSource.Factory()
+                .setCache(cache).setUpstreamDataSourceFactory(upstream)
+                .setCacheWriteDataSinkFactory(CacheDataSink.Factory().setCache(cache).setFragmentSize(2 * 1024 * 1024L))
+                .setFlags(CacheDataSource.FLAG_IGNORE_CACHE_ON_ERROR or
+                    if (speculative) CacheDataSource.FLAG_BLOCK_ON_CACHE else 0) else upstream
+        }
+        val factory = dataSource(false)
+        val prefetchFactory = dataSource(true)
         val loadControl = DefaultLoadControl.Builder()
             .setTargetBufferBytes(PlaybackCache.targetBufferBytes())
             .setBufferDurationsMs(PlaybackCache.bufferTimeCapMs(), PlaybackCache.bufferTimeCapMs(), 2000, 3000)
             .setPrioritizeTimeOverSizeThresholds(false).build()
-        val player = ExoPlayer.Builder(activity).setMediaSourceFactory(DefaultMediaSourceFactory(DataSource.Factory { SegmentedDataSource(factory, session) }))
+        val player = ExoPlayer.Builder(activity).setMediaSourceFactory(DefaultMediaSourceFactory(DataSource.Factory {
+            SegmentedDataSource(factory, session) { offset -> session.onDemand(offset); prefetch?.onDemand(offset) }
+        }))
             .setLoadControl(loadControl).build()
         exo = player
         surface?.player = player
@@ -138,7 +150,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
         } ?: emptyList()
         player.setMediaItem(MediaItem.Builder().setUri(uri).setSubtitleConfigurations(subtitles).build(), (data["resume_ms"] as? Number)?.toLong() ?: 0)
         // setSource resets the length: set it before the first HTTP request.
-        prefetch?.setSource(factory, uri)
+        prefetch?.setSource(prefetchFactory, uri)
         prefetch?.start()
         player.prepare(); player.play()
         activity.window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)

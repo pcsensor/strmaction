@@ -11,6 +11,9 @@ import java.util.concurrent.Executors
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
+/** Carries cancellation across CacheDataSource.open() into the HTTP factory. */
+internal object PrefetchCancellation { val current = ThreadLocal<() -> Boolean>() }
+
 /**
  * 后台磁盘预取：内存缓冲之外，把后续内容提前读到 [SimpleCache]。
  *
@@ -26,6 +29,7 @@ import java.util.concurrent.atomic.AtomicLong
 class PlaybackPrefetcher(
     private val cacheProvider: () -> SimpleCache?,
     private val policy: AutoDownloadPolicy = AutoDownloadPolicy(),
+    private val cancelRequest: ((Long, Long) -> Unit)? = null,
 ) {
     private companion object {
         const val TAG = "StrmActionPrefetch"
@@ -41,7 +45,8 @@ class PlaybackPrefetcher(
     private val workers = Executors.newFixedThreadPool(3) { runnable ->
         Thread(runnable, "strmaction-range").apply { isDaemon = true }
     }
-    private data class Work(val start: Long, val end: Long, val source: DataSource, val generation: Long)
+    private data class Work(val start: Long, val end: Long, val source: DataSource, val generation: Long,
+                            @Volatile var cancelled: Boolean = false)
     private val jobs = ConcurrentHashMap<Long, Work>()
     private val sequence = AtomicLong()
 
@@ -52,7 +57,8 @@ class PlaybackPrefetcher(
     @Volatile private var windowBytes: Long = 0L
     @Volatile private var positionMs: Long = 0L
     @Volatile private var bufferedMs: Long = 0L
-    @Volatile private var playerBuffering = false
+    @Volatile private var playbackUrgent = false
+    @Volatile private var demandOffset: Long? = null
     @Volatile private var generation: Long = 0L
     @Volatile private var running = false
     @Volatile private var working = false
@@ -100,15 +106,25 @@ class PlaybackPrefetcher(
         this.positionMs = positionMs.coerceAtLeast(0L)
         this.bufferedMs = bufferedMs.coerceAtLeast(0L)
         if (durationMs > 0) this.durationMs = durationMs
-        playerBuffering = buffering
+        playbackUrgent = buffering || this.bufferedMs - this.positionMs < 10_000
     }
 
     fun isWorking(): Boolean = jobs.isNotEmpty()
 
-    fun onSeek() { generation++; cancelDownloads() }
+    fun onSeek() { generation++; demandOffset = null; cancelDownloads() }
+
+    fun onDemand(offset: Long) { demandOffset = offset.coerceAtLeast(0) }
+
+    private fun cancel(work: Work) {
+        work.cancelled = true
+        // OkHttp cancellation interrupts the owning worker. CacheDataSource
+        // must close on that worker, never concurrently with its read().
+        if (cancelRequest != null) cancelRequest.invoke(work.start, work.end)
+        else runCatching { work.source.close() }
+    }
 
     private fun cancelDownloads() {
-        jobs.values.toList().forEach { runCatching { it.source.close() } }
+        jobs.values.toList().forEach { cancel(it) }
         jobs.clear()
     }
 
@@ -204,8 +220,14 @@ class PlaybackPrefetcher(
                     val key = uri.toString()
                     val target = minOf(contentLength, (positionMs * ratio).toLong() + windowBytes)
                     var cursor = cachedEndBytes(cache, key, ratio)
+                    demandOffset?.takeIf { it < target }?.let {
+                        cursor = it + contiguousBytesFrom(cache, key, it)
+                    }
                     // Reserve one transport slot for the decoder; total is at most four.
-                    val limit = (policy.concurrency - 1).coerceIn(0, 3)
+                    val limit = (if (playbackUrgent) 1 else policy.concurrency - 1).coerceIn(1, 3)
+                    val pending = jobs.entries.filter { !it.value.cancelled }
+                        .sortedBy { kotlin.math.abs(it.value.start - (demandOffset ?: cursor)) }
+                    for (entry in pending.drop(limit)) { cancel(entry.value) }
                     while (running && cursor < target && jobs.size < limit) {
                         val covering = jobs.values.firstOrNull { cursor >= it.start && cursor < it.end }
                         if (covering != null) { cursor = covering.end; continue }
@@ -236,19 +258,20 @@ class PlaybackPrefetcher(
 
     private fun download(id: Long, work: Work, uri: Uri) {
         val buffer = ByteArray(READ_BUFFER_BYTES)
+        PrefetchCancellation.current.set { !running || work.cancelled || work.generation != generation }
         try {
-            if (!running || work.generation != generation) return
+            if (!running || work.cancelled || work.generation != generation) return
             work.source.open(DataSpec.Builder().setUri(uri).setPosition(work.start)
                 .setLength(work.end - work.start).setFlags(DataSpec.FLAG_ALLOW_CACHE_FRAGMENTATION).build())
             var position = work.start
-            while (running && work.generation == generation && position < work.end) {
+            while (running && !work.cancelled && work.generation == generation && position < work.end) {
                 val read = work.source.read(buffer, 0, minOf(buffer.size.toLong(), work.end - position).toInt())
                 if (read == C.RESULT_END_OF_INPUT) break
                 if (read <= 0) break
                 position += read
             }
         } catch (error: Exception) {
-            if (running && work.generation == generation) {
+            if (running && !work.cancelled && work.generation == generation) {
                 policy.failed()
                 Log.w(TAG, "range prefetch failed", error)
                 runCatching { sleep(ERROR_BACKOFF_MS) }
@@ -256,6 +279,7 @@ class PlaybackPrefetcher(
         } finally {
             runCatching { work.source.close() }
             jobs.remove(id)
+            PrefetchCancellation.current.remove()
         }
     }
 

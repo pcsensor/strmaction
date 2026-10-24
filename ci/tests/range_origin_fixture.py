@@ -8,7 +8,7 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-state = {"entries": 0, "ticket": 0, "active": 0, "peak": 0, "ports": set()}
+state = {"entries": 0, "ticket": 0, "active": 0, "peak": 0, "ports": set(), "head_starts": []}
 lock = threading.Lock()
 length = 12 * 1024 * 1024
 
@@ -68,11 +68,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(416)
             return
         probe = start == end == 0
+        stall_head = False
         with lock:
             state["ports"].add(self.client_address[1])
             if not probe:
                 state["active"] += 1
                 state["peak"] = max(state["peak"], state["active"])
+                if self.path.startswith("/head-stall"):
+                    state["head_starts"].append(start)
+                    stall_head = len(state["head_starts"]) == 1
         try:
             if not probe:
                 time.sleep(2 if self.path.startswith("/slow") else 0.04)
@@ -83,7 +87,14 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", "video/mp4")
             self.send_header("ETag", '"fixture"')
             self.end_headers()
-            for cursor in range(start, end + 1, 256 * 1024):
+            cursor = start
+            if stall_head or (self.path.startswith("/stream-prefix") and end - start > 1024 * 1024):
+                count = min(64 * 1024, end - start + 1)
+                self.wfile.write(bytes((cursor + i) % 251 for i in range(count)))
+                self.wfile.flush()
+                cursor += count
+                time.sleep(5)
+            for cursor in range(cursor, end + 1, 256 * 1024):
                 self.wfile.write(bytes((cursor + i) % 251 for i in range(min(256 * 1024, end - cursor + 1))))
         except (BrokenPipeError, ConnectionResetError):
             self.close_connection = True
