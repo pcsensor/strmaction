@@ -114,6 +114,10 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: Verify iOS cache session isolation
+        run: |
+          swiftc -swift-version 5 -parse-as-library native/ios/Sources/Cache/PlaybackCacheDirectory.swift ci/tests/PlaybackCacheDirectoryTests.swift -o "$RUNNER_TEMP/cache-directory-tests"
+          "$RUNNER_TEMP/cache-directory-tests"
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}

@@ -19,6 +19,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     private var completed = false
     private var title = "StrmAction"
     private var loaded = false
+    private var sessionID: String?
     private let originalBrightness = UIScreen.main.brightness
     private var remoteTargets: [(MPRemoteCommand, Any)] = []
     private var interruptionObserver: NSObjectProtocol?
@@ -89,6 +90,8 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 result(FlutterError(code: "audio_session", message: error.localizedDescription, details: nil)); return
             }
             loaded = true
+            sessionID = data["session_id"] as? String
+            let requestSessionID = sessionID
             completed = false
             title = data["title"] as? String ?? "StrmAction"
             if let entries = data["subtitles"], let json = try? JSONSerialization.data(withJSONObject: entries) {
@@ -100,9 +103,9 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
                 diskCacheLimitMb: (data["disk_cache_limit_mb"] as? NSNumber)?.intValue ?? 2048)
             UIApplication.shared.isIdleTimerDisabled = true
             requestTask = Task { [weak self] in
-                guard let self else { return }
-                await self.controller.load(request)
-                guard !Task.isCancelled else { return }
+                guard let self, !Task.isCancelled, self.sessionID == requestSessionID else { return }
+                await self.controller.load(request, presentationID: requestSessionID)
+                guard !Task.isCancelled, self.sessionID == requestSessionID else { return }
                 self.emit()
             }
         case "play":
@@ -121,7 +124,10 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "subtitle": selectSubtitle(call.arguments as? String)
         case "settings":
             if let data = call.arguments as? [String: Any], let value = data["buffer_limit_mb"] as? Int { controller.setBufferLimit(value) }
-        case "dispose": clear()
+        case "dispose":
+            if let owner = (call.arguments as? [String: Any])?["session_id"] as? String,
+               owner != sessionID { result(nil); return }
+            clear()
         default: result(FlutterMethodNotImplemented); return
         }
         emit()
@@ -155,6 +161,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         let externalSubs: [[String: Any]] = subtitles.enumerated().map { ["id": "external:\($0.offset)", "title": $0.element.label, "external": true] }
         let loading = loaded && (controller.phase == .resolving || controller.phase == .connecting)
         sink?([
+            "session_id": sessionID as Any? ?? NSNull(),
             "position_ms": controller.currentPositionMs, "duration_ms": controller.durationMs,
             "buffered_ms": controller.bufferedPositionMs, "playing": controller.isPlaying,
             "loading": loading, "buffering": controller.phase == .buffering,
@@ -211,6 +218,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         controller.destroy()
         try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
         subtitles = []; selectedExternal = nil; loaded = false; completed = false
+        sessionID = nil; notice = nil
         UIScreen.main.brightness = originalBrightness
         UIApplication.shared.isIdleTimerDisabled = false
         MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
@@ -224,15 +232,16 @@ private final class UnifiedVideoFactory: NSObject, FlutterPlatformViewFactory {
     init(plugin: UnifiedPlayerPlugin, parent: UIViewController?) { self.plugin = plugin; self.parent = parent }
     func createArgsCodec() -> FlutterMessageCodec & NSObjectProtocol { FlutterStandardMessageCodec.sharedInstance() }
     func create(withFrame frame: CGRect, viewIdentifier viewId: Int64, arguments args: Any?) -> FlutterPlatformView {
-        UnifiedVideoView(plugin: plugin, parent: parent, frame: frame)
+        UnifiedVideoView(plugin: plugin, parent: parent, frame: frame,
+            sessionID: (args as? [String: Any])?["session_id"] as? String)
     }
 }
 
 @MainActor
 private final class UnifiedVideoView: NSObject, FlutterPlatformView {
     let host: UIHostingController<VideoSurfaceView>
-    init(plugin: UnifiedPlayerPlugin, parent: UIViewController?, frame: CGRect) {
-        host = UIHostingController(rootView: VideoSurfaceView(controller: plugin.controller, url: URL(string: "about:blank")!, resumeMs: 0))
+    init(plugin: UnifiedPlayerPlugin, parent: UIViewController?, frame: CGRect, sessionID: String?) {
+        host = UIHostingController(rootView: VideoSurfaceView(controller: plugin.controller, url: URL(string: "about:blank")!, resumeMs: 0, presentationID: sessionID))
         super.init()
         parent?.addChild(host)
         host.view.frame = frame; host.view.backgroundColor = .black

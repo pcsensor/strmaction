@@ -13,11 +13,15 @@ import 'package:strmaction_desktop/models/playback_payload.dart';
 import 'package:strmaction_desktop/player/playback_engine.dart';
 import 'package:strmaction_desktop/player/player_page.dart';
 import 'package:strmaction_desktop/player/widgets/controls_overlay.dart';
+import 'package:strmaction_desktop/player/widgets/message_card.dart';
 import 'package:strmaction_desktop/player/widgets/player_drawer.dart';
 
 class FakeEngine extends PlaybackEngine {
   bool paused = false;
   int nativeTaps = 0;
+  int loadCalls = 0;
+  String? failure;
+  bool buffering = false;
   final loading = Completer<void>();
   @override VideoController? get videoController => null;
   @override double get position => 10;
@@ -26,9 +30,9 @@ class FakeEngine extends PlaybackEngine {
   @override double get speed => 1;
   @override double get volume => 100;
   @override bool get isLoading => false;
-  @override bool get isBuffering => false;
+  @override bool get isBuffering => buffering;
   @override bool get completed => false;
-  @override String? get errorMessage => null;
+  @override String? get errorMessage => failure;
   @override double? get networkSpeed => null;
   @override List<BufferedRange> get bufferedRanges => const [];
   @override List<TrackInfo> get audioTracks => const [];
@@ -36,6 +40,7 @@ class FakeEngine extends PlaybackEngine {
   @override String? get currentAudioId => null;
   @override String? get currentSubtitleId => null;
   @override Future<void> load(PlaybackPayload payload, {required int cacheLimitMb, required bool tlsVerify}) {
+    loadCalls += 1;
     notifyListeners();
     // Keep networking out of the input tests; player state still arrives normally.
     return loading.future;
@@ -132,7 +137,7 @@ void main() {
       expect(tester.takeException(), isNull);
     }, variant: TargetPlatformVariant({platform}));
 
-    testWidgets('$platform double tap pauses and lock keeps unlock accessible', (tester) async {
+    testWidgets('$platform locked icon auto hides and taps toggle it even while paused', (tester) async {
       final engine = await mountPlayer(tester);
       await tester.tapAt(const Offset(196, 400));
       await tester.pump(const Duration(milliseconds: 50));
@@ -143,12 +148,63 @@ void main() {
       await tester.tap(find.byTooltip('锁定'));
       await tester.pump(const Duration(milliseconds: 200));
       expect(controlsVisible(tester), isFalse);
+      expect(find.byTooltip('解锁'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 3600));
+      expect(find.byTooltip('解锁'), findsNothing);
+      engine.notifyListeners();
+      await tester.pump();
+      expect(find.byTooltip('解锁'), findsNothing);
       await tapScreen(tester);
+      expect(find.byTooltip('解锁'), findsOneWidget);
       expect(controlsVisible(tester), isFalse);
+      await tapScreen(tester);
+      expect(find.byTooltip('解锁'), findsNothing);
+      await tapScreen(tester);
       await tester.tap(find.byTooltip('解锁'));
       await tester.pump(const Duration(milliseconds: 200));
       expect(controlsVisible(tester), isTrue);
       expect(engine.nativeTaps, 0);
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform stale error closes on recovery and the same new failure is shown', (tester) async {
+      final engine = await mountPlayer(tester);
+      engine.failure = "avformat can't open input";
+      engine.paused = true;
+      engine.notifyListeners();
+      await tester.pump();
+      expect(tester.widget<MessageCard>(find.byType(MessageCard)).visible, isTrue);
+      engine.failure = null;
+      engine.paused = false;
+      engine.buffering = true;
+      engine.notifyListeners();
+      await tester.pump();
+      expect(tester.widget<MessageCard>(find.byType(MessageCard)).visible, isTrue);
+      engine.buffering = false;
+      engine.notifyListeners();
+      await tester.pump();
+      expect(tester.widget<MessageCard>(find.byType(MessageCard)).visible, isFalse);
+      engine.failure = "avformat can't open input";
+      engine.paused = true;
+      engine.notifyListeners();
+      await tester.pump();
+      expect(tester.widget<MessageCard>(find.byType(MessageCard)).visible, isTrue);
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform error can be dismissed without retrying or stopping video', (tester) async {
+      final engine = await mountPlayer(tester);
+      engine.failure = "avformat can't open input";
+      engine.notifyListeners();
+      await tester.pump(const Duration(milliseconds: 200));
+      await tester.tap(find.byTooltip('关闭提示'));
+      await tester.pump(const Duration(milliseconds: 200));
+      expect(tester.widget<MessageCard>(find.byType(MessageCard)).visible, isFalse);
+      expect(engine.loadCalls, 1);
+      expect(engine.paused, isFalse);
+      engine.notifyListeners();
+      await tester.pump();
+      expect(tester.widget<MessageCard>(find.byType(MessageCard)).visible, isFalse);
       expect(tester.takeException(), isNull);
     }, variant: TargetPlatformVariant({platform}));
   }

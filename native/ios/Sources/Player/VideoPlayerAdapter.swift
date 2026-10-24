@@ -49,6 +49,7 @@ public final class VideoPlayerController: ObservableObject {
     /// 交给 SwiftUI 的渲染图层参数。
     @Published public private(set) var ksOptions: KSOptions?
     @Published public private(set) var playbackURL: URL?
+    @Published public private(set) var presentationID: String?
 
     public var onPlaybackEnded: (() -> Void)?
 
@@ -78,6 +79,7 @@ public final class VideoPlayerController: ObservableObject {
     private var lastDiagnosticSecond: Int64 = -1
     /// 网速 / 缓存区间的轮询任务。1 秒一次足够，再高频只会让 UI 白刷新。
     private var metricsTask: Task<Void, Never>?
+    private var loadGeneration: UInt64 = 0
 
     /// FFmpeg 缓冲上限相对用户设置留的余量，避免它成为流量控制的主控（见 `refreshBufferTarget`）。
     private static let maxBufferHeadroom: Double = 1.2
@@ -96,10 +98,13 @@ public final class VideoPlayerController: ObservableObject {
     // MARK: - 装载
 
     /// 建立证书固定关系、组装选项、创建图层。整个过程是确定的单行道。
-    public func load(_ request: PlaybackRequest) async {
+    public func load(_ request: PlaybackRequest, presentationID: String? = nil) async {
+        guard !Task.isCancelled else { return }
         D.log("engine", "load \(request.url.absoluteString.prefix(110)) resumeMs=\(request.resumeMs) buffer=\(request.bufferLimitMb)MB")
 
-        resetState()
+        destroy()
+        let generation = loadGeneration
+        self.presentationID = presentationID
         phase = .resolving
 
         // 1. 证书信任校验（仅 https）
@@ -114,10 +119,12 @@ public final class VideoPlayerController: ObservableObject {
             do {
                 try await SecurityPolicy.ensureTrusted(for: request.url)
             } catch {
+                guard generation == loadGeneration, !Task.isCancelled else { return }
                 fail(error.localizedDescription)
                 return
             }
         }
+        guard generation == loadGeneration, !Task.isCancelled else { return }
 
         // 2. 磁盘缓存层
         //
@@ -139,7 +146,12 @@ public final class VideoPlayerController: ObservableObject {
                 targetAheadSeconds: aheadSeconds
             )
         } catch {
+            guard generation == loadGeneration, !Task.isCancelled else { return }
             fail("磁盘缓存层启动失败：\(error.localizedDescription)")
+            return
+        }
+        guard generation == loadGeneration, !Task.isCancelled else {
+            session.stop()
             return
         }
         cacheSession?.stop()
@@ -285,25 +297,31 @@ public final class VideoPlayerController: ObservableObject {
 
     /// 图层创建/重建后必须重新安装回调。由 `KSPlayerSurfaceView.updateUIView` 调用。
     public func installKSPlayerCallbacks() {
+        let generation = loadGeneration
         ksCoordinator.onStateChanged = { [weak self] layer, state in
             let layerURL = layer.url.absoluteString
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.loadGeneration == generation else { return }
                 let isCurrent = self.ksCoordinator.playerLayer === layer
                 D.log("state", "\(state) 是当前图层=\(isCurrent) url=\(layerURL.prefix(50))")
                 guard isCurrent else { return }
 
-                if state == .readyToPlay {
+                if state == .readyToPlay && layer.state != .error {
                     self.enterReady()
-                } else if state == .error {
-                    self.fail("播放器进入错误状态")
+                } else if state == .bufferFinished && layer.state != .error {
+                    self.errorMessage = nil
+                    self.phase = .ready
+                    self.isPlaying = layer.state.isPlaying
                 }
+                // onFinish carries the real failure. Ignore superseded generic
+                // state notifications instead of raising a second sticky error.
             }
         }
 
-        ksCoordinator.onPlay = { [weak self] current, total in
+        ksCoordinator.onPlay = { [weak self, weak reportingLayer = self.ksCoordinator.playerLayer] current, total in
             DispatchQueue.main.async {
-                guard let self, self.ksCoordinator.playerLayer != nil else { return }
+                guard let self, self.loadGeneration == generation,
+                      let layer = reportingLayer, self.ksCoordinator.playerLayer === layer else { return }
 
                 let second = Int64(current)
                 if self.lastDiagnosticSecond < 0 || (second % 3 == 0 && second != self.lastDiagnosticSecond) {
@@ -311,11 +329,18 @@ public final class VideoPlayerController: ObservableObject {
                     D.log("play", String(format: "pos=%.2f total=%.2f", current, total))
                 }
 
+                let advanced = Int64(current * 1000) > self.currentPositionMs
                 self.currentPositionMs = Int64(current * 1000)
                 if total > 0 {
                     self.durationMs = Int64(total * 1000)
                 }
                 self.isPlaying = self.ksCoordinator.state.isPlaying
+                if advanced && self.isPlaying && layer.player.isReadyToPlay {
+                    self.errorMessage = nil
+                    self.phase = .ready
+                    self.connectTimeoutTask?.cancel()
+                    self.connectTimeoutTask = nil
+                }
 
                 // 缓冲进度只认 playableTime。
                 //
@@ -353,15 +378,17 @@ public final class VideoPlayerController: ObservableObject {
                 detail = " domain=\(nsError.domain) code=\(nsError.code) userInfo=\(nsError.userInfo)"
             }
             DispatchQueue.main.async {
-                guard let self else { return }
+                guard let self, self.loadGeneration == generation else { return }
                 let isCurrent = self.ksCoordinator.playerLayer === layer
                 D.log("finish", "\(reason ?? "正常结束")\(detail) 是当前图层=\(isCurrent)")
                 guard isCurrent else { return }
+                if reason != nil && layer.player.isReadyToPlay && layer.state.isPlaying { return }
 
                 self.isPlaying = false
                 if let reason {
                     self.fail(reason)
                 } else {
+                    self.errorMessage = nil
                     self.phase = .ready
                     self.onPlaybackEnded?()
                 }
@@ -385,6 +412,7 @@ public final class VideoPlayerController: ObservableObject {
     private func enterReady() {
         connectTimeoutTask?.cancel()
         connectTimeoutTask = nil
+        errorMessage = nil
 
         isPlaying = true
         ksCoordinator.playbackRate = Float(playbackSpeed)
@@ -530,6 +558,7 @@ public final class VideoPlayerController: ObservableObject {
     // MARK: - 生命周期
 
     private func resetState() {
+        loadGeneration &+= 1
         stopMetricsTask()
         connectTimeoutTask?.cancel()
         connectTimeoutTask = nil
@@ -573,6 +602,7 @@ public final class VideoPlayerController: ObservableObject {
         }
         selectedSubtitleFileURL = nil
         playbackURL = nil
+        presentationID = nil
         phase = .idle
     }
 }
@@ -583,19 +613,22 @@ public struct VideoSurfaceView: View {
     @ObservedObject public var controller: VideoPlayerController
     public let url: URL
     public let resumeMs: Int64
+    public let presentationID: String?
 
-    public init(controller: VideoPlayerController, url: URL, resumeMs: Int64) {
+    public init(controller: VideoPlayerController, url: URL, resumeMs: Int64, presentationID: String? = nil) {
         self.controller = controller
         self.url = url
         self.resumeMs = resumeMs
+        self.presentationID = presentationID
     }
 
     public var body: some View {
-        if let options = controller.ksOptions {
+        if controller.presentationID == presentationID, let options = controller.ksOptions {
             KSPlayerSurfaceView(
                 controller: controller,
                 url: controller.playbackURL ?? url,
-                options: options
+                options: options,
+                presentationID: presentationID
             )
             .ignoresSafeArea()
         } else {
@@ -612,6 +645,7 @@ struct KSPlayerSurfaceView: UIViewRepresentable {
     @ObservedObject var controller: VideoPlayerController
     let url: URL
     let options: KSOptions
+    let presentationID: String?
 
     func makeUIView(context: Context) -> UIView {
         let container = UIView()
@@ -620,6 +654,10 @@ struct KSPlayerSurfaceView: UIViewRepresentable {
     }
 
     func updateUIView(_ container: UIView, context: Context) {
+        // A disappearing platform view can update after the next player opens.
+        // It must never replace the current layer with its already-closed URL.
+        guard controller.presentationID == presentationID,
+              controller.playbackURL == url, controller.ksOptions === options else { return }
         // 仅在 URL 变化或图层为空时创建，避免反复重置 subtitleModel。
         let currentURL = controller.ksCoordinator.playerLayer?.url.absoluteString
         let needsCreate = currentURL != url.absoluteString

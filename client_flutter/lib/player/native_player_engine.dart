@@ -10,6 +10,8 @@ import 'playback_engine.dart';
 
 /// Native video surfaces use the same Flutter controls and progress reporter.
 class NativePlayerEngine extends PlaybackEngine {
+  static int _nextSession = 0;
+  final String sessionId = '${DateTime.now().microsecondsSinceEpoch}-${_nextSession++}';
   static const channel = MethodChannel('strmaction/player');
   static const events = EventChannel('strmaction/player/events');
   late final StreamSubscription<dynamic> _subscription;
@@ -18,9 +20,10 @@ class NativePlayerEngine extends PlaybackEngine {
   String? _error;
   double _previousVolume = 100;
 
-  NativePlayerEngine() {
-    _subscription = events.receiveBroadcastStream().listen((event) {
+  NativePlayerEngine({Stream<dynamic>? stateEvents}) {
+    _subscription = (stateEvents ?? events.receiveBroadcastStream()).listen((event) {
       if (_disposed || event is! Map) return;
+      if (event['session_id'] != null && event['session_id'] != sessionId) return;
       _state = Map<String, dynamic>.from(event);
       _error = _state['error'] as String?;
       notifyListeners();
@@ -65,8 +68,9 @@ class NativePlayerEngine extends PlaybackEngine {
     _error = null;
     notifyListeners();
     try {
-      await _call('load', {...payload.toNativeJson(), 'buffer_limit_mb': cacheLimitMb, 'disk_cache_limit_mb': payload.diskCacheLimitMb ?? 2048});
+      await _call('load', {...payload.toNativeJson(), 'session_id': sessionId, 'buffer_limit_mb': cacheLimitMb, 'disk_cache_limit_mb': payload.diskCacheLimitMb ?? 2048});
     } on Object catch (error) {
+      if (_disposed) return;
       _state = {};
       _error = '$error';
       notifyListeners();
@@ -100,12 +104,13 @@ class NativePlayerEngine extends PlaybackEngine {
     if (_disposed) return;
     _disposed = true;
     await _subscription.cancel();
-    await _call('dispose');
+    await _call('dispose', {'session_id': sessionId});
   }
 
   @override Widget buildVideo() => Stack(fit: StackFit.expand, children: [
     if (Platform.isAndroid) const AndroidView(viewType: 'strmaction/video')
-    else const UiKitView(viewType: 'strmaction/video'),
+    else UiKitView(viewType: 'strmaction/video',
+      creationParams: {'session_id': sessionId}, creationParamsCodec: const StandardMessageCodec()),
     if (_state['subtitle_text'] is String && (_state['subtitle_text'] as String).isNotEmpty)
       Positioned(left: 20, right: 20, bottom: 100, child: IgnorePointer(child: Text(
         _state['subtitle_text'] as String, textAlign: TextAlign.center,

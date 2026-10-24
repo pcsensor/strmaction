@@ -12,6 +12,7 @@ class MessageCard extends StatefulWidget {
   final VoidCallback? onPrimary;
   final VoidCallback? onSecondary;
   final VoidCallback? onCopyLink;
+  final VoidCallback? onDismiss;
 
   const MessageCard({
     super.key,
@@ -24,6 +25,7 @@ class MessageCard extends StatefulWidget {
     required this.onPrimary,
     required this.onSecondary,
     this.onCopyLink,
+    this.onDismiss,
   });
 
   @override
@@ -99,7 +101,9 @@ class _MessageCardState extends State<MessageCard> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
+                  Row(children: [
+                    if (widget.onDismiss != null) const SizedBox(width: 40),
+                    Expanded(child: Text(
                     widget.title,
                     textAlign: TextAlign.center,
                     style: const TextStyle(
@@ -107,7 +111,15 @@ class _MessageCardState extends State<MessageCard> {
                       fontSize: 19,
                       fontWeight: FontWeight.bold,
                     ),
-                  ),
+                    )),
+                    if (widget.onDismiss != null) IconButton(
+                      tooltip: '关闭提示',
+                      onPressed: widget.onDismiss,
+                      icon: const Icon(Icons.close, color: Colors.white70),
+                      constraints: const BoxConstraints.tightFor(width: 40, height: 40),
+                      padding: EdgeInsets.zero,
+                    ),
+                  ]),
                   if (widget.description.isNotEmpty) ...[
                     const SizedBox(height: 10),
                     Text(

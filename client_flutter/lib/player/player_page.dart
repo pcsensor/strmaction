@@ -197,7 +197,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(notice)));
     }
     final error = _engine.errorMessage;
-    if (error != null && error != _lastError) {
+    if (error == null) {
+      _lastError = null;
+      if (_messageVisible && _cardMode == 'error' && !_engine.isPaused &&
+          !_engine.isLoading && !_engine.isBuffering) _hideMessage();
+    } else if (error != _lastError) {
       _lastError = error;
       _showError(error);
     }
@@ -339,7 +343,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _toggleControls() {
-    if (_locked || _drawerVisible || _messageVisible || _seeking) return;
+    if (_drawerVisible || _messageVisible || _seeking) return;
     if (_controlsVisible) {
       _hideTimer?.cancel();
       setState(() => _controlsVisible = false);
@@ -350,12 +354,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _restartHideTimer() {
     _hideTimer?.cancel();
-    if (_engine.isPaused || _seeking || _drawerVisible || _messageVisible) {
+    if ((_engine.isPaused && !_locked) || _seeking || _drawerVisible || _messageVisible) {
       return;
     }
     _hideTimer = Timer(const Duration(milliseconds: 3500), () {
       if (!mounted) return;
-      if (_engine.isPaused || _seeking || _drawerVisible || _messageVisible) {
+      if ((_engine.isPaused && !_locked) || _seeking || _drawerVisible || _messageVisible) {
         return;
       }
       setState(() => _controlsVisible = false);
@@ -466,7 +470,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _toggleLock() {
     setState(() => _locked = !_locked);
-    if (!_locked) _showControls();
+    _showControls();
   }
 
   void _onEscape() {
@@ -732,7 +736,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onTracks: () => _openDrawer('tracks'),
                   onFullscreen: _toggleFullscreen,
                 ),
-                if (_mobile && !_engine.isPiP && (_controlsVisible || _locked)) Positioned(
+                if (_mobile && !_engine.isPiP && _controlsVisible) Positioned(
                   right: 12 + MediaQuery.viewPaddingOf(context).right,
                   top: 20 + MediaQuery.viewPaddingOf(context).top,
                   child: Row(children: [
@@ -768,6 +772,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   countdown: _cardCountdown,
                   onPrimary: _onCardPrimary,
                   onSecondary: _onCardSecondary,
+                  onDismiss: _cardMode == 'error' ? _hideMessage : null,
                   onCopyLink: _cardMode == 'error' ? () async {
                     await Clipboard.setData(ClipboardData(text: widget.payload.playUrl));
                     if (mounted) _flashCenterText('已复制播放链接');

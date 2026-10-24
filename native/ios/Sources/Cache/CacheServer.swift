@@ -1,4 +1,3 @@
-import CryptoKit
 import Foundation
 import Network
 
@@ -112,7 +111,9 @@ final class CacheServer {
 
     /// 启动并返回本地端口。
     func start() async throws -> UInt16 {
-        try await withCheckedThrowingContinuation { continuation in
+        try Task.checkCancellation()
+        return try await withTaskCancellationHandler(operation: {
+          try await withCheckedThrowingContinuation { continuation in
             let gate = ResumeGate()
             listener.stateUpdateHandler = { [weak self] state in
                 switch state {
@@ -122,6 +123,9 @@ final class CacheServer {
                 case .failed(let error):
                     guard gate.claim() else { return }
                     continuation.resume(throwing: error)
+                case .cancelled:
+                    guard gate.claim() else { return }
+                    continuation.resume(throwing: CancellationError())
                 default:
                     break
                 }
@@ -130,7 +134,8 @@ final class CacheServer {
                 self?.accept(connection)
             }
             listener.start(queue: queue)
-        }
+          }
+        }, onCancel: { [listener] in listener.cancel() })
     }
 
     func stop() {
@@ -524,10 +529,10 @@ final class CacheServer {
 final class MediaCacheSession {
     let localURL: URL
     private let server: CacheServer
-    private let directory: URL
+    private let directory: PlaybackCacheDirectory
     private let store: RangeStore
 
-    private init(localURL: URL, server: CacheServer, directory: URL, store: RangeStore) {
+    private init(localURL: URL, server: CacheServer, directory: PlaybackCacheDirectory, store: RangeStore) {
         self.localURL = localURL
         self.server = server
         self.directory = directory
@@ -536,29 +541,29 @@ final class MediaCacheSession {
 
     static func start(sourceURL: URL, headers: [String: String], limitMb: Int,
                       targetAheadMb: Int, targetAheadSeconds: Double) async throws -> MediaCacheSession {
-        let root = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("strmaction", isDirectory: true)
-            .appendingPathComponent("session", isDirectory: true)
-        // 单会话：先清掉上一次的残留
-        try? FileManager.default.removeItem(at: root)
-        let key = Self.hash(sourceURL.absoluteString)
+        try Task.checkCancellation()
+        let directory = try PlaybackCacheDirectory(sourceURL: sourceURL)
         let token = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased()
-        let directory = root.appendingPathComponent(key, isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 
         let limitBytes = Int64(max(0, limitMb)) * 1_048_576
-        let store = RangeStore(directory: directory, limitBytes: limitBytes)
-        try store.prepare()
-
-        let server = try CacheServer(sourceURL: sourceURL, headers: headers, store: store, token: token,
-                                     targetAheadMb: targetAheadMb, targetAheadSeconds: targetAheadSeconds)
-        let port = try await server.start()
-        guard port > 0, let localURL = URL(string: "http://127.0.0.1:\(port)/\(token)") else {
-            server.stop()
-            throw CacheError.startFailed
+        let store = RangeStore(directory: directory.url, limitBytes: limitBytes)
+        var startedServer: CacheServer?
+        do {
+            try store.prepare()
+            let server = try CacheServer(sourceURL: sourceURL, headers: headers, store: store, token: token,
+                                         targetAheadMb: targetAheadMb, targetAheadSeconds: targetAheadSeconds)
+            startedServer = server
+            let port = try await server.start()
+            try Task.checkCancellation()
+            guard port > 0, let localURL = URL(string: "http://127.0.0.1:\(port)/\(token)") else {
+                throw CacheError.startFailed
+            }
+            D.log("cache", "会话就绪 端口=\(port) 磁盘上限=\(limitMb)MB 预拉取目标=\(targetAheadMb)MB 源=\(sourceURL.host ?? "-")")
+            return MediaCacheSession(localURL: localURL, server: server, directory: directory, store: store)
+        } catch {
+            directory.remove { startedServer?.stop(); store.removeFiles() }
+            throw error
         }
-        D.log("cache", "会话就绪 端口=\(port) 磁盘上限=\(limitMb)MB 预拉取目标=\(targetAheadMb)MB 源=\(sourceURL.host ?? "-")")
-        return MediaCacheSession(localURL: localURL, server: server, directory: directory, store: store)
     }
 
     /// 回源吞吐采样器（只读）。
@@ -584,15 +589,8 @@ final class MediaCacheSession {
     }
 
     func stop() {
-        server.stop()
-        store.removeFiles()
-        try? FileManager.default.removeItem(at: directory)
+        directory.remove { server.stop(); store.removeFiles() }
         D.log("cache", "会话已清理")
-    }
-
-    private static func hash(_ text: String) -> String {
-        let digest = SHA256.hash(data: Data(text.utf8))
-        return digest.prefix(8).map { String(format: "%02x", $0) }.joined()
     }
 }
 
