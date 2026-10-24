@@ -1,0 +1,173 @@
+name: Clients
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: clients-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FLUTTER_VERSION: '3.47.0'
+
+jobs:
+  checks:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - run: pip install -r backend/requirements.txt pytest pytest-asyncio
+      - run: PYTHONPATH=. pytest tests -q
+        working-directory: backend
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci && npm run build
+        working-directory: frontend
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - run: flutter pub get && flutter analyze && flutter test
+        working-directory: client_flutter
+
+  android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.7'
+      - name: Build Android baseline
+        run: gradle --no-daemon :app:assembleDebug :app:assembleRelease
+        working-directory: companion
+      - name: Package Android
+        run: |
+          mkdir -p dist
+          cp companion/app/build/outputs/apk/debug/app-debug.apk dist/StrmAction-Android-test.apk
+          cp companion/app/build/outputs/apk/release/*release*.apk dist/StrmAction-Android-release.apk
+          python3 ci/artifacts.py android dist --signing 'test-debug-and-unsigned-release'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StrmAction-Android
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  ios:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - name: Prepare Xcode project
+        run: |
+          xcodebuild -version
+          brew install xcodegen
+          xcodegen generate --spec project.yml
+        working-directory: native/ios
+      - name: Build iOS baseline
+        run: >-
+          xcodebuild archive -project StrmAction.xcodeproj -scheme StrmAction
+          -destination 'generic/platform=iOS' -archivePath build/StrmAction.xcarchive
+          CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=""
+          ENABLE_USER_SCRIPT_SANDBOXING=NO
+        working-directory: native/ios
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p dist/Payload
+          cp -R native/ios/build/StrmAction.xcarchive/Products/Applications/StrmAction.app dist/Payload/
+          cd dist
+          zip -r -q StrmAction-iOS-unsigned.ipa Payload
+          rm -rf Payload
+          cd ..
+          python3 ci/artifacts.py ios dist --signing unsigned
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StrmAction-iOS
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  desktop:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows
+            runner: windows-2022
+          - platform: macos
+            runner: macos-15
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+      - name: Prepare Windows dependencies
+        if: matrix.platform == 'windows'
+        run: choco install nuget.commandline -y --no-progress
+      - run: flutter pub get
+        working-directory: client_flutter
+      - run: flutter build ${{ matrix.platform }} --release
+        working-directory: client_flutter
+      - name: Package Windows
+        if: matrix.platform == 'windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item client_flutter/build/windows/x64/runner/Release dist/StrmAction-Windows -Recurse -Force
+          Compress-Archive -Path dist/StrmAction-Windows -DestinationPath dist/StrmAction-Windows.zip -Force
+          Remove-Item -Recurse -Force dist/StrmAction-Windows
+          python ci/artifacts.py windows dist --signing unsigned
+      - name: Package macOS
+        if: matrix.platform == 'macos'
+        run: |
+          mkdir -p dist
+          APP=$(find client_flutter/build/macos/Build/Products/Release -maxdepth 1 -name '*.app' -print -quit)
+          test -n "$APP"
+          ditto -c -k --keepParent "$APP" dist/StrmAction-macOS.zip
+          python3 ci/artifacts.py macos dist --signing development
+      - uses: actions/upload-artifact@v4
+        with:
+          name: StrmAction-${{ matrix.platform }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 30
+
+  complete:
+    if: always()
+    needs: [checks, android, ios, desktop]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require all platform builds
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          results = json.loads(os.environ['RESULTS'])
+          failed = [name for name, result in results.items() if result['result'] != 'success']
+          if failed:
+              raise SystemExit('Unsuccessful jobs: ' + ', '.join(failed))
+          print('Checks and all four client targets succeeded for this commit.')
+          PY
