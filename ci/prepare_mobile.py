@@ -108,10 +108,11 @@ def ios():
     for source in (PLATFORM / 'ios').glob('*.swift'):
         shutil.copy2(source, runner / source.name)
     shutil.copy2(ROOT / 'native/ios/Resources/ca/roots.pem', runner / 'roots.pem')
+    shutil.copytree(ROOT / 'native/ios/Resources/Assets.xcassets/AppIcon.appiconset', runner / 'Assets.xcassets/AppIcon.appiconset', dirs_exist_ok=True)
     info = runner / 'Info.plist'
     data = plistlib.loads(info.read_bytes())
     data.update(CFBundleDisplayName='StrmAction', UIBackgroundModes=['audio'],
-                NSAppTransportSecurity={'NSAllowsArbitraryLoads': True, 'NSAllowsLocalNetworking': True},
+                NSAppTransportSecurity={'NSAllowsArbitraryLoads': True},
                 NSLocalNetworkUsageDescription='连接家庭媒体服务器。',
                 UISupportedInterfaceOrientations=['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationLandscapeLeft', 'UIInterfaceOrientationLandscapeRight'])
     info.write_bytes(plistlib.dumps(data, sort_keys=False))

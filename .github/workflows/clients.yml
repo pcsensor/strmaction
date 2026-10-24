@@ -162,6 +162,9 @@ jobs:
         run: choco install nuget.commandline -y --no-progress
       - run: flutter pub get
         working-directory: client_flutter
+      - name: Enable Windows strict private-CA callback
+        if: matrix.platform == 'windows'
+        run: python ci/patch_webview.py
       - run: flutter build ${{ matrix.platform }} --release
         working-directory: client_flutter
       - name: Package Windows

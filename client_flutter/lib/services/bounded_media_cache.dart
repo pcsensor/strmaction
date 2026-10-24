@@ -89,7 +89,7 @@ class BoundedMediaCache {
       _blocks[number] = file;
       return file.readAsBytesSync();
     }
-    return _pending.putIfAbsent(number, () => _download(number).whenComplete(() => _pending.remove(number)));
+    return _pending.putIfAbsent(number, () => _download(number).whenComplete(() { _pending.remove(number); }));
   }
   Future<List<int>> _download(int number) async {
     final start = number * blockSize;

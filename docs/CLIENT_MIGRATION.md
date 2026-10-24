@@ -15,7 +15,7 @@
 
 每个包附 `build-info.json`，记录提交、CI 运行、工具链与签名状态，并列出包的 SHA-256。Artifacts 保留 30 天。用户本地不需要 Flutter、Android、Xcode、Windows SDK，源码生成和编译都在 runner 完成。
 
-工具链固定 Flutter 3.47.0 / Dart 3.13；Android 使用 JDK 17、AGP 8.11.1、Kotlin 2.2.20、Gradle 8.14，保持与稳定版 WebView 插件兼容；iOS KSPlayer 固定 2.3.4。最低系统为 Android 7、iOS 16、Windows 10、macOS 12。
+工具链固定 Flutter 3.47.0 / Dart 3.13；Android 使用 JDK 17、AGP 8.11.1、Kotlin 2.2.20、Gradle 8.14，保持与稳定版 WebView 插件兼容；iOS KSPlayer 固定 2.3.4。Windows 稳定版 WebView 插件缺少原生证书挑战派发，CI 应用仓库内的小范围 WebView2 回调补丁；默认拒绝，只有共享严格验证回调通过才接受，并清除会话中的证书例外缓存。最低系统为 Android 7、iOS 16、Windows 10、macOS 12。
 
 用户已选择本轮先验收测试包，正式升级签名后续处理。测试 APK 不能覆盖以其他密钥签名的旧正式应用；当前仓库及 CI 没有原发布密钥，不能据此宣称完成旧正式包覆盖升级验证。
 
