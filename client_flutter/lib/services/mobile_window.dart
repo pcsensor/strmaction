@@ -1,5 +1,3 @@
-import 'dart:ui' show Brightness, Color;
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
