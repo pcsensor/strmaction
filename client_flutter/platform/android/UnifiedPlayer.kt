@@ -26,6 +26,7 @@ import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import io.flutter.plugin.common.EventChannel
 import okhttp3.OkHttpClient
@@ -82,6 +83,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
             }
             "audio" -> selectTrack(C.TRACK_TYPE_AUDIO, value as? String)
             "subtitle" -> selectTrack(C.TRACK_TYPE_TEXT, value as? String)
+            "scale" -> applyScale(value as? String ?: "fit")
             "pip" -> activity.enterPlayerPiP()
             "brightness", "brightnessLevel" -> {
                 val params = activity.window.attributes
@@ -175,6 +177,18 @@ class UnifiedPlayer(private val activity: MainActivity) {
         if (!loaded) return
         val intent = Intent(activity, PlaybackService::class.java)
         if (Build.VERSION.SDK_INT >= 26) activity.startForegroundService(intent) else activity.startService(intent)
+    }
+    /**
+     * 画面如何放进播放区域。ExoPlayer 自己知道视频尺寸，所以裁剪与拉伸交给
+     * 它做，Flutter 只负责固定画幅（16:9 等）的矩形布局。
+     */
+    private fun applyScale(mode: String) {
+        val view = surface ?: return
+        view.resizeMode = when (mode) {
+            "crop" -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+            "stretch" -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+            else -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+        }
     }
     private fun selectTrack(type: Int, id: String?) {
         val player = exo ?: return

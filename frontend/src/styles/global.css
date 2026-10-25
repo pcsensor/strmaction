@@ -205,15 +205,20 @@ body {
   --safe-left: env(safe-area-inset-left, 0px);
 }
 
+/*
+ * 外壳注入值（`--safe-*-inset`）与系统安全区取较大者：注入发生在页面首次
+ * 加载之后，慢一拍；而少数 WebView 上 env() 会报 0。取两者最大值后，顶栏
+ * 按钮既不会贴在刘海 / 灵动岛下面，也不会在已正确避让时多留一块空白。
+ */
 .safe-top {
-  padding-top: var(--safe-top);
+  padding-top: max(var(--safe-top-inset, 0px), var(--safe-top));
 }
 .safe-bottom {
-  padding-bottom: var(--safe-bottom);
+  padding-bottom: max(var(--safe-bottom-inset, 0px), var(--safe-bottom));
 }
 .safe-x {
-  padding-left: var(--safe-left);
-  padding-right: var(--safe-right);
+  padding-left: max(var(--safe-left-inset, 0px), var(--safe-left));
+  padding-right: max(var(--safe-right-inset, 0px), var(--safe-right));
 }
 
 /* TV / 10-foot UI */

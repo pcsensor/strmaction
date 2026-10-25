@@ -120,6 +120,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
         case "brightness": UIScreen.main.brightness = min(1, max(0.02, UIScreen.main.brightness + ((call.arguments as? NSNumber)?.doubleValue ?? 0)))
         case "brightnessLevel": UIScreen.main.brightness = min(1, max(0.02, (call.arguments as? NSNumber)?.doubleValue ?? 0.5))
         case "pip": _ = controller.togglePiP()
+        case "aspectFill": controller.setAspectFill((call.arguments as? NSNumber)?.boolValue ?? false)
         case "audio":
             if let id = call.arguments as? String, let track = controller.ksCoordinator.playerLayer?.player.tracks(mediaType: .audio).first(where: { String($0.trackID) == id }) {
                 controller.ksCoordinator.playerLayer?.player.select(track: track)

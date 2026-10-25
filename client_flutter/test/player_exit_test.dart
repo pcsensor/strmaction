@@ -26,6 +26,8 @@ class ExitEngine extends PlaybackEngine {
   @override
   VideoController? get videoController => null;
   @override
+  Widget buildSurface() => const SizedBox.shrink();
+  @override
   double get position => 42;
   @override
   double get duration => 100;

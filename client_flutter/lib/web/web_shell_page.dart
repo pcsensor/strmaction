@@ -67,25 +67,31 @@ class _WebShellPageState extends State<WebShellPage> {
   /// The library paints edge-to-edge. Its fixed header and bottom navigation
   /// read these variables instead of the whole document being inset, which
   /// showed as dark bands above and below the page on notched phones.
+  ///
+  /// The page takes the larger of this value and `env(safe-area-inset-*)`,
+  /// so a missing or late injection can never push the header buttons under
+  /// the notch again.
   Future<void> _applySafeArea() async {
     final controller = _webController;
     if (controller == null) return;
-    final insets = _safeInsets;
-    final source = '''
-(function () {
-  var root = document.documentElement;
-  root.style.setProperty('--safe-top', '${insets.top.toStringAsFixed(1)}px');
-  root.style.setProperty('--safe-right', '${insets.right.toStringAsFixed(1)}px');
-  root.style.setProperty('--safe-bottom', '${insets.bottom.toStringAsFixed(1)}px');
-  root.style.setProperty('--safe-left', '${insets.left.toStringAsFixed(1)}px');
-})();
-''';
     try {
-      await controller.evaluateJavascript(source: source);
+      await controller.evaluateJavascript(source: _safeAreaScript(_safeInsets));
     } on Object {
       // The document may be navigating again.
     }
   }
+
+  /// Same variables, applied as a document-start user script so the very first
+  /// paint already knows the cutout size.
+  static String _safeAreaScript(EdgeInsets insets) => '''
+(function () {
+  var root = document.documentElement;
+  root.style.setProperty('--safe-top-inset', '${insets.top.toStringAsFixed(1)}px');
+  root.style.setProperty('--safe-right-inset', '${insets.right.toStringAsFixed(1)}px');
+  root.style.setProperty('--safe-bottom-inset', '${insets.bottom.toStringAsFixed(1)}px');
+  root.style.setProperty('--safe-left-inset', '${insets.left.toStringAsFixed(1)}px');
+})();
+''';
 
   Future<void> _bootstrap() async {
     if (_bootstrapped) return;
@@ -424,6 +430,11 @@ class _WebShellPageState extends State<WebShellPage> {
       initialUserScripts: UnmodifiableListView<UserScript>([
         UserScript(
           source: buildBridgeScript(isTV: _isTv),
+          injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
+          forMainFrameOnly: true,
+        ),
+        UserScript(
+          source: _safeAreaScript(MediaQuery.viewPaddingOf(context)),
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
           forMainFrameOnly: true,
         ),

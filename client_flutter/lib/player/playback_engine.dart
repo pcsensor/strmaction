@@ -2,6 +2,10 @@ import 'package:flutter/widgets.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../models/playback_payload.dart';
+import 'video_scale.dart';
+import 'widgets/video_frame.dart';
+
+export 'video_scale.dart';
 
 class TrackInfo {
   final String id;
@@ -64,12 +68,32 @@ List<BufferedRange> mergeBufferedRanges(Iterable<BufferedRange> ranges) {
 abstract class PlaybackEngine extends ChangeNotifier {
   bool get isPiP => false;
   String? get notice => null;
+
+  /// Picture mapping currently applied to the surface.
+  VideoScaleMode videoScale = VideoScaleMode.fit;
+
+  /// Natural width / height of the video, or null while it is unknown.
+  double? get videoAspect => null;
+
+  /// True when the platform renderer applies [mode] itself, so Flutter must
+  /// not size or crop the surface on top of it.
+  bool handlesScaleNatively(VideoScaleMode mode) => false;
+
+  /// The raw decoded picture, laid out by [buildVideo].
+  Widget buildSurface();
+
   Widget buildVideo() {
-    final controller = videoController;
-    return controller == null ? const SizedBox.expand() : Video(
-      controller: controller, fit: BoxFit.contain,
-      controls: null, wakelock: true,
-    );
+    final surface = buildSurface();
+    if (handlesScaleNatively(videoScale)) {
+      return SizedBox.expand(child: surface);
+    }
+    return VideoFrame(mode: videoScale, aspect: videoAspect, child: surface);
+  }
+
+  Future<void> setVideoScale(VideoScaleMode mode) async {
+    if (videoScale == mode) return;
+    videoScale = mode;
+    notifyListeners();
   }
 
   Future<void> enterPiP() async {}

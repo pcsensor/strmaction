@@ -13,7 +13,7 @@ ControlsOverlay controls({double position = 10,
   speedBoost: false, speedBoostValue: 2,
   onBack: () {}, onPlayPause: () {}, onPrevious: () {}, onNext: () {},
   onSeek: onSeek ?? (_) {}, onSeekingChanged: (_) {}, onSpeed: () {},
-  onEpisodes: () {}, onTracks: () {}, onFullscreen: () {},
+  onEpisodes: () {}, onTracks: () {}, onFrame: () {}, onFullscreen: () {},
 );
 
 Future<void> showControls(WidgetTester tester, Size size, EdgeInsets insets,

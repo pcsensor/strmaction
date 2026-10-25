@@ -23,7 +23,7 @@ void main() {
       expect(tester.getRect(find.byKey(const ValueKey('web-content'))),
         Rect.fromLTWH(0, 0, size.width, size.height));
       // Flutter no longer shrinks the WebView: the document receives the insets
-      // as --safe-* variables and pads its own header and navigation.
+      // as --safe-*-inset variables and pads its own header and navigation.
       expect(remaining, insets);
       expect(tester.takeException(), isNull);
     }

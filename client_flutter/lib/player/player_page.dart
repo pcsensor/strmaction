@@ -69,6 +69,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   bool _controlsVisible = true;
   bool _drawerVisible = false;
+  late VideoScaleMode _videoScale;
   bool _seeking = false;
   bool _fullscreen = false;
   bool _speedBoost = false;
@@ -97,6 +98,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     _boostSpeed = widget.app.config.boostSpeed;
+    _videoScale = videoScaleModeFromId(widget.app.config.videoScale);
     WidgetsBinding.instance.addObserver(this);
     _engine = widget.engine ?? (_mobile ? NativePlayerEngine() : MediaKitEngine(
       caBundlePath: '${widget.app.paths.baseDir}/media-ca.pem',
@@ -174,6 +176,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _watchdog?.cancel();
     _watchdog = null;
     if (!mounted || _shutdownFuture != null) return;
+    // A fresh session rebuilds the platform view, so the remembered picture
+    // mode has to be handed to it again.
+    await _engine.setVideoScale(_videoScale);
     if (_engine.errorMessage == null) {
       _reporter.start();
       _reporter.update(
@@ -585,6 +590,22 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _reporter.requestFlush();
   }
 
+  /// Modes the running engine can actually honour.
+  List<VideoScaleMode> get _scaleModes => VideoScaleMode.values
+      .where((mode) => mode != VideoScaleMode.stretch || !Platform.isIOS)
+      .toList();
+
+  void _onScaleSelected(VideoScaleMode mode) {
+    if (_videoScale == mode) {
+      _closeDrawer();
+      return;
+    }
+    setState(() => _videoScale = mode);
+    unawaited(_engine.setVideoScale(mode));
+    unawaited(widget.app.saveSettings(widget.app.config.copyWith(videoScale: mode.id)));
+    _flashCenterText(mode.label);
+  }
+
   void _onProgressAuthError() {
     widget.app.logger.warning('播放进度凭证已失效，请从网页重新打开播放');
     if (!mounted) return;
@@ -840,6 +861,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onSpeed: () => _openDrawer('speed'),
                   onEpisodes: () => _openDrawer('episodes'),
                   onTracks: () => _openDrawer('tracks'),
+                  onFrame: () => _openDrawer('frame'),
                   onFullscreen: _toggleFullscreen,
                 ),
                 // Playback feedback (volume, mute, seek, play/pause, buffering)
@@ -875,12 +897,15 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   currentSid: _engine.currentSubtitleId,
                   currentAid: _engine.currentAudioId,
                   subtitleHint: _subtitleHint,
+                  videoScale: _videoScale,
+                  scaleModes: _scaleModes,
                   onClose: _closeDrawer,
                   onEpisodeSelected: _onEpisodeSelected,
                   onSpeedSelected: _onSpeedSelected,
                   onBoostSpeedSelected: _onBoostSpeedSelected,
                   onSubtitleSelected: _onSubtitleSelected,
                   onAudioSelected: _onAudioSelected,
+                  onScaleSelected: _onScaleSelected,
                 ),
                 if (!_engine.isPiP) MessageCard(
                   visible: _messageVisible,

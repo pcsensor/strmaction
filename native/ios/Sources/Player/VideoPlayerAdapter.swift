@@ -237,6 +237,13 @@ public final class VideoPlayerController: ObservableObject {
         ksCoordinator.isScaleAspectFill = isAspectFill
     }
 
+    /// 画面铺满开关。Flutter 侧只负责「是否铺满」，比例框（16:9 等）由
+    /// Flutter 直接给图层一个对应比例的矩形，不需要动原生渲染。
+    public func setAspectFill(_ value: Bool) {
+        isAspectFill = value
+        ksCoordinator.isScaleAspectFill = value
+    }
+
     // MARK: - 画中画
 
     public var isPiPAvailable: Bool {

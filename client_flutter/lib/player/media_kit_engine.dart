@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:math' as math;
 import 'dart:io';
 
+import 'package:flutter/widgets.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -84,6 +85,23 @@ class MediaKitEngine extends PlaybackEngine {
 
   @override
   VideoController? get videoController => _videoController;
+
+  /// MPV reports the display size of the decoded frame (rotation applied).
+  @override
+  double? get videoAspect {
+    final width = _player.state.width;
+    final height = _player.state.height;
+    if (width == null || height == null || width <= 0 || height <= 0) return null;
+    return width / height;
+  }
+
+  @override
+  Widget buildSurface() => Video(
+        controller: _videoController,
+        fit: BoxFit.contain,
+        controls: null,
+        wakelock: true,
+      );
 
   @override
   double get position => _position;

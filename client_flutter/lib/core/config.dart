@@ -50,6 +50,10 @@ class AppConfig {
   /// User-configured custom playback speed (if set).
   final double? customSpeed;
 
+  /// How the picture is mapped onto the player surface (see VideoScaleMode).
+  /// Stored as the mode id so unknown values fall back to 'fit'.
+  final String videoScale;
+
   const AppConfig({
     this.trustedCaPem = '',
     this.inheritCacheDefaults = true,
@@ -64,6 +68,7 @@ class AppConfig {
     this.playerHardwareAcceleration = false,
     this.boostSpeed = defaultBoostSpeed,
     this.customSpeed,
+    this.videoScale = 'fit',
   });
 
   bool get isConfigured => serverUrl.isNotEmpty;
@@ -82,6 +87,7 @@ class AppConfig {
     bool? playerHardwareAcceleration,
     double? boostSpeed,
     double? customSpeed,
+    String? videoScale,
   }) {
     return AppConfig(
       trustedCaPem: trustedCaPem ?? this.trustedCaPem,
@@ -99,6 +105,7 @@ class AppConfig {
           playerHardwareAcceleration ?? this.playerHardwareAcceleration,
       boostSpeed: boostSpeed ?? this.boostSpeed,
       customSpeed: customSpeed ?? this.customSpeed,
+      videoScale: videoScale ?? this.videoScale,
     );
   }
 
@@ -120,6 +127,7 @@ class AppConfig {
       customSpeed: customSpeed == null
           ? null
           : _clampDouble(customSpeed!, minPlaybackSpeed, maxPlaybackSpeed, 1.0),
+      videoScale: normalizeVideoScale(videoScale),
     );
   }
 
@@ -136,6 +144,7 @@ class AppConfig {
         'player_hardware_acceleration': playerHardwareAcceleration,
         'boost_speed': boostSpeed,
         if (customSpeed != null) 'custom_speed': customSpeed,
+        'video_scale': videoScale,
       };
 
   factory AppConfig.fromJson(Map<String, dynamic> json) {
@@ -155,6 +164,7 @@ class AppConfig {
       playerHardwareAcceleration: json['player_hardware_acceleration'] == true,
       boostSpeed: _asDouble(json['boost_speed'], defaultBoostSpeed),
       customSpeed: _asDoubleNullable(json['custom_speed']),
+      videoScale: (json['video_scale'] ?? 'fit').toString(),
     ).normalized();
   }
 
@@ -189,6 +199,14 @@ class AppConfig {
     if (value > high) return high;
     return value == 0 ? fallback : value;
   }
+}
+
+/// Picture scale ids accepted in the configuration file.
+const List<String> videoScaleIds = ['fit', 'crop', 'stretch', '16:9', '4:3', '21:9'];
+
+String normalizeVideoScale(String value) {
+  final trimmed = value.trim();
+  return videoScaleIds.contains(trimmed) ? trimmed : 'fit';
 }
 
 String normalizeServerUrl(String raw) {

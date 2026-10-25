@@ -69,6 +69,51 @@ class NativePlayerEngine extends PlaybackEngine {
   @override bool get isPiP => _state['pip'] == true;
   @override String? get notice => _state['notice'] as String?;
   @override VideoController? get videoController => null;
+
+  /// Reported by the native player once the video track is parsed.
+  @override double? get videoAspect {
+    final width = _number('video_width');
+    final height = _number('video_height');
+    if (width <= 0 || height <= 0) return null;
+    return width / height;
+  }
+
+  /// ExoPlayer owns resize modes and KSPlayer owns aspect-fill, so those modes
+  /// must not be double-applied by sizing the platform view in Flutter.
+  @override bool handlesScaleNatively(VideoScaleMode mode) {
+    if (Platform.isIOS) return mode == VideoScaleMode.crop;
+    if (Platform.isAndroid) {
+      return mode == VideoScaleMode.crop || mode == VideoScaleMode.stretch;
+    }
+    return false;
+  }
+
+  @override Future<void> setVideoScale(VideoScaleMode mode) async {
+    final changed = videoScale != mode;
+    videoScale = mode;
+    if (changed) notifyListeners();
+    await _pushScaleToNative();
+  }
+
+  /// Re-apply the current mode after a load: a new session rebuilds the
+  /// platform view and forgets whatever the previous one was told.
+  Future<void> _pushScaleToNative() async {
+    if (Platform.isIOS) {
+      try {
+        await _call('aspectFill', videoScale == VideoScaleMode.crop);
+      } on Object catch (error) {
+        debugPrint('画面比例设置失败（iOS）：$error');
+      }
+      return;
+    }
+    if (!Platform.isAndroid) return;
+    try {
+      await _call('scale', videoScale.id);
+    } on Object catch (error) {
+      debugPrint('画面比例设置失败（Android）：$error');
+    }
+  }
+
   @override double get position => _seekTarget ?? _number('position_ms') / 1000;
   @override double get duration => _number('duration_ms') / 1000;
   @override bool get isPaused => _state['playing'] != true;
@@ -99,6 +144,7 @@ class NativePlayerEngine extends PlaybackEngine {
     notifyListeners();
     try {
       await _call('load', {...payload.toNativeJson(), 'session_id': sessionId, 'buffer_limit_mb': cacheLimitMb, 'disk_cache_limit_mb': payload.diskCacheLimitMb ?? 2048});
+      await _pushScaleToNative();
     } on Object catch (error) {
       if (_disposed) return;
       _state = {};
@@ -153,7 +199,7 @@ class NativePlayerEngine extends PlaybackEngine {
     await _call('dispose', {'session_id': sessionId});
   }
 
-  @override Widget buildVideo() => Stack(fit: StackFit.expand, children: [
+  @override Widget buildSurface() => Stack(fit: StackFit.expand, children: [
     _surface,
     if (_state['subtitle_text'] is String && (_state['subtitle_text'] as String).isNotEmpty)
       Positioned(left: 20, right: 20, bottom: 100, child: IgnorePointer(child: Text(

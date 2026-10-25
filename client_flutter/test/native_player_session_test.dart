@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/models/playback_payload.dart';
 import 'package:strmaction_desktop/player/native_player_engine.dart';
+import 'package:strmaction_desktop/player/playback_engine.dart';
 
 const payload = PlaybackPayload(itemId: 1, playUrl: 'https://media.invalid/video.mp4',
   headers: {}, playToken: 'test', resumeMs: 0, progressIntervalMs: 60000,
@@ -32,6 +33,30 @@ void main() {
     expect(engine.brightness, 65);
     await engine.setVolume(73); expect(engine.volume, 73);
     await engine.shutdown(); await states.close();
+  });
+  test('the native engine reports the video aspect and re-applies the picture mode after a load', () async {
+    final calls = <MethodCall>[];
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(NativePlayerEngine.channel, (call) async { calls.add(call); return null; });
+    addTearDown(() => messenger.setMockMethodCallHandler(NativePlayerEngine.channel, null));
+    final states = StreamController<dynamic>.broadcast(sync: true);
+    final engine = NativePlayerEngine(stateEvents: states.stream);
+    expect(engine.videoAspect, isNull);
+    states.add({'session_id': engine.sessionId, 'video_width': 1920, 'video_height': 800});
+    expect(engine.videoAspect, closeTo(2.4, 0.001));
+    var notified = 0;
+    engine.addListener(() => notified++);
+    await engine.setVideoScale(VideoScaleMode.crop);
+    expect(engine.videoScale, VideoScaleMode.crop);
+    expect(notified, 1);
+    // Re-selecting the same mode must not spam listeners, but a fresh load
+    // still has to hand it to the (rebuilt) native surface again.
+    await engine.setVideoScale(VideoScaleMode.crop);
+    expect(notified, 1);
+    await engine.load(payload, cacheLimitMb: 128, tlsVerify: true);
+    expect(calls.any((call) => call.method == 'load'), isTrue);
+    await engine.shutdown();
+    await states.close();
   });
   test('reentered native player rejects old-session errors and disposes its own session', () async {
     final calls = <MethodCall>[];

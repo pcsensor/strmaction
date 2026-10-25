@@ -42,6 +42,7 @@ class ControlsOverlay extends StatelessWidget {
   final VoidCallback onSpeed;
   final VoidCallback onEpisodes;
   final VoidCallback onTracks;
+  final VoidCallback onFrame;
   final VoidCallback onFullscreen;
 
   const ControlsOverlay({
@@ -71,6 +72,7 @@ class ControlsOverlay extends StatelessWidget {
     required this.onSpeed,
     required this.onEpisodes,
     required this.onTracks,
+    required this.onFrame,
     required this.onFullscreen,
   });
 
@@ -123,6 +125,7 @@ class ControlsOverlay extends StatelessWidget {
                       onSpeed: onSpeed,
                       onEpisodes: onEpisodes,
                       onTracks: onTracks,
+                      onFrame: onFrame,
                       onFullscreen: onFullscreen,
                     ),
                   ),
@@ -271,6 +274,7 @@ class _BottomBar extends StatefulWidget {
   final VoidCallback onSpeed;
   final VoidCallback onEpisodes;
   final VoidCallback onTracks;
+  final VoidCallback onFrame;
   final VoidCallback onFullscreen;
 
   const _BottomBar({
@@ -294,6 +298,7 @@ class _BottomBar extends StatefulWidget {
     required this.onSpeed,
     required this.onEpisodes,
     required this.onTracks,
+    required this.onFrame,
     required this.onFullscreen,
   });
 
@@ -343,6 +348,7 @@ class _BottomBarState extends State<_BottomBar> {
           ],
           const Spacer(),
           _SpeedChip(speed: widget.speed, onTap: widget.onSpeed),
+          _ToolButton(iconPath: AppIcons.frame, size: 20, onTap: widget.onFrame, key: const ValueKey('player-frame-button')),
           _ToolButton(iconPath: AppIcons.episodes, size: 20, onTap: widget.onEpisodes),
           _ToolButton(iconPath: AppIcons.more, size: 20, onTap: widget.onTracks),
           _ToolButton(iconPath: widget.fullscreen ? AppIcons.fullscreenExit : AppIcons.fullscreen, size: 20, onTap: widget.onFullscreen),
@@ -395,6 +401,7 @@ class _ToolButton extends StatelessWidget {
   final VoidCallback? onTap;
 
   const _ToolButton({
+    super.key,
     required this.iconPath,
     required this.size,
     required this.onTap,

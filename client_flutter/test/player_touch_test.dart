@@ -65,7 +65,7 @@ class FakeEngine extends PlaybackEngine {
   @override Future<void> toggleMute() async { volumeValue = volumeValue > 0 ? 0 : 50; }
   @override Future<void> setBrightnessLevel(double level) async { brightnesses.add(level); brightnessValue = level * 100; }
   @override Future<void> seek(double seconds, {bool relative = false}) async { seeks.add(seconds); }
-  @override Widget buildVideo() { videoBuilds++; return GestureDetector(
+  @override Widget buildSurface() { videoBuilds++; return GestureDetector(
     behavior: HitTestBehavior.opaque, onTap: () => nativeTaps++,
     child: const ColoredBox(color: Colors.black),
   ); }

@@ -17,6 +17,8 @@ class PlayerDrawer extends StatefulWidget {
   final String? currentSid;
   final String? currentAid;
   final String subtitleHint;
+  final VideoScaleMode videoScale;
+  final List<VideoScaleMode> scaleModes;
 
   final VoidCallback onClose;
   final ValueChanged<int> onEpisodeSelected;
@@ -24,6 +26,7 @@ class PlayerDrawer extends StatefulWidget {
   final ValueChanged<double> onBoostSpeedSelected;
   final ValueChanged<String?> onSubtitleSelected;
   final ValueChanged<String?> onAudioSelected;
+  final ValueChanged<VideoScaleMode> onScaleSelected;
 
   const PlayerDrawer({
     super.key,
@@ -37,12 +40,15 @@ class PlayerDrawer extends StatefulWidget {
     required this.currentSid,
     required this.currentAid,
     required this.subtitleHint,
+    required this.videoScale,
+    required this.scaleModes,
     required this.onClose,
     required this.onEpisodeSelected,
     required this.onSpeedSelected,
     required this.onBoostSpeedSelected,
     required this.onSubtitleSelected,
     required this.onAudioSelected,
+    required this.onScaleSelected,
   });
 
   @override
@@ -114,12 +120,15 @@ class PlayerDrawerState extends State<PlayerDrawer> {
                     currentSid: widget.currentSid,
                     currentAid: widget.currentAid,
                     subtitleHint: widget.subtitleHint,
+                    videoScale: widget.videoScale,
+                    scaleModes: widget.scaleModes,
                     onClose: widget.onClose,
                     onEpisodeSelected: widget.onEpisodeSelected,
                     onSpeedSelected: widget.onSpeedSelected,
                     onBoostSpeedSelected: widget.onBoostSpeedSelected,
                     onSubtitleSelected: widget.onSubtitleSelected,
                     onAudioSelected: widget.onAudioSelected,
+                    onScaleSelected: widget.onScaleSelected,
                   )),
                 ),
               ],
@@ -143,12 +152,15 @@ class _DrawerPanel extends StatelessWidget {
   final String? currentSid;
   final String? currentAid;
   final String subtitleHint;
+  final VideoScaleMode videoScale;
+  final List<VideoScaleMode> scaleModes;
   final VoidCallback onClose;
   final ValueChanged<int> onEpisodeSelected;
   final ValueChanged<double> onSpeedSelected;
   final ValueChanged<double> onBoostSpeedSelected;
   final ValueChanged<String?> onSubtitleSelected;
   final ValueChanged<String?> onAudioSelected;
+  final ValueChanged<VideoScaleMode> onScaleSelected;
 
   const _DrawerPanel({
     required this.tab,
@@ -162,12 +174,15 @@ class _DrawerPanel extends StatelessWidget {
     required this.currentSid,
     required this.currentAid,
     required this.subtitleHint,
+    required this.videoScale,
+    required this.scaleModes,
     required this.onClose,
     required this.onEpisodeSelected,
     required this.onSpeedSelected,
     required this.onBoostSpeedSelected,
     required this.onSubtitleSelected,
     required this.onAudioSelected,
+    required this.onScaleSelected,
   });
 
   @override
@@ -175,6 +190,7 @@ class _DrawerPanel extends StatelessWidget {
     final title = switch (tab) {
       'episodes' => '选集 (${playlist.length})',
       'speed' => '播放倍速',
+      'frame' => '画面比例',
       _ => '音轨与字幕',
     };
     return Container(
@@ -207,7 +223,10 @@ class _DrawerPanel extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-          Row(
+          // Four tabs no longer fit one row on a phone-sized drawer.
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
             children: [
               if (playlist.length > 1)
                 _TabChip(
@@ -219,6 +238,11 @@ class _DrawerPanel extends StatelessWidget {
                 text: '倍速',
                 selected: tab == 'speed',
                 onTap: () => onTabChanged('speed'),
+              ),
+              _TabChip(
+                text: '画面',
+                selected: tab == 'frame',
+                onTap: () => onTabChanged('frame'),
               ),
               _TabChip(
                 text: '音轨与字幕',
@@ -241,6 +265,11 @@ class _DrawerPanel extends StatelessWidget {
                     boostSpeed: boostSpeed,
                     onSpeedSelected: onSpeedSelected,
                     onBoostSpeedSelected: onBoostSpeedSelected,
+                  ),
+                'frame' => _ScaleOptions(
+                    current: videoScale,
+                    modes: scaleModes,
+                    onSelected: onScaleSelected,
                   ),
                 _ => _Tracks(
                     subtitles: subtitles,
@@ -788,6 +817,101 @@ class _StepButton extends StatelessWidget {
           width: 36,
           height: 36,
           child: Icon(icon, color: Colors.white70, size: 16),
+        ),
+      ),
+    );
+  }
+}
+
+class _ScaleOptions extends StatelessWidget {
+  final VideoScaleMode current;
+  final List<VideoScaleMode> modes;
+  final ValueChanged<VideoScaleMode> onSelected;
+
+  const _ScaleOptions({
+    required this.current,
+    required this.modes,
+    required this.onSelected,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const Text(
+          '画面比例',
+          style: TextStyle(color: Color(0xFFF0A94D), fontSize: 14, fontWeight: FontWeight.bold),
+        ),
+        const SizedBox(height: 4),
+        const Text(
+          '决定画面如何放进播放区域；选择后会记住，下次播放沿用。',
+          style: TextStyle(color: Color(0xFF7C8698), fontSize: 11),
+        ),
+        const SizedBox(height: 10),
+        for (final mode in modes) ...[
+          _ScaleOption(
+            mode: mode,
+            active: mode == current,
+            onTap: () => onSelected(mode),
+          ),
+          const SizedBox(height: 8),
+        ],
+      ],
+    );
+  }
+}
+
+class _ScaleOption extends StatelessWidget {
+  final VideoScaleMode mode;
+  final bool active;
+  final VoidCallback onTap;
+
+  const _ScaleOption({required this.mode, required this.active, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: active ? const Color(0x33F0A94D) : const Color(0x0DFFFFFF),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: active ? const Color(0xFFF0A94D) : Colors.transparent,
+          width: active ? 1.5 : 1,
+        ),
+      ),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(8),
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      mode.label,
+                      style: TextStyle(
+                        color: active ? const Color(0xFFF0A94D) : Colors.white,
+                        fontSize: 14,
+                        fontWeight: active ? FontWeight.bold : FontWeight.normal,
+                      ),
+                    ),
+                  ),
+                  if (active)
+                    const Text('使用中',
+                        style: TextStyle(color: Color(0xFFF0A94D), fontSize: 11, fontWeight: FontWeight.bold)),
+                ],
+              ),
+              const SizedBox(height: 2),
+              Text(
+                mode.description,
+                style: const TextStyle(color: Color(0xFF8E9297), fontSize: 11.5),
+              ),
+            ],
+          ),
         ),
       ),
     );
