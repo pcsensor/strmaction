@@ -43,6 +43,7 @@ class _WebShellPageState extends State<WebShellPage> {
   bool _bootstrapped = false;
   bool _isTv = false;
   bool _requestingPlayback = false;
+  EdgeInsets _safeInsets = EdgeInsets.zero;
 
   AppController get app => widget.app;
 
@@ -50,6 +51,40 @@ class _WebShellPageState extends State<WebShellPage> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) => _bootstrap());
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final insets = MediaQuery.viewPaddingOf(context);
+    if (insets == _safeInsets) return;
+    _safeInsets = insets;
+    // Rotation or a display-cutout change: the page owns the insets now, so
+    // hand it the new values without shrinking the viewport.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _applySafeArea());
+  }
+
+  /// The library paints edge-to-edge. Its fixed header and bottom navigation
+  /// read these variables instead of the whole document being inset, which
+  /// showed as dark bands above and below the page on notched phones.
+  Future<void> _applySafeArea() async {
+    final controller = _webController;
+    if (controller == null) return;
+    final insets = _safeInsets;
+    final source = '''
+(function () {
+  var root = document.documentElement;
+  root.style.setProperty('--safe-top', '${insets.top.toStringAsFixed(1)}px');
+  root.style.setProperty('--safe-right', '${insets.right.toStringAsFixed(1)}px');
+  root.style.setProperty('--safe-bottom', '${insets.bottom.toStringAsFixed(1)}px');
+  root.style.setProperty('--safe-left', '${insets.left.toStringAsFixed(1)}px');
+})();
+''';
+    try {
+      await controller.evaluateJavascript(source: source);
+    } on Object {
+      // The document may be navigating again.
+    }
   }
 
   Future<void> _bootstrap() async {
@@ -421,6 +456,7 @@ class _WebShellPageState extends State<WebShellPage> {
       },
       onLoadStop: (controller, url) async {
         if (!mounted) return;
+        await _applySafeArea();
         setState(() => _loading = false);
         await _refreshAccount();
         try {
@@ -505,14 +541,16 @@ class _WebShellPageState extends State<WebShellPage> {
   }
 }
 
-/// Flutter owns the system insets; the embedded page occupies this safe frame.
+/// The embedded page fills the whole window and receives the system insets as
+/// `--safe-*` CSS variables. Insetting the WebView here left dark bands above
+/// and below the library on notched phones.
 class LibraryViewport extends StatelessWidget {
   final Widget child;
 
   const LibraryViewport({super.key, required this.child});
 
   @override
-  Widget build(BuildContext context) => SafeArea(child: child);
+  Widget build(BuildContext context) => child;
 }
 
 class _SetupPrompt extends StatelessWidget {

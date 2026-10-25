@@ -28,7 +28,7 @@ export function LoginPage() {
   }
 
   return (
-    <div className="relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-12">
+    <div className="safe-top safe-bottom relative flex min-h-screen items-center justify-center overflow-hidden px-4 py-12">
       <div className="absolute inset-0 -z-10">
         <div className="absolute inset-0 bg-[radial-gradient(90%_80%_at_20%_0%,rgba(232,176,106,0.18),transparent_60%),radial-gradient(80%_70%_at_90%_20%,rgba(64,96,180,0.16),transparent_55%),#07080a]" />
         <div className="grain absolute inset-0" />

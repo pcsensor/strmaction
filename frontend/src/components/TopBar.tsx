@@ -45,7 +45,7 @@ export function TopBar() {
 
   return (
     <header
-      className={`fixed inset-x-0 top-0 z-50 transition-all duration-500 ${
+      className={`safe-top safe-x fixed inset-x-0 top-0 z-50 transition-all duration-500 ${
         scrolled ? 'glass border-b border-white/8' : 'bg-gradient-to-b from-black/55 to-transparent'
       }`}
     >
@@ -134,7 +134,7 @@ export function BottomNav() {
   ].filter(Boolean) as Array<{ to: string; label: string; icon: any; end?: boolean }>
 
   return (
-    <nav className="safe-bottom fixed inset-x-0 bottom-0 z-50 border-t border-white/8 bg-[#0a0c11]/95 backdrop-blur-xl md:hidden">
+    <nav className="safe-bottom safe-x fixed inset-x-0 bottom-0 z-50 border-t border-white/8 bg-[#0a0c11]/95 backdrop-blur-xl md:hidden">
       <div className="mx-auto flex max-w-lg items-stretch justify-around px-2 py-1.5">
         {mobileLinks.map((link) => (
           <NavLink

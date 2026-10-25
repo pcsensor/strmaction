@@ -168,7 +168,7 @@ export function SetupPage() {
   ]
 
   return (
-    <div className="relative flex min-h-screen flex-col overflow-hidden">
+    <div className="safe-top relative flex min-h-screen flex-col overflow-hidden">
       <div className="absolute inset-0 -z-10">
         <div className="absolute inset-0 bg-[radial-gradient(80%_60%_at_15%_0%,rgba(232,176,106,0.16),transparent_58%),radial-gradient(70%_60%_at_90%_10%,rgba(64,96,180,0.14),transparent_55%),#07080a]" />
         <div className="grain absolute inset-0" />

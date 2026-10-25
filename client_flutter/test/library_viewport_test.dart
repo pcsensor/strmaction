@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/web/web_shell_page.dart';
 
 void main() {
-  testWidgets('library avoids portrait and landscape cutouts without double insets', (tester) async {
+  testWidgets('library fills the screen and leaves the insets to the page', (tester) async {
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     for (final (size, insets) in const [
@@ -21,8 +21,10 @@ void main() {
         }))),
       )));
       expect(tester.getRect(find.byKey(const ValueKey('web-content'))),
-        Rect.fromLTRB(insets.left, insets.top, size.width - insets.right, size.height - insets.bottom));
-      expect(remaining, EdgeInsets.zero);
+        Rect.fromLTWH(0, 0, size.width, size.height));
+      // Flutter no longer shrinks the WebView: the document receives the insets
+      // as --safe-* variables and pads its own header and navigation.
+      expect(remaining, insets);
       expect(tester.takeException(), isNull);
     }
   });
