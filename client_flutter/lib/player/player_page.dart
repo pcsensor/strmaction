@@ -376,7 +376,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _toggleControls() {
-    if (_drawerVisible || _messageVisible || _seeking || _gestureActive) return;
+    if (_drawerVisible || _messageVisible || _seeking || _gestureActive || _speedBoost) return;
     if (_controlsVisible) {
       _hideTimer?.cancel();
       setState(() => _controlsVisible = false);
@@ -447,13 +447,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _startSpeedBoost(double speed) {
+    if (_closing || _speedBoost) return;
     _normalSpeed = _engine.speed;
     _engine.setSpeed(speed);
     setState(() => _speedBoost = true);
-    _showControls();
   }
 
   void _endSpeedBoost() {
+    if (_closing || !_speedBoost) return;
     _engine.setSpeed(_normalSpeed);
     setState(() => _speedBoost = false);
   }
@@ -595,7 +596,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   }
 
   void _startVerticalGesture(DragStartDetails details) {
-    if (_locked || _closing) return;
+    if (_controlsVisible || _locked || _closing) return;
     _gestureTimer?.cancel();
     _hideTimer?.cancel();
     _gestureActive = true;
@@ -608,7 +609,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   void _updateVerticalGesture(DragUpdateDetails details) {
     final feedback = _gestureFeedback.value;
-    if (_locked || _closing || !_gestureActive || feedback == null) return;
+    if (_controlsVisible || _locked || _closing || !_gestureActive || feedback == null) return;
     final target = (_dragStartValue + (_dragY - details.localPosition.dy) /
         MediaQuery.sizeOf(context).height * 1.25)
         .clamp(feedback.kind == PlayerGestureKind.brightness ? 0.02 : 0.0, 1.0).toDouble();
@@ -788,8 +789,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
               else if (_tapX > width * .65) { _seekRelative(10); }
               else { _togglePlayPause(); }
             },
-            onLongPressStart: _mobile ? (_) { if (!_locked) { HapticFeedback.mediumImpact(); _startSpeedBoost(_boostSpeed); } } : null,
-            onLongPressEnd: _mobile ? (_) { if (_speedBoost) _endSpeedBoost(); } : null,
+            onLongPressStart: _mobile ? (_) {
+              if (_controlsVisible || _locked || _closing) return;
+              HapticFeedback.mediumImpact();
+              _startSpeedBoost(_boostSpeed);
+            } : null,
+            onLongPressEnd: _mobile ? (_) => _endSpeedBoost() : null,
+            onLongPressCancel: _mobile ? _endSpeedBoost : null,
             onHorizontalDragStart: _mobile ? _startSeekGesture : null,
             onHorizontalDragUpdate: _mobile ? _updateSeekGesture : null,
             onHorizontalDragEnd: _mobile ? (_) => _finishSeekGesture() : null,

@@ -25,6 +25,8 @@ class FakeEngine extends PlaybackEngine {
   bool buffering = false;
   double volumeValue = 50;
   double brightnessValue = 40;
+  double speedValue = 1;
+  final speeds = <double>[];
   final volumes = <int>[];
   final brightnesses = <double>[];
   final seeks = <double>[];
@@ -33,7 +35,7 @@ class FakeEngine extends PlaybackEngine {
   @override double get position => 10;
   @override double get duration => 100;
   @override bool get isPaused => paused;
-  @override double get speed => 1;
+  @override double get speed => speedValue;
   @override double get volume => volumeValue;
   @override double? get brightness => brightnessValue;
   @override bool get isLoading => false;
@@ -55,6 +57,7 @@ class FakeEngine extends PlaybackEngine {
   @override Future<void> setPaused(bool value) async { paused = value; notifyListeners(); }
   @override Future<void> play() => setPaused(false);
   @override Future<void> pause() => setPaused(true);
+  @override Future<void> setSpeed(double value) async { speeds.add(value); speedValue = value; notifyListeners(); }
   @override Future<void> shutdown() async {}
   @override Future<void> setVolume(int percent) async { volumes.add(percent); volumeValue = percent.toDouble(); }
   @override Future<void> setBrightnessLevel(double level) async { brightnesses.add(level); brightnessValue = level * 100; }
@@ -126,6 +129,7 @@ void main() {
 
     testWidgets('$platform small volume movements accumulate and platform calls stay bounded', (tester) async {
       final engine = await mountPlayer(tester);
+      await tapScreen(tester);
       final videoBuilds = engine.videoBuilds;
       final gesture = await tester.startGesture(const Offset(310, 500));
       await gesture.moveBy(const Offset(0, -30)); await tester.pump();
@@ -139,6 +143,64 @@ void main() {
       expect(engine.volumes.length, lessThan(10));
       expect(engine.brightnesses, isEmpty);
       expect(engine.videoBuilds, videoBuilds, reason: 'gesture frames must only rebuild the feedback layer');
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform visible controls block brightness, volume and long press boost', (tester) async {
+      final engine = await mountPlayer(tester);
+      await tester.dragFrom(const Offset(80, 500), const Offset(0, -150));
+      await tester.pump();
+      await tester.dragFrom(const Offset(310, 500), const Offset(0, -150));
+      await tester.pump();
+      final hold = await tester.startGesture(const Offset(196, 400));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(engine.brightnesses, isEmpty);
+      expect(engine.volumes, isEmpty);
+      expect(engine.speeds, isEmpty);
+      expect(find.byKey(const ValueKey('player-gesture-feedback')), findsNothing);
+      expect(find.byKey(const ValueKey('player-speed-boost')), findsNothing);
+      expect(controlsVisible(tester), isTrue);
+      await hold.up();
+      await tester.pump();
+      expect(engine.speeds, isEmpty);
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform boost stays visible with hidden controls until release', (tester) async {
+      final engine = await mountPlayer(tester);
+      engine.speedValue = 1.25;
+      await tapScreen(tester);
+      final hold = await tester.startGesture(const Offset(196, 400));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(engine.speeds, [2]);
+      expect(controlsVisible(tester), isFalse);
+      final badge = find.byKey(const ValueKey('player-speed-boost'));
+      expect(badge, findsOneWidget);
+      expect(find.ancestor(of: badge, matching: find.byType(AnimatedOpacity)), findsNothing);
+      await tester.pump(const Duration(seconds: 5));
+      engine.notifyListeners();
+      await tester.pump();
+      expect(badge, findsOneWidget);
+      expect(controlsVisible(tester), isFalse);
+      await hold.up();
+      await tester.pump();
+      expect(engine.speeds, [2, 1.25]);
+      expect(badge, findsNothing);
+      expect(controlsVisible(tester), isFalse);
+      expect(tester.takeException(), isNull);
+    }, variant: TargetPlatformVariant({platform}));
+
+    testWidgets('$platform cancelling a boost restores playback speed and hides the badge', (tester) async {
+      final engine = await mountPlayer(tester);
+      await tapScreen(tester);
+      final hold = await tester.startGesture(const Offset(196, 400));
+      await tester.pump(const Duration(milliseconds: 600));
+      expect(engine.speeds, [2]);
+      await hold.cancel();
+      await tester.pump();
+      expect(engine.speeds, [2, 1]);
+      expect(find.byKey(const ValueKey('player-speed-boost')), findsNothing);
+      expect(controlsVisible(tester), isFalse);
       expect(tester.takeException(), isNull);
     }, variant: TargetPlatformVariant({platform}));
 

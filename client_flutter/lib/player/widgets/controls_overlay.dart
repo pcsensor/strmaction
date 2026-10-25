@@ -89,7 +89,8 @@ class ControlsOverlay extends StatelessWidget {
     final fullTitle = seriesTitle.isNotEmpty && seriesTitle != title
         ? '$seriesTitle - $title'
         : title;
-    return IgnorePointer(
+    final insets = MediaQuery.viewPaddingOf(context);
+    final controls = IgnorePointer(
       ignoring: !visible,
       child: AnimatedOpacity(
         opacity: visible ? 1 : 0,
@@ -97,7 +98,6 @@ class ControlsOverlay extends StatelessWidget {
         child: SizedBox.expand(
           child: LayoutBuilder(
             builder: (context, constraints) {
-              final insets = MediaQuery.viewPaddingOf(context);
               final compact = constraints.maxWidth - insets.horizontal < 650;
               final bottomHeight = (compact ? 124.0 : 88.0) + insets.bottom;
               return Stack(
@@ -192,30 +192,6 @@ class ControlsOverlay extends StatelessWidget {
                       onFullscreen: onFullscreen,
                     ),
                   ),
-                  if (speedBoost)
-                    Positioned(
-                      top: 78 + insets.top,
-                      left: insets.left,
-                      right: insets.right,
-                      child: Center(
-                        child: Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-                          decoration: BoxDecoration(
-                            color: const Color(0x73000000),
-                            borderRadius: BorderRadius.circular(16),
-                            border: Border.all(color: const Color(0x59F0A94D)),
-                          ),
-                          child: Text(
-                            '⚡ ${_formatSpeed(speedBoostValue)} 极速播放中',
-                            style: const TextStyle(
-                              color: Color(0xFFF0A94D),
-                              fontSize: 14,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ),
-                      ),
-                    ),
                 ],
               );
             },
@@ -223,6 +199,36 @@ class ControlsOverlay extends StatelessWidget {
         ),
       ),
     );
+    return Stack(children: [
+      controls,
+      if (speedBoost)
+        Positioned(
+          top: 78 + insets.top,
+          left: insets.left,
+          right: insets.right,
+          child: IgnorePointer(
+            child: Center(
+              child: Container(
+                key: const ValueKey('player-speed-boost'),
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
+                decoration: BoxDecoration(
+                  color: const Color(0x73000000),
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(color: const Color(0x59F0A94D)),
+                ),
+                child: Text(
+                  '⚡ ${_formatSpeed(speedBoostValue)} 极速播放中',
+                  style: const TextStyle(
+                    color: Color(0xFFF0A94D),
+                    fontSize: 14,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+    ]);
   }
 
   static String _formatSpeed(double value) {
@@ -310,7 +316,7 @@ class _CircleButton extends StatelessWidget {
   }
 }
 
-class _BottomBar extends StatelessWidget {
+class _BottomBar extends StatefulWidget {
   final EdgeInsets insets;
   final bool compact;
   final double position;
@@ -358,43 +364,54 @@ class _BottomBar extends StatelessWidget {
   });
 
   @override
+  State<_BottomBar> createState() => _BottomBarState();
+}
+
+class _BottomBarState extends State<_BottomBar> {
+  double? _previewPosition;
+
+  @override
   Widget build(BuildContext context) {
     final time = Text(
-      '${formatTime(position)} / ${formatTime(duration)}',
+      '${formatTime(_previewPosition ?? widget.position)} / ${formatTime(widget.duration)}',
       style: const TextStyle(color: Color(0xFFD1D5DB), fontSize: 13),
     );
-    final networkText = networkStatus ?? formatNetworkSpeed(networkSpeed);
+    final networkText = widget.networkStatus ?? formatNetworkSpeed(widget.networkSpeed);
     final network = Text(networkText,
       style: const TextStyle(color: Color(0xFF9CA3AF), fontSize: 12));
     return Container(
       key: const ValueKey('player-bottom-bar'),
-      height: (compact ? 124 : 88) + insets.bottom,
-      padding: EdgeInsets.fromLTRB((compact ? 12 : 20) + insets.left, 0,
-        (compact ? 12 : 20) + insets.right, 12 + insets.bottom),
+      height: (widget.compact ? 124 : 88) + widget.insets.bottom,
+      padding: EdgeInsets.fromLTRB((widget.compact ? 12 : 20) + widget.insets.left, 0,
+        (widget.compact ? 12 : 20) + widget.insets.right, 12 + widget.insets.bottom),
       decoration: const BoxDecoration(gradient: LinearGradient(
         begin: Alignment.topCenter, end: Alignment.bottomCenter,
         colors: [Color(0x00000000), Color(0xDC000000)],
       )),
       child: Column(children: [
-        BufferedSeekBar(position: position, duration: duration,
-          bufferedRanges: bufferedRanges, onSeek: onSeek,
-          onSeekingChanged: onSeekingChanged),
-        if (compact) SizedBox(height: 24, child: Row(children: [
+        BufferedSeekBar(position: widget.position, duration: widget.duration,
+          bufferedRanges: widget.bufferedRanges, onSeek: widget.onSeek,
+          onSeekingChanged: widget.onSeekingChanged,
+          onPreviewChanged: (position) {
+            if (_previewPosition == position) return;
+            setState(() => _previewPosition = position);
+          }),
+        if (widget.compact) SizedBox(height: 24, child: Row(children: [
           time, const Spacer(), Flexible(child: network),
         ])),
         Expanded(child: Row(children: [
-          _ToolButton(iconPath: paused ? AppIcons.play : AppIcons.pause, size: 22, onTap: onPlayPause),
-          _ToolButton(iconPath: AppIcons.previous, size: 20, onTap: hasPrevious ? onPrevious : null),
-          _ToolButton(iconPath: AppIcons.next, size: 20, onTap: hasNext ? onNext : null),
-          if (!compact) ...[
+          _ToolButton(iconPath: widget.paused ? AppIcons.play : AppIcons.pause, size: 22, onTap: widget.onPlayPause),
+          _ToolButton(iconPath: AppIcons.previous, size: 20, onTap: widget.hasPrevious ? widget.onPrevious : null),
+          _ToolButton(iconPath: AppIcons.next, size: 20, onTap: widget.hasNext ? widget.onNext : null),
+          if (!widget.compact) ...[
             const SizedBox(width: 4), time,
             if (networkText.isNotEmpty) ...[const SizedBox(width: 10), network],
           ],
           const Spacer(),
-          _SpeedChip(speed: speed, onTap: onSpeed),
-          _ToolButton(iconPath: AppIcons.episodes, size: 20, onTap: onEpisodes),
-          _ToolButton(iconPath: AppIcons.more, size: 20, onTap: onTracks),
-          _ToolButton(iconPath: fullscreen ? AppIcons.fullscreenExit : AppIcons.fullscreen, size: 20, onTap: onFullscreen),
+          _SpeedChip(speed: widget.speed, onTap: widget.onSpeed),
+          _ToolButton(iconPath: AppIcons.episodes, size: 20, onTap: widget.onEpisodes),
+          _ToolButton(iconPath: AppIcons.more, size: 20, onTap: widget.onTracks),
+          _ToolButton(iconPath: widget.fullscreen ? AppIcons.fullscreenExit : AppIcons.fullscreen, size: 20, onTap: widget.onFullscreen),
         ])),
       ]),
     );

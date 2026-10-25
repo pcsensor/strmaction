@@ -4,29 +4,94 @@ import 'package:strmaction_desktop/player/playback_engine.dart';
 import 'package:strmaction_desktop/player/widgets/buffered_seekbar.dart';
 import 'package:strmaction_desktop/player/widgets/controls_overlay.dart';
 
-ControlsOverlay controls() => ControlsOverlay(
+ControlsOverlay controls({double position = 10,
+  ValueChanged<double>? onSeek}) => ControlsOverlay(
   visible: true, title: 'Test Episode', seriesTitle: 'Test Series',
-  position: 10, duration: 100, bufferedRanges: const [BufferedRange(10, 40)],
+  position: position, duration: 100, bufferedRanges: const [BufferedRange(10, 40)],
   speed: 1, paused: false, fullscreen: false, loading: false,
   networkSpeed: 1024, hasPrevious: true, hasNext: true,
   speedBoost: false, speedBoostValue: 2, centerIconPath: null,
   centerText: null, showCenterIcon: false, showCenterText: false,
   onBack: () {}, onPlayPause: () {}, onPrevious: () {}, onNext: () {},
-  onSeek: (_) {}, onSeekingChanged: (_) {}, onSpeed: () {},
+  onSeek: onSeek ?? (_) {}, onSeekingChanged: (_) {}, onSpeed: () {},
   onEpisodes: () {}, onTracks: () {}, onFullscreen: () {},
 );
 
-Future<void> showControls(WidgetTester tester, Size size, EdgeInsets insets) async {
+Future<void> showControls(WidgetTester tester, Size size, EdgeInsets insets,
+    {ControlsOverlay? overlay}) async {
   tester.view.physicalSize = size;
   tester.view.devicePixelRatio = 1;
   await tester.pumpWidget(MaterialApp(home: MediaQuery(
     data: MediaQueryData(size: size, padding: insets, viewPadding: insets),
-    child: Scaffold(backgroundColor: Colors.black, body: controls()),
+    child: Scaffold(backgroundColor: Colors.black, body: overlay ?? controls()),
   )));
 }
 
 void main() {
   for (final width in [320.0, 1280.0]) {
+    testWidgets('time follows seek preview and keeps the target until playback catches up at width $width', (tester) async {
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final seeks = <double>[];
+      Future<void> render(double position) => showControls(tester,
+        Size(width, 800), EdgeInsets.zero,
+        overlay: controls(position: position, onSeek: seeks.add));
+      await render(10);
+      final bar = tester.getRect(find.byType(BufferedSeekBar));
+      Offset at(double ratio) => Offset(bar.left + 11.75 + (bar.width - 23.5) * ratio, bar.center.dy);
+      final drag = await tester.startGesture(at(.2));
+      await drag.moveTo(at(.4));
+      await tester.pump();
+      await drag.moveTo(at(.7525));
+      await tester.pump();
+      expect(find.text('01:15 / 01:40'), findsOneWidget);
+      expect(seeks, isEmpty);
+
+      // Playback ticks must not overwrite an active preview.
+      await render(11);
+      expect(find.text('01:15 / 01:40'), findsOneWidget);
+      await drag.moveTo(at(.6025));
+      await tester.pump();
+      expect(find.text('01:00 / 01:40'), findsOneWidget);
+      await drag.up();
+      await tester.pump();
+      expect(seeks, hasLength(1));
+      expect(seeks.single, closeTo(60.25, .01));
+      expect(find.text('01:00 / 01:40'), findsOneWidget);
+      await render(12);
+      expect(find.text('01:00 / 01:40'), findsOneWidget);
+      await render(60.25);
+      await tester.pump();
+      await render(61);
+      expect(find.text('01:01 / 01:40'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
+
+    testWidgets('cancelled seek and expired pending seek restore the playback time at width $width', (tester) async {
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      final seeks = <double>[];
+      await showControls(tester, Size(width, 800), EdgeInsets.zero,
+        overlay: controls(onSeek: seeks.add));
+      final center = tester.getCenter(find.byType(BufferedSeekBar));
+      final drag = await tester.startGesture(center);
+      await drag.moveBy(const Offset(40, 0));
+      await tester.pump();
+      expect(find.text('00:10 / 01:40'), findsNothing);
+      await drag.cancel();
+      await tester.pump();
+      expect(find.text('00:10 / 01:40'), findsOneWidget);
+      expect(seeks, isEmpty);
+
+      await tester.tapAt(center);
+      await tester.pump();
+      expect(find.text('00:50 / 01:40'), findsOneWidget);
+      await tester.pump(const Duration(milliseconds: 1600));
+      expect(find.text('00:10 / 01:40'), findsOneWidget);
+      expect(seeks, hasLength(1));
+      expect(tester.takeException(), isNull);
+    });
+
     testWidgets('controls render without overflow at width $width', (tester) async {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);

@@ -26,6 +26,9 @@ class BufferedSeekBar extends StatefulWidget {
   final ValueChanged<double> onSeek;
   final ValueChanged<bool>? onSeekingChanged;
 
+  /// The drag or pending seek target; null resumes the playback position.
+  final ValueChanged<double?>? onPreviewChanged;
+
   const BufferedSeekBar({
     super.key,
     required this.position,
@@ -33,6 +36,7 @@ class BufferedSeekBar extends StatefulWidget {
     required this.bufferedRanges,
     required this.onSeek,
     this.onSeekingChanged,
+    this.onPreviewChanged,
   });
 
   @override
@@ -74,6 +78,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
       _dragging = true;
       _dragPosition = target;
     });
+    widget.onPreviewChanged?.call(target);
     if (!wasDragging) {
       widget.onSeekingChanged?.call(true);
     }
@@ -83,6 +88,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
     if (!_dragging) return;
     _lastX = x;
     setState(() => _dragPosition = _xToSeconds(x, width));
+    widget.onPreviewChanged?.call(_dragPosition);
   }
 
   void _end(double x, double width) {
@@ -94,12 +100,14 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
       _dragging = false;
       _dragPosition = target;
     });
+    widget.onPreviewChanged?.call(target);
     widget.onSeekingChanged?.call(false);
     widget.onSeek(target);
 
     _pendingTimer = Timer(const Duration(milliseconds: 1500), () {
       if (mounted && _pendingPosition != null) {
         setState(() => _pendingPosition = null);
+        widget.onPreviewChanged?.call(null);
       }
     });
   }
@@ -111,6 +119,13 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
       if ((widget.position - _pendingPosition!).abs() < 0.8) {
         _pendingTimer?.cancel();
         _pendingPosition = null;
+        // The parent may render the preview outside this bar. Notify it after
+        // this build so it can safely update its own state.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted && !_dragging && _pendingPosition == null) {
+            widget.onPreviewChanged?.call(null);
+          }
+        });
       }
     }
   }
@@ -141,6 +156,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
                   _pendingTimer?.cancel();
                   _pendingPosition = null;
                   setState(() => _dragging = false);
+                  widget.onPreviewChanged?.call(null);
                   widget.onSeekingChanged?.call(false);
                 }
               });
@@ -161,6 +177,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
                 _pendingTimer?.cancel();
                 _pendingPosition = null;
                 setState(() => _dragging = false);
+                widget.onPreviewChanged?.call(null);
                 widget.onSeekingChanged?.call(false);
               }
             },
