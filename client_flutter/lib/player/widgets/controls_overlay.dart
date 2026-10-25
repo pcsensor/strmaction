@@ -25,17 +25,12 @@ class ControlsOverlay extends StatelessWidget {
   final double speed;
   final bool paused;
   final bool fullscreen;
-  final bool loading;
   final double? networkSpeed;
   final String? networkStatus;
   final bool hasPrevious;
   final bool hasNext;
   final bool speedBoost;
   final double speedBoostValue;
-  final String? centerIconPath;
-  final String? centerText;
-  final bool showCenterIcon;
-  final bool showCenterText;
   final double trailingWidth;
 
   final VoidCallback onBack;
@@ -60,17 +55,12 @@ class ControlsOverlay extends StatelessWidget {
     required this.speed,
     required this.paused,
     required this.fullscreen,
-    required this.loading,
     required this.networkSpeed,
     this.networkStatus,
     required this.hasPrevious,
     required this.hasNext,
     required this.speedBoost,
     required this.speedBoostValue,
-    required this.centerIconPath,
-    required this.centerText,
-    required this.showCenterIcon,
-    required this.showCenterText,
     this.trailingWidth = 0,
     required this.onBack,
     required this.onPlayPause,
@@ -99,7 +89,6 @@ class ControlsOverlay extends StatelessWidget {
           child: LayoutBuilder(
             builder: (context, constraints) {
               final compact = constraints.maxWidth - insets.horizontal < 650;
-              final bottomHeight = (compact ? 124.0 : 88.0) + insets.bottom;
               return Stack(
                 children: [
                   Positioned(
@@ -108,61 +97,6 @@ class ControlsOverlay extends StatelessWidget {
                     right: 0,
                     child: _TopBar(title: fullTitle, onBack: onBack,
                       insets: insets, trailingWidth: trailingWidth),
-                  ),
-                  Positioned(
-                    top: 72 + insets.top,
-                    left: insets.left,
-                    right: insets.right,
-                    bottom: bottomHeight,
-                    child: IgnorePointer(
-                      child: Center(
-                        child: Column(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            if (showCenterIcon && centerIconPath != null)
-                              Container(
-                                padding: const EdgeInsets.all(18),
-                                decoration: const BoxDecoration(
-                                  color: Color(0x99000000),
-                                  shape: BoxShape.circle,
-                                ),
-                                child: AppIcons.icon(centerIconPath!, size: 44),
-                              ),
-                            if (showCenterText && centerText != null)
-                              Container(
-                                margin: const EdgeInsets.only(top: 10),
-                                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xCC000000),
-                                  borderRadius: BorderRadius.circular(18),
-                                  border: Border.all(color: const Color(0x33FFFFFF)),
-                                ),
-                                child: Text(
-                                  centerText!,
-                                  style: const TextStyle(
-                                    color: Colors.white,
-                                    fontSize: 16,
-                                    fontWeight: FontWeight.bold,
-                                  ),
-                                ),
-                              ),
-                            if (loading)
-                              Container(
-                                margin: const EdgeInsets.only(top: 10),
-                                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                                decoration: BoxDecoration(
-                                  color: const Color(0xB3000000),
-                                  borderRadius: BorderRadius.circular(14),
-                                ),
-                                child: const Text(
-                                  '缓冲中...',
-                                  style: TextStyle(color: Color(0xFFB0B3B8), fontSize: 13),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
                   ),
                   Positioned(
                     bottom: 0,

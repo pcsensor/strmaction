@@ -60,6 +60,8 @@ class FakeEngine extends PlaybackEngine {
   @override Future<void> setSpeed(double value) async { speeds.add(value); speedValue = value; notifyListeners(); }
   @override Future<void> shutdown() async {}
   @override Future<void> setVolume(int percent) async { volumes.add(percent); volumeValue = percent.toDouble(); }
+  @override Future<void> setVolumeRelative(int deltaPercent) => setVolume(volumeValue.round() + deltaPercent);
+  @override Future<void> toggleMute() async { volumeValue = volumeValue > 0 ? 0 : 50; }
   @override Future<void> setBrightnessLevel(double level) async { brightnesses.add(level); brightnessValue = level * 100; }
   @override Future<void> seek(double seconds, {bool relative = false}) async { seeks.add(seconds); }
   @override Widget buildVideo() { videoBuilds++; return GestureDetector(
@@ -341,4 +343,28 @@ void main() {
       expect(tester.takeException(), isNull);
     }, variant: TargetPlatformVariant({platform}));
   }
+
+  testWidgets('keyboard feedback stays visible while the controls are hidden', (tester) async {
+    final engine = await mountPlayer(tester);
+    await tapScreen(tester);
+    expect(controlsVisible(tester), isFalse);
+
+    // Arrow up/down adjust the volume without opening the control bar; the
+    // "音量 N" hint used to be drawn inside the faded overlay and vanished.
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowUp);
+    await tester.pump();
+    expect(engine.volumes, isNotEmpty);
+    expect(find.textContaining('音量 '), findsOneWidget);
+    expect(controlsVisible(tester), isFalse);
+
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyM);
+    await tester.pump();
+    expect(find.text('静音'), findsOneWidget);
+    expect(controlsVisible(tester), isFalse);
+
+    // The hint is transient: it disappears on its own.
+    await tester.pump(const Duration(milliseconds: 700));
+    expect(find.text('静音'), findsNothing);
+    expect(tester.takeException(), isNull);
+  }, variant: TargetPlatformVariant({TargetPlatform.macOS}));
 }

@@ -19,6 +19,7 @@ import 'widgets/app_icons.dart';
 import 'widgets/controls_overlay.dart';
 import 'widgets/gesture_feedback.dart';
 import 'widgets/message_card.dart';
+import 'widgets/player_center_status.dart';
 import 'widgets/player_drawer.dart';
 
 class PlayerPage extends StatefulWidget {
@@ -816,17 +817,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   speed: _engine.speed,
                   paused: _engine.isPaused,
                   fullscreen: _fullscreen,
-                  loading: _engine.isLoading || _engine.isBuffering,
                   networkSpeed: _engine.networkSpeed,
                   networkStatus: _engine.networkStatus,
                   hasPrevious: _hasPrevious,
                   hasNext: _hasNext,
                   speedBoost: _speedBoost,
                   speedBoostValue: _boostSpeed,
-                  centerIconPath: _centerIconPath,
-                  centerText: _centerText,
-                  showCenterIcon: _showCenterIcon,
-                  showCenterText: _showCenterText,
                   trailingWidth: _mobile ? 100 : 0,
                   onBack: _back,
                   onPlayPause: _togglePlayPause,
@@ -845,6 +841,18 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
                   onEpisodes: () => _openDrawer('episodes'),
                   onTracks: () => _openDrawer('tracks'),
                   onFullscreen: _toggleFullscreen,
+                ),
+                // Playback feedback (volume, mute, seek, play/pause, buffering)
+                // must survive the control bar fading out; it used to be drawn
+                // inside the overlay and disappeared with it.
+                if (!_engine.isPiP) Positioned.fill(
+                  child: PlayerCenterStatus(
+                    iconPath: _centerIconPath,
+                    text: _centerText,
+                    showIcon: _showCenterIcon,
+                    showText: _showCenterText,
+                    loading: _engine.isLoading || _engine.isBuffering,
+                  ),
                 ),
                 if (_mobile && !_engine.isPiP) PlayerGestureFeedback(feedback: _gestureFeedback),
                 if (_mobile && !_engine.isPiP && _controlsVisible) Positioned(
