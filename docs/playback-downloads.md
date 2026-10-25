@@ -49,6 +49,8 @@ ahead drops below ten seconds, before a full rebuffer is required.
   Cancellation closes the response body as well as the request: after headers
   arrive, aborting the request alone cannot release a stalled connection. Origin
   headers stay on upstream requests and are not applied to loopback decoder reads.
+  The decoder's network timeout allows the bounded three-attempt recovery to
+  complete instead of interrupting it at media_kit's five-second default.
   Published bytes replace reserved bytes, so partial downloads count against the
   same disk budget. A requested gap that remains unavailable for three seconds
   replaces its stalled transfer, at most twice, starting after any cached prefix.

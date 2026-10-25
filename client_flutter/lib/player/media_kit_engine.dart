@@ -359,6 +359,9 @@ class MediaKitEngine extends PlaybackEngine {
       }
       await platform.setProperty('tls-verify', 'yes');
       if (caBundlePath != null) await platform.setProperty('tls-ca-file', caBundlePath!);
+      // media_kit defaults to five seconds, shorter than the cache's bounded
+      // three-attempt stall recovery. Let recovery finish before MPV gives up.
+      await platform.setProperty('network-timeout', '15');
       await platform.setProperty('cache-on-disk', 'no');
       await platform.setProperty('hwdec', 'auto-safe');
       await platform.setProperty('keep-open', 'always');
