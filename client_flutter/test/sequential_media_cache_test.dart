@@ -91,7 +91,9 @@ class OriginFixture {
       } on Object {
         try {
           await request.response.close();
-        } on Object {}
+        } on Object {
+          // The client may already have closed the connection.
+        }
       } finally {
         if (counted) active--;
       }

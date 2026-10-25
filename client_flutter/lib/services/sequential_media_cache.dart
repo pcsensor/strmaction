@@ -465,9 +465,9 @@ class SequentialMediaCache {
       ..sort((a, b) => (b - streamBlock).abs().compareTo((a - streamBlock).abs()));
     for (final number in candidates) {
       if (_bytes <= budgetBytes) break;
-      final length = _blockLengths.remove(number);
+      final removed = _blockLengths.remove(number);
       final file = _blocks.remove(number);
-      if (length != null) _bytes -= length;
+      if (removed != null) _bytes -= removed;
       try {
         if (file != null && file.existsSync()) file.deleteSync();
       } on FileSystemException {
@@ -506,7 +506,7 @@ class SequentialMediaCache {
             if ((_blockLengths[number] ?? 0) > begin) continue;
             onDiagnostic?.call(
                 '主回源流停滞 offset=${number * blockSize + begin} '
-                '${diagnosticState}');
+                '$diagnosticState');
             stream.cancel();
             if (identical(_stream, stream)) _stream = null;
             if (++attempts > 2) {
@@ -528,7 +528,7 @@ class SequentialMediaCache {
             if ((_blockLengths[number] ?? 0) > begin) continue;
             onDiagnostic?.call(
                 '短探针停滞 offset=${number * blockSize + begin} '
-                '${diagnosticState}');
+                '$diagnosticState');
             probe.cancel();
             if (identical(_probe, probe)) _probe = null;
             if (++attempts > 2) {
