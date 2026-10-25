@@ -55,7 +55,7 @@ class SequentialMediaCache {
   bool _closed = false;
   bool _urgent = false;
   _Transfer? _stream;
-  _Transfer? _probe;
+  final List<_Transfer> _probes = [];
 
   SequentialMediaCache._(this._client, this._origin, this._headers,
       this._directory, this.budgetBytes, this.prefetchBytes,
@@ -67,9 +67,9 @@ class SequentialMediaCache {
       ((_stream != null && !_stream!.cancelled && _stream!.phase != 'done')
           ? 1
           : 0) +
-      ((_probe != null && !_probe!.cancelled && _probe!.phase != 'done')
-          ? 1
-          : 0);
+      _probes
+          .where((probe) => !probe.cancelled && probe.phase != 'done')
+          .length;
   bool get cacheReady =>
       _blocks.containsKey(_consumed ~/ blockSize) && activeDownloads == 0;
   double get networkSpeed => _rate.bytesPerSecond;
@@ -82,7 +82,8 @@ class SequentialMediaCache {
         : '$name=[${t.start}-${t.end}:${t.phase}:${t.received}:'
             '${t.idle.elapsedMilliseconds}ms${t.paused ? ':paused' : ''}]';
     return 'consumed=$_consumed stored=$_bytes '
-        '${describe(_stream, 'stream')} ${describe(_probe, 'probe')}';
+        '${describe(_stream, 'stream')} '
+        'probes=[${_probes.map((probe) => describe(probe, 'probe')).join(', ')}]';
   }
 
   static Future<SequentialMediaCache?> open({
@@ -355,18 +356,29 @@ class SequentialMediaCache {
 
   _Transfer _startProbe(int number) {
     final start = number * blockSize + (_blockLengths[number] ?? 0);
-    final current = _probe;
-    if (current != null &&
-        !current.cancelled &&
-        current.phase != 'done' &&
-        current.error == null &&
-        current.coversBlock(number)) {
-      return current;
+    for (final probe in _probes) {
+      if (!probe.cancelled &&
+          probe.phase != 'done' &&
+          probe.error == null &&
+          probe.coversBlock(number)) {
+        return probe;
+      }
     }
-    current?.cancel();
+    // The head and tail moov can be requested around the same time. Keep at
+    // most two probes so they cannot cancel each other in a loop; beyond that,
+    // drop the one farthest from the requested block.
+    if (_probes.length >= 2) {
+      final victim = _probes.reduce((a, b) =>
+          (a.start - number * blockSize).abs() >
+                  (b.start - number * blockSize).abs()
+              ? a
+              : b);
+      victim.cancel();
+      _probes.remove(victim);
+    }
     final end = min(length, start + probeBytes);
     final transfer = _Transfer(start, end, true);
-    _probe = transfer;
+    _probes.add(transfer);
     unawaited(_run(transfer));
     return transfer;
   }
@@ -405,6 +417,7 @@ class SequentialMediaCache {
       transfer.body = null;
       transfer.request = null;
       transfer.phase = 'done';
+      if (transfer.probe) _probes.remove(transfer);
       transfer.notify();
     }
   }
@@ -515,12 +528,17 @@ class SequentialMediaCache {
           }
           continue;
         }
-        final probe = _probe;
-        if (probe != null &&
-            !probe.cancelled &&
-            probe.phase != 'done' &&
-            probe.error == null &&
-            probe.coversBlock(number)) {
+        _Transfer? probe;
+        for (final candidate in _probes) {
+          if (!candidate.cancelled &&
+              candidate.phase != 'done' &&
+              candidate.error == null &&
+              candidate.coversBlock(number)) {
+            probe = candidate;
+            break;
+          }
+        }
+        if (probe != null) {
           try {
             await probe.changed.timeout(connectTimeout);
           } on TimeoutException {
@@ -530,7 +548,7 @@ class SequentialMediaCache {
                 '短探针停滞 offset=${number * blockSize + begin} '
                 '$diagnosticState');
             probe.cancel();
-            if (identical(_probe, probe)) _probe = null;
+            _probes.remove(probe);
             if (++attempts > 2) {
               throw const HttpException('片源长时间无数据');
             }
@@ -584,7 +602,9 @@ class SequentialMediaCache {
     // the old position. The origin stream itself is not cancelled here; the
     // next demand restarts it only if the target is not cached.
     _stream?.notify();
-    _probe?.notify();
+    for (final probe in _probes) {
+      probe.notify();
+    }
   }
 
   void setPlaybackUrgent(bool value) {
@@ -687,7 +707,10 @@ class SequentialMediaCache {
     if (_closed) return;
     _closed = true;
     _stream?.cancel();
-    _probe?.cancel();
+    for (final probe in _probes.toList()) {
+      probe.cancel();
+    }
+    _probes.clear();
     _client.close(force: true);
     await _server.close(force: true);
     _blocks.clear();

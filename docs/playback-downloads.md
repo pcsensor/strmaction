@@ -47,8 +47,8 @@ ahead drops below ten seconds, before a full rebuffer is required.
   writers close on their owning worker and commit 2 MiB fragments. Buffering
   retains the nearest speculative worker and yields the other workers; it does
   not change the user's play/pause intent or switch to whole-file transport.
-- **Windows / macOS:** a single sequential origin stream plus at most one short
-  probe (4 MiB, header/tail only). The stream starts at the playhead, reads to
+- **Windows / macOS:** a single sequential origin stream plus at most two short
+  probes (4 MiB each, head and tail). The stream starts at the playhead, reads to
   EOF, publishes each received chunk into the bounded disk store and pauses when
   it is `prefetch` bytes ahead; advancing the playhead resumes the same
   connection instead of opening another one. Cached reads never touch the
