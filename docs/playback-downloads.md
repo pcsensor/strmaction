@@ -54,6 +54,12 @@ ahead drops below ten seconds, before a full rebuffer is required.
   Published bytes replace reserved bytes, so partial downloads count against the
   same disk budget. A requested gap that remains unavailable for three seconds
   replaces its stalled transfer, at most twice, starting after any cached prefix.
+  A request that is still connecting is never replaced: Dart's HttpClient cannot
+  abort a queued connect, so a retry would leave the old attempt in the per-host
+  connection queue and eventually starve every new request (observed as a
+  permanent zero-byte pull on a CDN that establishes connections slowly).
+  Stalled headers use a growing budget (3s, 6s, 12s) before replacement; body
+  stalls keep the fixed three-second watchdog and every received chunk resets it.
   Far speculative work can yield a slot and space to a waiting reader. Buffering
   limits speculative competition while preserving the parallel download policy.
 - **iOS:** serve an available cached prefix before waiting on its owner; each

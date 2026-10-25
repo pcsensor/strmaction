@@ -629,6 +629,13 @@ class MediaKitEngine extends PlaybackEngine {
   String _friendlyError(String raw) {
     final text = raw.trim();
     final lowered = text.toLowerCase();
+    if (lowered.contains('502') ||
+        lowered.contains('503') ||
+        lowered.contains('504') ||
+        lowered.contains('timed out') ||
+        lowered.contains('timeout')) {
+      return '片源拉取超时，请检查网络或稍后重试';
+    }
     if (lowered.contains('failed to open') ||
         lowered.contains('loading failed') ||
         lowered.contains('403') ||

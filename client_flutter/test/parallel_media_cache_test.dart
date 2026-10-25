@@ -23,6 +23,9 @@ class OriginFixture {
   bool holdEveryHead = false;
   int firstPrefixBytes = 64 * 1024;
   int firstRequests = 0;
+  Duration headerDelay = Duration.zero;
+  Duration chunkDelay = Duration.zero;
+  int chunkSize = 256 * 1024;
   final releaseFirst = Completer<void>();
   final firstHeld = Completer<void>();
   final laterCompleted = Completer<void>();
@@ -52,6 +55,7 @@ class OriginFixture {
           active++; peak = max(peak, active); sizes.add(end - start + 1); starts.add(start);
           counted = true;
           await Future<void>.delayed(const Duration(milliseconds: 30));
+          if (headerDelay > Duration.zero) await Future<void>.delayed(headerDelay);
         }
         request.response.statusCode = 206;
         request.response.headers.set('Content-Type', 'video/mp4');
@@ -67,9 +71,13 @@ class OriginFixture {
           await releaseFirst.future;
           cursor += count;
         }
-        for (; cursor <= end; cursor += 256 * 1024) {
+        for (; cursor <= end; cursor += chunkSize) {
           request.response.add(Uint8List.fromList(List<int>.generate(
-            min(256 * 1024, end - cursor + 1), (index) => (cursor + index) % 251)));
+            min(chunkSize, end - cursor + 1), (index) => (cursor + index) % 251)));
+          if (chunkDelay > Duration.zero) {
+            await request.response.flush();
+            await Future<void>.delayed(chunkDelay);
+          }
         }
         await request.response.close();
         if (!probe && start >= 4 * mib && !laterCompleted.isCompleted) laterCompleted.complete();
@@ -88,7 +96,10 @@ Future<List<int>> read(HttpClient client, BoundedMediaCache cache, int start, in
   final request = await client.getUrl(cache.localUrl);
   request.headers.set('Range', 'bytes=$start-$end');
   final response = await request.close();
-  expect(response.statusCode, 206);
+  if (response.statusCode != 206) {
+    await response.drain<void>();
+    throw HttpException('本地缓存返回 HTTP ${response.statusCode}');
+  }
   return response.fold<List<int>>([], (all, bytes) => all..addAll(bytes))
       .timeout(const Duration(seconds: 10));
 }
@@ -337,6 +348,43 @@ void main() {
     }
     expect(origin.starts.every((start) => start < 8 * mib || start == 24 * mib), isTrue,
       reason: 'tail probes must not start another prefetch window');
+  });
+
+  test('a slow header is replaced once with a growing budget, not every short stall', () async {
+    final origin = OriginFixture()..headerDelay = const Duration(milliseconds: 750);
+    await origin.start();
+    final root = await Directory.systemTemp.createTemp('slow-header-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib,
+      prefetchBytes: 1, demandStallTimeout: const Duration(milliseconds: 200),
+      requestTimeout: const Duration(seconds: 5)))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    expect(await read(client, cache, 0, 99).timeout(const Duration(seconds: 5)),
+        List.generate(100, (index) => index % 251));
+    expect(origin.starts.where((start) => start == 0), hasLength(2),
+      reason: 'the first header timeout is retried, the replacement gets a longer budget');
+  });
+
+  test('a slow but progressing segment keeps its connection', () async {
+    final origin = OriginFixture()
+      ..chunkDelay = const Duration(milliseconds: 50)
+      ..chunkSize = 64 * 1024;
+    await origin.start();
+    final root = await Directory.systemTemp.createTemp('slow-body-');
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(url: origin.url,
+      headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
+      trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib,
+      prefetchBytes: 1, demandStallTimeout: const Duration(milliseconds: 200),
+      requestTimeout: const Duration(seconds: 5)))!;
+    addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
+    const offset = 900 * 1024;
+    expect(await read(client, cache, offset, offset + 9),
+        List.generate(10, (index) => (offset + index) % 251));
+    expect(origin.starts.where((start) => start == 0), hasLength(1),
+      reason: 'received chunks must reset the stall watchdog');
   });
 
   test('rolling rate spans burst gaps and becomes zero after a real stall', () {

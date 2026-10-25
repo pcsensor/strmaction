@@ -52,7 +52,7 @@ class BoundedMediaCache {
   double get networkSpeed => _rate.bytesPerSecond;
   String get diagnosticState => 'focus=$_focus consumed=$_consumedBlock '
       'stored=$_bytes reserved=$reservedBytes generation=$_generation '
-      'jobs=[${_jobs.map((job) => '${job.start}-${job.end}:${job.phase}:${job.received}').join(', ')}]';
+      'jobs=[${_jobs.map((job) => '${job.start}-${job.end}:${job.phase}:${job.received}:${job.idle.elapsedMilliseconds}ms').join(', ')}]';
   List<(int, int)> get ranges => _blocks.keys
       .map((n) => (n * blockSize, n * blockSize + _blockLengths[n]!)).toList();
 
@@ -85,6 +85,8 @@ class BoundedMediaCache {
       {_Download? job}) async {
     for (var redirects = 0; redirects <= 5; redirects++) {
       job?.phase = 'connect';
+      job?.touch();
+      job?.notify();
       var abandoned = false;
       final opening = _client.getUrl(uri).then((request) {
         if (abandoned || _closed || job?.cancelled == true) {
@@ -109,6 +111,8 @@ class BoundedMediaCache {
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       if (_validator != null && job != null) request.headers.set(HttpHeaders.ifRangeHeader, _validator!);
       job?.phase = 'headers';
+      job?.touch();
+      job?.notify();
       final responding = request.close().then((response) async {
         if (abandoned || _closed || job?.cancelled == true) {
           await response.listen((_) {}).cancel();
@@ -271,11 +275,14 @@ class BoundedMediaCache {
       body = StreamIterator(response.timeout(const Duration(seconds: 20)));
       job.body = body;
       job.phase = 'body';
+      job.touch();
+      job.notify();
       if (_closed || job.cancelled) throw const _Cancelled();
       while (await body.moveNext()) {
         if (_closed || job.cancelled) throw const _Cancelled();
         final chunk = body.current;
         _rate.add(chunk.length);
+        job.touch();
         if (job.received + chunk.length > job.size) throw const HttpException('片源返回范围过大');
         // Publish each received prefix. Readers never wait for the 4–8 MiB tail.
         for (var offset = 0; offset < chunk.length;) {
@@ -332,7 +339,7 @@ class BoundedMediaCache {
   Future<List<int>> _block(int number, int generation, int begin) async {
     _readers.update(number, (value) => value + 1, ifAbsent: () => 1);
     var rescues = 0;
-    final waiting = Stopwatch()..start();
+    var capacityWaits = 0;
     try {
     while (!_closed && generation == _generation) {
       _focus = number;
@@ -352,12 +359,39 @@ class BoundedMediaCache {
       _prefetch(number);
       if (job == null) {
         if (_jobs.isEmpty) throw const HttpException('缓存容量不足');
-        await _jobs.first.changed;
+        // No slot or no evictable space: wait for any owner to publish data or
+        // finish instead of waiting on an unrelated first job forever.
+        try {
+          await Future.any(_jobs.map((owner) => owner.changed))
+              .timeout(demandStallTimeout);
+        } on TimeoutException {
+          if (++capacityWaits > 2) throw const HttpException('缓存容量不足');
+        }
         continue;
       }
       job.demand = true;
+      // A connection attempt queued inside HttpClient cannot be aborted: the
+      // only handle is the request returned by getUrl. Replacing it would leave
+      // the pending connect alive and queue another one against the per-host
+      // limit, which is how a slow CDN becomes a permanent zero-byte stall.
+      // Requests that already have a socket but no headers, and body transfers
+      // that stopped delivering, are safe to replace.
+      if (job.phase == 'queued' || job.phase == 'connect') {
+        await job.changed;
+        if (job.error != null && !job.cancelled) throw job.error!;
+        continue;
+      }
+      // Headers or body: replace a transfer that has delivered nothing for the
+      // whole stall budget. Header stalls get a growing budget (3s, 6s, 12s)
+      // because cancelling a slow-but-working origin only multiplies connects;
+      // body stalls keep the fixed watchdog. job.idle is reset by every
+      // received chunk and by each phase change.
       try {
-        final remaining = demandStallTimeout - waiting.elapsed;
+        final budget = job.phase == 'headers'
+            ? demandStallTimeout * (1 << rescues) +
+                const Duration(milliseconds: 500)
+            : demandStallTimeout;
+        final remaining = budget - job.idle.elapsed;
         await job.changed.timeout(remaining.isNegative ? Duration.zero : remaining);
       } on TimeoutException {
         onDiagnostic?.call('媒体读取停滞 offset=${number * blockSize + begin} '
@@ -369,7 +403,6 @@ class BoundedMediaCache {
         // Replace only the stalled owner, retaining its published prefix and
         // all successful later segments. The replacement uses the same budget.
         job.cancel(); _jobs.remove(job); policy.failed();
-        waiting.reset();
         _makeDemandRoom(number);
         continue;
       }
@@ -413,6 +446,7 @@ class BoundedMediaCache {
   Future<void> _serve(HttpRequest request) async {
     final response = request.response;
     final generation = _generation;
+    var sent = false;
     try {
       if (_closed || request.uri.path != '/$_token') { response.statusCode = 404; await response.close(); return; }
       if (request.method != 'GET' && request.method != 'HEAD') { response.statusCode = 405; await response.close(); return; }
@@ -438,6 +472,7 @@ class BoundedMediaCache {
           final take = min(block.length - begin, end - offset + 1);
           response.add(block.sublist(begin, begin + take));
           await response.flush();
+          sent = true;
           offset += take;
         }
       }
@@ -446,7 +481,23 @@ class BoundedMediaCache {
       response.statusCode = 416;
       response.headers.set(HttpHeaders.contentRangeHeader, 'bytes */$length');
       await response.close();
-    } on Object {
+    } on Object catch (error) {
+      onDiagnostic?.call('本地响应中止 offset=${request.headers.value(HttpHeaders.rangeHeader)} '
+          'sent=$sent error=${error.runtimeType}');
+      if (!sent) {
+        // Surface a startup failure as an HTTP error so the decoder reports it
+        // instead of waiting on a truncated response that looks like zero speed.
+        try {
+          response.statusCode = 502;
+          response.headers.removeAll(HttpHeaders.contentRangeHeader);
+          response.headers.removeAll(HttpHeaders.acceptRangesHeader);
+          response.contentLength = 0;
+          await response.close();
+          return;
+        } on Object {
+          // Fall through to a hard close when headers are already committed.
+        }
+      }
       await response.detachSocket().then((socket) => socket.destroy()).catchError((Object _) {});
     }
   }
@@ -474,6 +525,11 @@ class _Download {
   String phase = 'queued';
   int received = 0;
   Object? error;
+  /// Time since the last transport activity (connect, headers or body bytes).
+  /// A request that is still establishing its connection must not be judged by
+  /// the body stall budget; see the wait policy in `_block`.
+  final Stopwatch idle = Stopwatch()..start();
+  void touch() => idle.reset();
   Completer<void> _changed = Completer<void>();
   Future<void> get changed => _changed.future;
   void notify() { final before = _changed; _changed = Completer<void>(); before.complete(); }
