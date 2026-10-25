@@ -21,9 +21,12 @@ class OriginFixture {
   bool changed = false;
   bool holdFirst = false;
   bool holdEveryHead = false;
+  bool holdFirstHeaders = false;
   int firstPrefixBytes = 64 * 1024;
   int firstRequests = 0;
-  Duration headerDelay = Duration.zero;
+  int headerHolds = 0;
+  final firstHeadersHeld = Completer<void>();
+  final releaseFirstHeaders = Completer<void>();
   Duration chunkDelay = Duration.zero;
   int chunkSize = 256 * 1024;
   final releaseFirst = Completer<void>();
@@ -55,7 +58,10 @@ class OriginFixture {
           active++; peak = max(peak, active); sizes.add(end - start + 1); starts.add(start);
           counted = true;
           await Future<void>.delayed(const Duration(milliseconds: 30));
-          if (headerDelay > Duration.zero) await Future<void>.delayed(headerDelay);
+        }
+        if (holdFirstHeaders && !probe && start == 0 && headerHolds++ == 0) {
+          if (!firstHeadersHeld.isCompleted) firstHeadersHeld.complete();
+          await releaseFirstHeaders.future;
         }
         request.response.statusCode = 206;
         request.response.headers.set('Content-Type', 'video/mp4');
@@ -88,6 +94,7 @@ class OriginFixture {
   String get url => 'http://127.0.0.1:${server.port}/entry';
   Future<void> close() async {
     if (!releaseFirst.isCompleted) releaseFirst.complete();
+    if (!releaseFirstHeaders.isCompleted) releaseFirstHeaders.complete();
     await server.close(force: true);
   }
 }
@@ -351,7 +358,7 @@ void main() {
   });
 
   test('a slow header is replaced once with a growing budget, not every short stall', () async {
-    final origin = OriginFixture()..headerDelay = const Duration(milliseconds: 750);
+    final origin = OriginFixture()..holdFirstHeaders = true;
     await origin.start();
     final root = await Directory.systemTemp.createTemp('slow-header-');
     final client = HttpClient();
@@ -361,10 +368,15 @@ void main() {
       prefetchBytes: 1, demandStallTimeout: const Duration(milliseconds: 200),
       requestTimeout: const Duration(seconds: 5)))!;
     addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
-    expect(await read(client, cache, 0, 99).timeout(const Duration(seconds: 5)),
-        List.generate(100, (index) => index % 251));
+    final pending = read(client, cache, 0, 99).timeout(const Duration(seconds: 5));
+    await origin.firstHeadersHeld.future.timeout(const Duration(seconds: 2));
+    for (var i = 0; i < 300 && origin.starts.where((start) => start == 0).length < 2; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
     expect(origin.starts.where((start) => start == 0), hasLength(2),
-      reason: 'the first header timeout is retried, the replacement gets a longer budget');
+      reason: 'the replacement must not wait for the original request to time out');
+    if (!origin.releaseFirstHeaders.isCompleted) origin.releaseFirstHeaders.complete();
+    expect(await pending, List.generate(100, (index) => index % 251));
   });
 
   test('a slow but progressing segment keeps its connection', () async {
