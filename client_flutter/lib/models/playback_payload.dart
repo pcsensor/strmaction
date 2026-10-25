@@ -91,6 +91,30 @@ class PlaybackPayload {
     required this.durationMs,
   });
 
+  /// 重试时从当前播放位置继续，而不是回到打开播放器时的续播点。
+  PlaybackPayload withResumeMs(int value) {
+    if (value <= 0 || value == resumeMs) return this;
+    return PlaybackPayload(
+      mode: mode,
+      bufferLimitMb: bufferLimitMb,
+      diskCacheLimitMb: diskCacheLimitMb,
+      itemId: itemId,
+      playUrl: playUrl,
+      headers: headers,
+      playToken: playToken,
+      resumeMs: value,
+      progressIntervalMs: progressIntervalMs,
+      subtitles: subtitles,
+      title: title,
+      seriesTitle: seriesTitle,
+      playlist: playlist,
+      nextItemId: nextItemId,
+      nextTitle: nextTitle,
+      currentIndex: currentIndex,
+      durationMs: durationMs,
+    );
+  }
+
   /// Header syntax understood by libmpv's `http-header-fields` option.
   ///
   /// A comma or colon in a header *name* would corrupt mpv's option grammar,

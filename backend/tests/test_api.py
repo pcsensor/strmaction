@@ -198,6 +198,16 @@ def test_full_flow():
         play_regressed = client.post(f"/api/play/{series['id']}", json={}).json()
         assert play_regressed["resume_ms"] == 1000
 
+        # 播放器出错 / 重新装载时可能短暂上报 0，不能用它清空已有进度
+        cleared = client.post(
+            f"/api/items/{episode_id}/progress",
+            json={"position_ms": 0, "duration_ms": 120000, "finished": False},
+        ).json()
+        assert cleared["position_ms"] == 1000
+        assert cleared.get("ignored") is True
+        play_kept = client.post(f"/api/play/{series['id']}", json={}).json()
+        assert play_kept["resume_ms"] == 1000
+
         # 90% 自动已看
         finished = client.post(
             f"/api/items/{episode_id}/progress",

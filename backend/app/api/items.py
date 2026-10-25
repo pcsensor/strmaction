@@ -883,6 +883,22 @@ def report_progress(
             finished = True
         if finished:
             position = 0
+        if (
+            row is not None
+            and not finished
+            and position <= 0
+            and row.position_ms > 0
+        ):
+            # 播放器重新装载 / 出错时可能短暂上报 0 位置。这不是用户的真实
+            # 进度，直接忽略；否则一次网络错误就会清空已有续播点。确需清零
+            # 请走「标记未看」接口。
+            return {
+                "position_ms": row.position_ms,
+                "duration_ms": row.duration_ms,
+                "finished": bool(row.finished),
+                "updated_at": row.updated_at,
+                "ignored": True,
+            }
         if row is None:
             row = PlayProgress(
                 user_id=current_user.id,

@@ -20,6 +20,8 @@ class ExitEngine extends PlaybackEngine {
   String? pendingStep;
   int pauseCalls = 0;
   int shutdownCalls = 0;
+  PlaybackPayload? loadedPayload;
+  String? error;
   final loading = Completer<void>();
   final pending = Completer<void>();
 
@@ -44,7 +46,7 @@ class ExitEngine extends PlaybackEngine {
   @override
   bool get completed => false;
   @override
-  String? get errorMessage => null;
+  String? get errorMessage => error;
   @override
   double? get networkSpeed => null;
   @override
@@ -62,7 +64,12 @@ class ExitEngine extends PlaybackEngine {
     PlaybackPayload payload, {
     required int cacheLimitMb,
     required bool tlsVerify,
-  }) => loading.future;
+  }) {
+    loadedPayload = payload;
+    return loading.future;
+  }
+  @override
+  Future<void> stop() => pause();
   Future<void> _step(String name) async {
     if (failedStep == name) throw PlatformException(code: name);
     if (pendingStep == name) await pending.future;
@@ -198,6 +205,27 @@ void expectLibrary(WidgetTester tester, ExitEngine engine) {
 }
 
 void main() {
+  testWidgets('retry resumes from the last position instead of the opening point', (
+    tester,
+  ) async {
+    final engine = ExitEngine();
+    await openPlayer(tester, engine);
+    engine.loading.complete();
+    await tester.pump();
+    expect(engine.loadedPayload?.resumeMs, 0);
+
+    engine.error = 'network down';
+    engine.notifyListeners();
+    await tester.pump();
+    expect(find.text('重试'), findsOneWidget);
+
+    await tester.tap(find.text('重试'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(engine.loadedPayload?.resumeMs, 42000);
+    expect(tester.takeException(), isNull);
+  }, variant: const TargetPlatformVariant({TargetPlatform.android}));
+
   for (final platform in [
     TargetPlatform.android,
     TargetPlatform.iOS,

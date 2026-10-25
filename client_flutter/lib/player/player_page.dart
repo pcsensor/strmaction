@@ -159,7 +159,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     });
   }
 
-  Future<void> _load() async {
+  Future<void> _load({int? resumeMs}) async {
     if (_shutdownFuture != null) return;
     _watchdog?.cancel();
     _watchdog = Timer(const Duration(seconds: 30), () {
@@ -171,8 +171,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       await File('${widget.app.paths.baseDir}/media-ca.pem').writeAsString('$publicRoots\n${widget.app.config.trustedCaPem}');
     }
     if (!mounted || _shutdownFuture != null) return;
+    // 重试时从最后一次有效位置继续，不要回到打开播放器时的续播点。
+    final payload = widget.payload.withResumeMs(resumeMs ?? 0);
     await _engine.load(
-      widget.payload,
+      payload,
       cacheLimitMb: _bufferLimit,
       tlsVerify: !widget.app.config.allowSelfSignedHttps,
     );
@@ -184,10 +186,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     await _engine.setVideoScale(_videoScale);
     if (_engine.errorMessage == null) {
       _reporter.start();
-      _reporter.update(
-        widget.payload.resumeMs.clamp(0, 1 << 31),
-        durationMs: widget.payload.durationMs,
-      );
+      // 已经记录过进度的会话（例如出错后重试）保留原位置，等待引擎
+      // 上报真实位置；不要用打开时的旧续播点把进度拉回去。
+      if (!_reporter.hasPosition) {
+        _reporter.update(
+          payload.resumeMs.clamp(0, 1 << 31),
+          durationMs: payload.durationMs,
+        );
+      }
     }
     _focusNode.requestFocus();
   }
@@ -205,13 +211,23 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
   }
 
+  void _syncProgress() {
+    // 加载、缓存或错误状态下引擎会把位置临时归零（重新装载、切源都会）。
+    // 这时的 0 不是用户的实际进度，写回服务端会清空续播点。只在播放器
+    // 处于可用状态且位置有效时更新。
+    if (_engine.isLoading || _engine.errorMessage != null) return;
+    final positionMs = (_engine.position * 1000).round();
+    if (positionMs <= 0) return;
+    _reporter.update(
+      positionMs,
+      durationMs: _engine.duration > 0 ? (_engine.duration * 1000).round() : null,
+    );
+  }
+
   void _onEngineChanged() {
     if (!mounted || _shutdownFuture != null) return;
     setState(() {});
-    _reporter.update(
-      (_engine.position * 1000).round(),
-      durationMs: _engine.duration > 0 ? (_engine.duration * 1000).round() : null,
-    );
+    _syncProgress();
     final pauseChanged = _wasPaused != _engine.isPaused;
     if (pauseChanged && _engine.isPaused && _engine.position > 0) _reporter.requestFlush();
     _wasPaused = _engine.isPaused;
@@ -232,6 +248,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       }
     } else if (error != _lastError) {
       _lastError = error;
+      // 先把出错前最后一次有效位置保存掉，再展示错误卡片。后续退出或重试
+      // 都不会用 0 覆盖它。
+      _reporter.requestFlush();
       _showError(error);
     }
     if (pauseChanged) {
@@ -303,8 +322,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _hideMessage();
     _completionHandled = false;
     _lastError = null;
+    // 出错时播放器通常还保留最后位置；重试从那里继续，不必从头播。
+    final resumeMs = (_engine.position * 1000).round();
     await _engine.stop();
-    await _load();
+    await _load(resumeMs: resumeMs);
   }
 
   Future<void> _cleanupStep(String name, Future<void> Function() action,
@@ -326,7 +347,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _hideTimer?.cancel();
     _badgeTimer?.cancel();
     await _cleanupStep('暂停', _engine.pause);
-    _reporter.update((_engine.position * 1000).round(), durationMs: (_engine.duration * 1000).round());
+    _syncProgress();
     // Stop owns the bounded final upload and persists it before sending.
     await _cleanupStep('保存进度', () => _reporter.stop(flush: true),
         timeout: const Duration(seconds: 13));

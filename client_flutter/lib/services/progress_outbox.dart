@@ -17,6 +17,11 @@ class ProgressOutbox {
     _tails[path] = result.then<void>((_) {}, onError: (Object _, StackTrace _) {});
     return result;
   }
+  /// 位置为 0 且未完成的快照没有观看价值，重放它会清空服务端进度。
+  static bool _hasProgress(Map<String, dynamic> body) {
+    final position = body['position_ms'];
+    return body['finished'] == true || (position is num && position > 0);
+  }
   Future<List<Map<String, dynamic>>> _read() async {
     final file = File(path);
     if (!await file.exists()) return [];
@@ -34,6 +39,7 @@ class ProgressOutbox {
     await temp.rename(path);
   }
   Future<void> save(String url, String token, Map<String, dynamic> body) => _locked(() async {
+    if (!_hasProgress(body)) return;
     final entries = await _read();
     entries.removeWhere((entry) => entry['url'] == url);
     entries.add({'url': url, 'token': token, 'body': body, 'saved_at': DateTime.now().millisecondsSinceEpoch});
@@ -51,6 +57,15 @@ class ProgressOutbox {
     try {
       for (final entry in [...entries]) {
         try {
+          final rawBody = entry['body'];
+          if (rawBody is! Map ||
+              !_hasProgress(Map<String, dynamic>.from(rawBody))) {
+            // 旧版本可能在出错时排入一条 0 进度；重放它会把服务端刚刚
+            // 更新的续播点清掉，直接丢弃。
+            entries.remove(entry);
+            await _write(entries);
+            continue;
+          }
           final request = await client.postUrl(Uri.parse(entry['url'] as String)).timeout(const Duration(seconds: 3));
           request.headers.contentType = ContentType.json;
           request.headers.set(HttpHeaders.authorizationHeader, 'Bearer ${entry['token']}');

@@ -78,6 +78,89 @@ void main() {
     await subscription.cancel();
     await server.close(force: true);
   });
+
+  test('a transient zero position never replaces the saved progress', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      bodies.add(jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>);
+      request.response.statusCode = 200;
+      await request.response.close();
+    });
+    final reporter = ProgressReporter(
+      serverUrl: 'http://127.0.0.1:${server.port}',
+      itemId: 8,
+      playToken: 'pt_12345678',
+      intervalMs: 5000,
+      verifySsl: true,
+      sessionId: 'test-session',
+    );
+    reporter.start();
+    reporter.update(60000, durationMs: 120000);
+    await reporter.flushOnce(force: true);
+    expect(bodies.single['position_ms'], 60000);
+
+    // 引擎重新装载或报错时会先把位置归零，随后的退出 / 心跳不能把它当成
+    // 用户进度写回服务端。
+    reporter.update(0, durationMs: 120000);
+    await reporter.stop();
+
+    expect(bodies, hasLength(2));
+    expect(bodies.last['position_ms'], 60000);
+    expect(bodies.every((body) => body['position_ms'] > 0), isTrue);
+
+    await subscription.cancel();
+    await server.close(force: true);
+  });
+
+  test('zero before the first positive position is not uploaded', () async {
+    final bodies = <Map<String, dynamic>>[];
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      bodies.add(jsonDecode(await utf8.decoder.bind(request).join())
+          as Map<String, dynamic>);
+      request.response.statusCode = 200;
+      await request.response.close();
+    });
+    final reporter = ProgressReporter(
+      serverUrl: 'http://127.0.0.1:${server.port}',
+      itemId: 10,
+      playToken: 'pt_12345678',
+      intervalMs: 5000,
+      verifySsl: true,
+      sessionId: 'test-session',
+    );
+    reporter.start();
+    reporter.update(0, durationMs: 120000);
+    expect(await reporter.flushOnce(force: true), isTrue);
+    await reporter.stop();
+    expect(bodies, isEmpty);
+
+    await subscription.cancel();
+    await server.close(force: true);
+  });
+
+  test('a queued zero snapshot is discarded instead of clearing progress', () async {
+    final directory = await Directory.systemTemp.createTemp('strmaction-outbox-');
+    final path = '${directory.path}/outbox.json';
+    await File(path).writeAsString(jsonEncode([
+      {
+        'url': 'http://127.0.0.1:1/api/items/1/progress',
+        'token': 'pt_12345678',
+        'body': {
+          'position_ms': 0,
+          'duration_ms': 120000,
+          'finished': false,
+          'client_key': 'old-zero',
+        },
+        'saved_at': DateTime.now().millisecondsSinceEpoch,
+      },
+    ]));
+    await ProgressOutbox(path).replay('');
+    expect(jsonDecode(await File(path).readAsString()), isEmpty);
+    await directory.delete(recursive: true);
+  });
   test('stop waits for the in-flight request and sends the final position', () async {
     final firstArrived = Completer<void>();
     final releaseFirst = Completer<void>();

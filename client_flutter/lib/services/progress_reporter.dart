@@ -55,6 +55,9 @@ class ProgressReporter {
   String get url => '${serverUrl.replaceAll(RegExp(r'/+$'), '')}'
       '/api/items/$itemId/progress';
 
+  /// 是否已经收到过一个可写入服务端的播放位置。
+  bool get hasPosition => _positionMs > 0;
+
   void start() {
     if (_client != null) return;
     final client = HttpClient(context: trustContext(trustedCaPem))
@@ -68,11 +71,18 @@ class ProgressReporter {
 
   void update(int positionMs, {int? durationMs}) {
     if (_stopped || _closing) return;
-    _positionMs = positionMs < 0 ? 0 : positionMs;
-    if (durationMs != null) {
-      _durationMs = durationMs < 0 ? 0 : durationMs;
+    final next = positionMs < 0 ? 0 : positionMs;
+    // 播放器重新装载、切换清晰度或报错时会把位置临时重置为 0。0 不是一条
+    // 有效的观看记录，用它覆盖已有进度会让用户丢掉续播点。真正的「看完」
+    // 走 finish()，由 _payload() 主动把位置清零。
+    if (next > 0 || _positionMs == 0) {
+      _positionMs = next;
+      _dirty = true;
     }
-    _dirty = true;
+    if (durationMs != null && durationMs > 0) {
+      _durationMs = durationMs;
+      _dirty = true;
+    }
   }
 
   void finish() {
@@ -107,6 +117,12 @@ class ProgressReporter {
     _sending = true;
     _dirty = false;
     final payload = _payload();
+    if (payload['finished'] != true && (payload['position_ms'] as int) <= 0) {
+      // 还没离开片头（或重新装载期间位置暂时为 0）时没有可保存的进度。
+      // 发 0 会清掉服务端已有的续播点，等播放到正数位置再上报。
+      _sending = false;
+      return true;
+    }
     try {
       if (outboxPath != null) await ProgressOutbox(outboxPath!).save(url, playToken, payload);
       final request = await client.postUrl(Uri.parse(url)).timeout(
