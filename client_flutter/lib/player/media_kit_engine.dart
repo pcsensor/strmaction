@@ -49,6 +49,13 @@ class MediaKitEngine extends PlaybackEngine {
   Track? _track;
   bool _disposed = false;
 
+  /// The seek target shown while the decoder is still catching up. MPV reports
+  /// the pre-seek position until the target is demuxed; accepting it would make
+  /// every seek flash backwards before jumping to the requested time.
+  double? _seekTarget;
+  DateTime? _seekTargetAt;
+  static const Duration _seekSettleTimeout = Duration(seconds: 20);
+
   SequentialMediaCache? _diskCache;
   final String trustedCaPem;
   final String? caBundlePath;
@@ -138,7 +145,21 @@ class MediaKitEngine extends PlaybackEngine {
     );
     _subscriptions.add(
       _player.stream.position.listen((value) {
-        _position = value.inMilliseconds / 1000.0;
+        final seconds = value.inMilliseconds / 1000.0;
+        final target = _seekTarget;
+        if (target != null) {
+          final settled = (seconds - target).abs() <= 0.8;
+          final expired = _seekTargetAt == null ||
+              DateTime.now().difference(_seekTargetAt!) > _seekSettleTimeout;
+          if (!settled && !expired) {
+            // MPV keeps reporting the old position until the target is
+            // decoded. Publishing it makes the bar jump backwards for a frame.
+            return;
+          }
+          _seekTarget = null;
+          _seekTargetAt = null;
+        }
+        _position = seconds;
         _notify();
       }),
     );
@@ -177,7 +198,13 @@ class MediaKitEngine extends PlaybackEngine {
     _subscriptions.add(
       _player.stream.completed.listen((value) {
         _completed = value;
-        if (value) _paused = true;
+        if (value) {
+          _paused = true;
+          // A seek to the very end lands short of the duration; do not hold the
+          // target for the whole settle window once playback has completed.
+          _seekTarget = null;
+          _seekTargetAt = null;
+        }
         _notify();
       }),
     );
@@ -187,6 +214,8 @@ class MediaKitEngine extends PlaybackEngine {
         logger?.warning('播放器错误：${_redacted(message)}');
         _error = _friendlyError(message);
         _loading = false;
+        _seekTarget = null;
+        _seekTargetAt = null;
         _notify();
       }),
     );
@@ -269,6 +298,8 @@ class MediaKitEngine extends PlaybackEngine {
     _completed = false;
     _loading = true;
     _position = 0;
+    _seekTarget = null;
+    _seekTargetAt = null;
     _duration = (payload.durationMs ?? 0) / 1000.0;
     _bufferedRanges = const [];
     _networkSpeed = null;
@@ -530,12 +561,15 @@ class MediaKitEngine extends PlaybackEngine {
     var target = relative ? _position + seconds : seconds;
     target = math.max(0, target);
     if (_duration > 0) target = math.min(target, _duration);
+    // Publish the requested position immediately. The UI, the prefetch window
+    // and the progress reporter should all follow the seek, not wait for MPV
+    // to finish demuxing at the new offset.
+    _seekTarget = target;
+    _seekTargetAt = DateTime.now();
+    _position = target;
+    _notify();
     if (_duration > 0 && _diskCache != null) {
       final byte = (_diskCache!.length * target / _duration).round();
-      // The bar is rebuilt from stored blocks; clear the previous bands so a
-      // seek never leaves an old cached range visible for the next poll.
-      _bufferedRanges = const [];
-      _notify();
       logger?.info('桌面 seek target=${target.toStringAsFixed(1)}s '
           'offset=$byte cached=${_diskCache!.covers(byte)}');
       _diskCache!.seek(byte);
@@ -635,6 +669,8 @@ class MediaKitEngine extends PlaybackEngine {
     _cacheTimer?.cancel();
     _cacheTimer = null;
     _bufferedRanges = const [];
+    _seekTarget = null;
+    _seekTargetAt = null;
     _networkSpeed = null;
     _position = 0;
     _duration = 0;

@@ -52,6 +52,16 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
   double? _hoverX;
   double _lastX = 0;
 
+  /// Cached line captured when the interaction starts. The engine publishes
+  /// new ranges every 500 ms, which makes the white line crawl under the thumb
+  /// and blink when a seek resets the decoder cache.
+  List<BufferedRange>? _frozenRanges;
+
+  /// A seek that has to open an origin connection can take many seconds. The
+  /// preview must survive that long: dropping it earlier makes the head snap
+  /// back to the old position and then jump forward again.
+  static const Duration _settleTimeout = Duration(seconds: 20);
+
   static const double _headWidth = 3.5;
   static const double _headHalf = _headWidth / 2;
   static const double _edge = 10;
@@ -74,6 +84,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
     _pendingPosition = null;
     final wasDragging = _dragging;
     final target = _xToSeconds(x, width);
+    if (!wasDragging) _frozenRanges = widget.bufferedRanges;
     setState(() {
       _dragging = true;
       _dragPosition = target;
@@ -104,21 +115,31 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
     widget.onSeekingChanged?.call(false);
     widget.onSeek(target);
 
-    _pendingTimer = Timer(const Duration(milliseconds: 1500), () {
-      if (mounted && _pendingPosition != null) {
-        setState(() => _pendingPosition = null);
-        widget.onPreviewChanged?.call(null);
-      }
+    _pendingTimer = Timer(_settleTimeout, _clearPending);
+  }
+
+  /// Drops the preview once playback has really reached the target, or after
+  /// the settle timeout if the seek failed. Never on a fixed short delay.
+  void _clearPending() {
+    _pendingTimer?.cancel();
+    _pendingTimer = null;
+    if (!mounted) return;
+    setState(() {
+      _pendingPosition = null;
+      _frozenRanges = null;
     });
+    widget.onPreviewChanged?.call(null);
   }
 
   void _cancel() {
     _inDrag = false;
     if (!_dragging) return;
     _pendingTimer?.cancel();
+    _pendingTimer = null;
     setState(() {
       _dragging = false;
       _pendingPosition = null;
+      _frozenRanges = null;
     });
     widget.onPreviewChanged?.call(null);
     widget.onSeekingChanged?.call(false);
@@ -130,7 +151,9 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
     if (_pendingPosition != null) {
       if ((widget.position - _pendingPosition!).abs() < 0.8) {
         _pendingTimer?.cancel();
+        _pendingTimer = null;
         _pendingPosition = null;
+        _frozenRanges = null;
         // The parent may render the preview outside this bar. Notify it after
         // this build so it can safely update its own state.
         WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -154,6 +177,9 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         final shown = _dragging ? _dragPosition : (_pendingPosition ?? widget.position);
+        final ranges = (_dragging || _pendingPosition != null)
+            ? (_frozenRanges ?? widget.bufferedRanges)
+            : widget.bufferedRanges;
         final bar = MouseRegion(
           cursor: SystemMouseCursors.click,
           onHover: (event) => setState(() => _hoverX = event.localPosition.dx),
@@ -190,7 +216,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
                       painter: _SeekBarPainter(
                         position: shown,
                         duration: widget.duration,
-                        bufferedRanges: mergeBufferedRanges(widget.bufferedRanges),
+                        bufferedRanges: mergeBufferedRanges(ranges),
                         left: _left(width),
                         right: _right(width),
                       ),

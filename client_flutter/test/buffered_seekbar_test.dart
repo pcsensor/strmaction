@@ -123,6 +123,93 @@ void main() {
       await tester.pump();
     });
 
+    testWidgets('a slow seek keeps the head on the target instead of snapping back', (tester) async {
+      var position = 10.0;
+      Widget bar() => MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 500,
+              child: BufferedSeekBar(
+                position: position,
+                duration: 100.0,
+                bufferedRanges: const [BufferedRange(0, 50)],
+                onSeek: (_) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      double shown() => ((tester
+              .widget<CustomPaint>(find.descendant(
+                  of: find.byType(BufferedSeekBar),
+                  matching: find.byType(CustomPaint)))
+              .painter) as dynamic)
+          .position as double;
+
+      await tester.pumpWidget(bar());
+      await tester.tapAt(tester.getCenter(find.byType(BufferedSeekBar)));
+      await tester.pump();
+      final target = shown();
+      expect(target, closeTo(50.6, 2));
+
+      // The origin connection can take seconds. While the engine still reports
+      // the old position the head must stay where the user clicked.
+      await tester.pump(const Duration(seconds: 2));
+      expect(shown(), closeTo(target, 0.01));
+      await tester.pumpWidget(bar());
+      await tester.pump(const Duration(seconds: 2));
+      expect(shown(), closeTo(target, 0.01));
+
+      // Playback reaches the target: the bar follows the engine again.
+      position = target;
+      await tester.pumpWidget(bar());
+      await tester.pump();
+      expect(shown(), closeTo(target, 0.01));
+    });
+
+    testWidgets('the cached line stays frozen while the user drags', (tester) async {
+      var ranges = const [BufferedRange(0, 50)];
+      Widget bar() => MaterialApp(
+        home: Scaffold(
+          body: Center(
+            child: SizedBox(
+              width: 500,
+              child: BufferedSeekBar(
+                position: 10.0,
+                duration: 100.0,
+                bufferedRanges: ranges,
+                onSeek: (_) {},
+              ),
+            ),
+          ),
+        ),
+      );
+      List<BufferedRange> painted() => ((tester
+              .widget<CustomPaint>(find.descendant(
+                  of: find.byType(BufferedSeekBar),
+                  matching: find.byType(CustomPaint)))
+              .painter) as dynamic)
+          .bufferedRanges as List<BufferedRange>;
+
+      await tester.pumpWidget(bar());
+      final gesture = await tester.startGesture(tester.getCenter(find.byType(BufferedSeekBar)));
+      await tester.pump();
+      // The engine publishes a longer cached range mid-drag.
+      ranges = const [BufferedRange(0, 80)];
+      await tester.pumpWidget(bar());
+      await tester.pump();
+      expect(painted(), const [BufferedRange(0, 50)],
+          reason: 'the line must not crawl under the finger');
+
+      // Still frozen while the seek settles.
+      await gesture.up();
+      await tester.pump();
+      await tester.pumpWidget(bar());
+      await tester.pump();
+      expect(painted(), const [BufferedRange(0, 50)]);
+    });
+
     testWidgets('drag does not reset or flicker when transitioning from tap down', (tester) async {
       final seekingStates = <bool>[];
 

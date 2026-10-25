@@ -67,7 +67,7 @@ void main() {
       expect(tester.takeException(), isNull);
     });
 
-    testWidgets('cancelled seek and expired pending seek restore the playback time at width $width', (tester) async {
+    testWidgets('a pending seek survives a slow seek and restores only after the target arrives at width $width', (tester) async {
       addTearDown(tester.view.resetPhysicalSize);
       addTearDown(tester.view.resetDevicePixelRatio);
       final seeks = <double>[];
@@ -86,9 +86,23 @@ void main() {
       await tester.tapAt(center);
       await tester.pump();
       expect(find.text('00:50 / 01:40'), findsOneWidget);
+      // A CDN-backed seek can take seconds. The old 1.5 s timeout made the
+      // bar snap back to the playback position before the target arrived.
       await tester.pump(const Duration(milliseconds: 1600));
+      expect(find.text('00:50 / 01:40'), findsOneWidget);
+      // The safety net still restores the playback time if the seek fails.
+      await tester.pump(const Duration(seconds: 21));
       expect(find.text('00:10 / 01:40'), findsOneWidget);
-      expect(seeks, hasLength(1));
+
+      // Once playback reaches the target the preview ends on its own.
+      await tester.tapAt(center);
+      await tester.pump();
+      expect(find.text('00:50 / 01:40'), findsOneWidget);
+      await showControls(tester, Size(width, 800), EdgeInsets.zero,
+        overlay: controls(position: 50, onSeek: seeks.add));
+      await tester.pump();
+      expect(find.text('00:50 / 01:40'), findsOneWidget);
+      expect(seeks, hasLength(2));
       expect(tester.takeException(), isNull);
     });
 

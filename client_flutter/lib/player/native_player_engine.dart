@@ -20,6 +20,12 @@ class NativePlayerEngine extends PlaybackEngine {
   String? _error;
   double _previousVolume = 100;
   List<BufferedRange> _bufferedRanges = const [];
+  /// Seek target held until the native player reports that it arrived.
+  /// AVPlayer and ExoPlayer both keep publishing the old position for a few
+  /// frames after a seek; forwarding that makes the bar snap backwards.
+  double? _seekTarget;
+  DateTime? _seekTargetAt;
+  static const Duration _seekSettleTimeout = Duration(seconds: 20);
   late final Widget _surface = Platform.isAndroid
       ? const AndroidView(viewType: 'strmaction/video')
       : UiKitView(viewType: 'strmaction/video', creationParams: {'session_id': sessionId},
@@ -30,8 +36,21 @@ class NativePlayerEngine extends PlaybackEngine {
       if (_disposed || event is! Map) return;
       if (event['session_id'] != null && event['session_id'] != sessionId) return;
       _state = Map<String, dynamic>.from(event);
+      final target = _seekTarget;
+      if (target != null) {
+        final actual = _number('position_ms') / 1000;
+        final settled = (actual - target).abs() <= 0.8;
+        final expired = _seekTargetAt == null ||
+            DateTime.now().difference(_seekTargetAt!) > _seekSettleTimeout;
+        if (settled || expired || _state['completed'] == true) {
+          _seekTarget = null;
+          _seekTargetAt = null;
+        }
+      }
+      final actualPosition = _number('position_ms') / 1000;
       _bufferedRanges = mergeBufferedRanges([
-        if (_number('buffered_ms') > _number('position_ms')) BufferedRange(position, _number('buffered_ms') / 1000),
+        if (_number('buffered_ms') > _number('position_ms'))
+          BufferedRange(actualPosition, _number('buffered_ms') / 1000),
         ...((_state['cached_ranges'] as List?) ?? []).whereType<Map>().map((r) =>
           BufferedRange((r['start_ms'] as num).toDouble() / 1000, (r['end_ms'] as num).toDouble() / 1000)),
       ]);
@@ -50,7 +69,7 @@ class NativePlayerEngine extends PlaybackEngine {
   @override bool get isPiP => _state['pip'] == true;
   @override String? get notice => _state['notice'] as String?;
   @override VideoController? get videoController => null;
-  @override double get position => _number('position_ms') / 1000;
+  @override double get position => _seekTarget ?? _number('position_ms') / 1000;
   @override double get duration => _number('duration_ms') / 1000;
   @override bool get isPaused => _state['playing'] != true;
   @override double get speed => _number('speed', 1);
@@ -74,6 +93,8 @@ class NativePlayerEngine extends PlaybackEngine {
   @override Future<void> load(PlaybackPayload payload, {required int cacheLimitMb, required bool tlsVerify}) async {
     _state = {'loading': true};
     _bufferedRanges = const [];
+    _seekTarget = null;
+    _seekTargetAt = null;
     _error = null;
     notifyListeners();
     try {
@@ -89,7 +110,16 @@ class NativePlayerEngine extends PlaybackEngine {
   @override Future<void> play() => _call('play');
   @override Future<void> pause() => _call('pause');
   @override Future<void> setPaused(bool paused) => paused ? pause() : play();
-  @override Future<void> seek(double seconds, {bool relative = false}) => _call('seek', ((relative ? position + seconds : seconds).clamp(0, 1e12) * 1000).round());
+  @override Future<void> seek(double seconds, {bool relative = false}) {
+    var target = relative ? position + seconds : seconds;
+    if (target < 0) target = 0;
+    final total = duration;
+    if (total > 0 && target > total) target = total;
+    _seekTarget = target;
+    _seekTargetAt = DateTime.now();
+    notifyListeners();
+    return _call('seek', (target * 1000).round());
+  }
   @override Future<void> setSpeed(double speed) => _call('speed', speed);
   @override Future<void> setVolume(int percent) {
     _state['volume'] = percent.clamp(0, 100);
