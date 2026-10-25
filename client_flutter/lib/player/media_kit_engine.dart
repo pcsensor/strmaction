@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
 import '../core/app_logger.dart';
+import '../core/redaction.dart';
 import '../models/playback_payload.dart';
 import '../services/bounded_media_cache.dart';
 import '../services/download_policy.dart';
@@ -183,6 +184,7 @@ class MediaKitEngine extends PlaybackEngine {
     _subscriptions.add(
       _player.stream.error.listen((message) {
         if (message.trim().isEmpty) return;
+        logger?.warning('播放器错误：${_redacted(message)}');
         _error = _friendlyError(message);
         _loading = false;
         _notify();
@@ -280,9 +282,16 @@ class MediaKitEngine extends PlaybackEngine {
     await previous?.close();
     if (_disposed || epoch != _cacheEpoch) return;
     if (cacheDirectory != null && diskLimitMb > 0) {
-      final opened = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
-        trustedCaPem: trustedCaPem, directory: '$cacheDirectory/$epoch', budgetBytes: diskLimitMb * 1024 * 1024,
-        prefetchBytes: cacheLimitMb * 1024 * 1024, onDiagnostic: logger?.info);
+      BoundedMediaCache? opened;
+      try {
+        opened = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
+          trustedCaPem: trustedCaPem, directory: '$cacheDirectory/$epoch', budgetBytes: diskLimitMb * 1024 * 1024,
+          prefetchBytes: cacheLimitMb * 1024 * 1024, onDiagnostic: logger?.info);
+      } on Object catch (error) {
+        // A cache that cannot resolve the origin must not abort playback:
+        // media_kit can still open the origin directly with the same headers.
+        logger?.warning('本地缓存初始化失败，回退直连：${error.runtimeType}: ${_redacted('$error')}');
+      }
       if (_disposed || epoch != _cacheEpoch) {
         await opened?.close();
         // A delayed opener may finish after shutdown removed the parent.
@@ -292,8 +301,14 @@ class MediaKitEngine extends PlaybackEngine {
       }
       _diskCache = opened;
       if (opened != null) {
+        logger?.info('本地缓存就绪 origin=${redactUrl(payload.playUrl)} '
+            'length=${(opened.length / 1024 / 1024).toStringAsFixed(1)}MB');
         opened.setConsumed(_duration > 0 ? (opened.length * payload.resumeMs / 1000 / _duration).round() : 0);
       }
+    }
+    if (_diskCache == null) {
+      logger?.info('播放直连 origin=${redactUrl(payload.playUrl)} '
+          '磁盘上限=${diskLimitMb}MB 预读=${cacheLimitMb}MB');
     }
     final media = Media(
       _diskCache?.localUrl.toString() ?? payload.playUrl,
@@ -313,6 +328,7 @@ class MediaKitEngine extends PlaybackEngine {
       _notify();
     } on Object catch (error) {
       if (_disposed || epoch != _cacheEpoch) return;
+      logger?.warning('打开媒体失败：${error.runtimeType}: ${_redacted('$error')}');
       _error = _friendlyError('$error');
       _loading = false;
       _notify();
@@ -625,6 +641,12 @@ class MediaKitEngine extends PlaybackEngine {
       await cache?.close();
     }
   }
+
+  /// Keeps tokens and signed query strings out of the desktop log.
+  static String _redacted(String raw) => raw.replaceAllMapped(
+        RegExp(r'https?://[^\s"<>]+'),
+        (match) => redactUrl(match[0]),
+      );
 
   String _friendlyError(String raw) {
     final text = raw.trim();
