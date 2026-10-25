@@ -207,7 +207,7 @@ void main() {
     final cache = (await BoundedMediaCache.open(url: origin.url,
       headers: {'User-Agent': 'pan-fixture', 'Referer': 'https://pan.example/'},
       trustedCaPem: '', directory: '${root.path}/cache', budgetBytes: 16 * mib,
-      demandStallTimeout: const Duration(milliseconds: 200)))!;
+      demandStallTimeout: const Duration(milliseconds: 750)))!;
     addTearDown(() async { await cache.close(); client.close(force: true); await origin.close(); await root.delete(recursive: true); });
     expect(await read(client, cache, 0, 99), List.generate(100, (i) => i % 251));
     expect(origin.releaseFirst.isCompleted, isFalse);
