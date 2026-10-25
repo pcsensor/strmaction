@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
@@ -260,6 +261,69 @@ void main() {
     await Future<void>.delayed(const Duration(milliseconds: 500));
     expect(cache.storedBytes, greaterThan(paused),
         reason: 'advancing the playhead resumes the same stream');
+  });
+
+  test('a sequential read far from the playhead uses one stream, not a probe', () async {
+    final origin = OriginFixture();
+    await origin.start();
+    final root = await Directory.systemTemp.createTemp('far-read-');
+    final client = HttpClient();
+    final cache = await openCache(origin, root);
+    addTearDown(() async {
+      await cache.close();
+      client.close(force: true);
+      await origin.close();
+      await root.delete(recursive: true);
+    });
+    const start = 24 * mib;
+    expect(await read(client, cache, start, start + 99),
+        List.generate(100, (i) => (start + i) % 251));
+    await waitIdle(cache);
+    expect(origin.starts, hasLength(1),
+        reason: 'the playhead byte hint can be far off; a non-edge read must '
+            'still own the single sequential stream');
+    expect(origin.starts.single, start);
+    // The next block is already covered by that open-ended stream.
+    const next = start + mib;
+    expect(await read(client, cache, next, next + 99),
+        List.generate(100, (i) => (next + i) % 251));
+    expect(origin.starts, hasLength(1),
+        reason: 'a 4 MiB probe chain would open a new CDN connection per block');
+  });
+
+  test('a seek during a live local response ends it without throwing', () async {
+    final origin = OriginFixture();
+    await origin.start();
+    final root = await Directory.systemTemp.createTemp('abort-');
+    final client = HttpClient();
+    final cache = await openCache(origin, root);
+    addTearDown(() async {
+      await cache.close();
+      client.close(force: true);
+      await origin.close();
+      await root.delete(recursive: true);
+    });
+    final request = await client.getUrl(cache.localUrl);
+    request.headers.set('Range', 'bytes=0-');
+    final response = await request.close();
+    final received = <int>[];
+    final enough = Completer<void>();
+    final subscription = response.listen(
+      (chunk) {
+        received.addAll(chunk);
+        if (received.length >= 3 * mib && !enough.isCompleted) enough.complete();
+      },
+      onError: (Object _) {},
+    );
+    await enough.future.timeout(const Duration(seconds: 10));
+    cache.seek(20 * mib);
+    cache.setConsumed(20 * mib);
+    // The stale response is aborted while its headers are already committed.
+    // Detaching there throws; the zone would fail this test.
+    await Future<void>.delayed(const Duration(milliseconds: 200));
+    expect(await read(client, cache, 20 * mib, 20 * mib + 99),
+        List.generate(100, (i) => (20 * mib + i) % 251));
+    await subscription.cancel();
   });
 
   test('media headers survive a redirect', () async {

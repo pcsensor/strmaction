@@ -52,16 +52,18 @@ ahead drops below ten seconds, before a full rebuffer is required.
   EOF, publishes each received chunk into the bounded disk store and pauses when
   it is `prefetch` bytes ahead; advancing the playhead resumes the same
   connection instead of opening another one. Cached reads never touch the
-  origin. A miss near the playhead restarts the stream at the first missing
-  byte; a miss far away (header, tail moov, format probe) uses the probe.
-  Explicit seeks only update the playhead; stale local responses are stopped by
-  a per-response generation without cancelling the new stream. A connection
-  attempt is never cancelled: Dart's HttpClient cannot abort a queued
-  `getUrl`, so the only safe action is to let it finish. Timeouts are 25s for
-  connect/headers and 12s without body bytes; a restart resumes after the last
-  written byte, so failed attempts cannot leave holes. The local decoder's
-  `network-timeout` is 30s to cover one full connect attempt. See
-  [the transport redesign](desktop-playback-transport-redesign.md).
+  origin. Only the first and last 4 MiB use a probe; every other miss restarts
+  the main stream, because a sequential read served by 4 MiB probes would open a
+  new CDN connection per block. Explicit seeks only update the playhead; a stale
+  local response is stopped by its generation, but it is closed rather than
+  detached once headers are committed — `detachSocket()` throws
+  `Bad state: Headers already sent` there and used to leave the client waiting
+  for its network timeout. A connection attempt is never cancelled: Dart's
+  HttpClient cannot abort a queued `getUrl`, so the only safe action is to let
+  it finish. Timeouts are 25s for connect/headers and 12s without body bytes; a
+  restart resumes after the last written byte, so failed attempts cannot leave
+  holes. The local decoder's `network-timeout` is 30s to cover one full connect
+  attempt. See [the transport redesign](desktop-playback-transport-redesign.md).
 - **iOS:** serve an available cached prefix before waiting on its owner; each
   speculative data callback wakes waiting readers. A missing range promotes its
   existing request, reduces speculative competition, and receives the same bounded

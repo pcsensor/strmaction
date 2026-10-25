@@ -76,6 +76,13 @@ class SequentialMediaCache {
   List<(int, int)> get ranges => _blocks.keys
       .map((n) => (n * blockSize, n * blockSize + _blockLengths[n]!))
       .toList();
+
+  /// True when the byte at [byteOffset] is already stored, so the playhead can
+  /// be served from disk without waiting for the origin.
+  bool covers(int byteOffset) {
+    if (byteOffset < 0 || byteOffset >= length) return false;
+    return (_blockLengths[byteOffset ~/ blockSize] ?? 0) > byteOffset % blockSize;
+  }
   String get diagnosticState {
     String describe(_Transfer? t, String name) => t == null
         ? '$name=none'
@@ -560,12 +567,20 @@ class SequentialMediaCache {
         }
         if (generation != _generation) throw const _Cancelled();
         final target = number * blockSize + (_blockLengths[number] ?? 0);
+        final offset = number * blockSize;
+        // The head and the tail moov are the only reads that justify a probe:
+        // they are one-off, unrelated to the playhead, and must not disturb the
+        // main stream. Everything else is a sequential read; using a probe
+        // there costs one new CDN connection per 4 MiB and leaves the decoder
+        // waiting for it. The byte hint can be far off on VBR files, so a
+        // distance check alone cannot classify a playhead read.
+        final edge = offset < probeBytes || offset >= length - probeBytes;
         if (_pendingSeek) {
           // The byte hint from seek() can be off on VBR files. The first
           // demand after an explicit seek is authoritative: stream from it.
           _pendingSeek = false;
           _startStream(target);
-        } else if ((target - _consumed).abs() <= probeDistance) {
+        } else if (!edge || (target - _consumed).abs() <= probeDistance) {
           _startStream(target);
         } else {
           _startProbe(number);
@@ -675,10 +690,7 @@ class SequentialMediaCache {
       if (error is _Cancelled) {
         // The player seeked and this local response is stale. The new request
         // owns the next transfer; close without fabricating a media error.
-        await response
-            .detachSocket()
-            .then((socket) => socket.destroy())
-            .catchError((Object _) {});
+        await _abort(response);
         return;
       }
       onDiagnostic?.call('本地响应中止 '
@@ -696,10 +708,26 @@ class SequentialMediaCache {
           // Headers already committed.
         }
       }
-      await response
-          .detachSocket()
-          .then((socket) => socket.destroy())
-          .catchError((Object _) {});
+      await _abort(response);
+    }
+  }
+
+  /// Ends a local response whose body is already partly written. Detaching is
+  /// only legal before the headers are committed; after that the socket can
+  /// only be released by closing, and an unhandled StateError here used to
+  /// leave the client waiting on a response that never completed.
+  Future<void> _abort(HttpResponse response) async {
+    try {
+      final socket = await response.detachSocket();
+      socket.destroy();
+      return;
+    } on Object {
+      // Headers were already sent.
+    }
+    try {
+      await response.close();
+    } on Object {
+      // The client closed the connection first.
     }
   }
 

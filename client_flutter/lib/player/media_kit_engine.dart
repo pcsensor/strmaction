@@ -531,7 +531,14 @@ class MediaKitEngine extends PlaybackEngine {
     target = math.max(0, target);
     if (_duration > 0) target = math.min(target, _duration);
     if (_duration > 0 && _diskCache != null) {
-      _diskCache!.seek((_diskCache!.length * target / _duration).round());
+      final byte = (_diskCache!.length * target / _duration).round();
+      // The bar is rebuilt from stored blocks; clear the previous bands so a
+      // seek never leaves an old cached range visible for the next poll.
+      _bufferedRanges = const [];
+      _notify();
+      logger?.info('桌面 seek target=${target.toStringAsFixed(1)}s '
+          'offset=$byte cached=${_diskCache!.covers(byte)}');
+      _diskCache!.seek(byte);
     }
     await _player.seek(Duration(milliseconds: (target * 1000).round()));
   }
