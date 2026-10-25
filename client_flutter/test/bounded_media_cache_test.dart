@@ -5,6 +5,65 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/services/bounded_media_cache.dart';
 
 void main() {
+  test('media headers survive cross-origin redirects and subsequent cached range reads', () async {
+    final root = await Directory.systemTemp.createTemp('media-headers-');
+    final entry = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    const headers = {
+      'uSeR-aGeNt': 'pan.baidu.com',
+      'rEfErEr': 'https://pan.example/',
+      'Authorization': 'Bearer media-fixture',
+      'Cookie': 'media=fixture; option=a,b',
+      'X-Media-Option': 'first,second',
+    };
+    var entries = 0;
+    var reads = 0;
+    void checkHeaders(HttpRequest request) {
+      for (final header in headers.entries) {
+        expect(request.headers.value(header.key), header.value);
+      }
+      expect(request.headers.value(HttpHeaders.acceptEncodingHeader), 'identity');
+    }
+    entry.listen((request) async {
+      checkHeaders(request);
+      entries++;
+      request.response.statusCode = 302;
+      request.response.headers.set(HttpHeaders.locationHeader, 'http://localhost:${origin.port}/media');
+      await request.response.close();
+    });
+    origin.listen((request) async {
+      checkHeaders(request);
+      reads++;
+      final match = RegExp(r'^bytes=(\d+)-(\d+)$')
+          .firstMatch(request.headers.value(HttpHeaders.rangeHeader)!)!;
+      final start = int.parse(match[1]!);
+      final end = min(4095, int.parse(match[2]!));
+      request.response.statusCode = 206;
+      request.response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/4096');
+      request.response.contentLength = end - start + 1;
+      request.response.add(List.generate(end - start + 1, (index) => (start + index) % 251));
+      await request.response.close();
+    });
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(
+      url: 'http://127.0.0.1:${entry.port}/entry', headers: headers, trustedCaPem: '',
+      directory: '${root.path}/cache', budgetBytes: BoundedMediaCache.blockSize))!;
+    addTearDown(() async {
+      await cache.close();
+      client.close(force: true);
+      await entry.close(force: true);
+      await origin.close(force: true);
+      await root.delete(recursive: true);
+    });
+    final request = await client.getUrl(cache.localUrl);
+    request.headers.set(HttpHeaders.rangeHeader, 'bytes=100-199');
+    final response = await request.close();
+    final bytes = await response.fold<List<int>>([], (all, part) => all..addAll(part));
+    expect(bytes, List.generate(100, (index) => 100 + index));
+    expect(entries, 1);
+    expect(reads, 2, reason: 'the resolved URL is reused with the same media headers');
+  });
+
   test('Range cache reuses blocks, enforces capacity, preserves headers and clears', () async {
     final bytes = List<int>.generate(3 * BoundedMediaCache.blockSize, (index) => index % 251);
     final root = await Directory.systemTemp.createTemp('strmaction-media-');

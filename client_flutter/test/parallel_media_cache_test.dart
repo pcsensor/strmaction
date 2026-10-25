@@ -94,6 +94,67 @@ Future<List<int>> read(HttpClient client, BoundedMediaCache cache, int start, in
 }
 
 void main() {
+  test('seeking releases all stalled response bodies before replacing their connections', () async {
+    final root = await Directory.systemTemp.createTemp('cancelled-bodies-');
+    final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final release = Completer<void>();
+    const prefix = 64 * 1024;
+    const length = 40 * mib;
+    final starts = <int>[];
+    origin.listen((request) async {
+      try {
+        final match = RegExp(r'^bytes=(\d+)-(\d+)$')
+            .firstMatch(request.headers.value(HttpHeaders.rangeHeader)!)!;
+        final start = int.parse(match[1]!);
+        final end = min(length - 1, int.parse(match[2]!));
+        final probe = start == 0 && end == 0;
+        request.response.statusCode = 206;
+        request.response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/$length');
+        request.response.contentLength = end - start + 1;
+        if (!probe) starts.add(start);
+        if (!probe && start < 16 * mib) {
+          request.response.add(Uint8List(prefix));
+          await request.response.flush();
+          // Headers and a prefix arrived, but the peer never finishes the body.
+          await release.future;
+        } else {
+          request.response.add(Uint8List(end - start + 1));
+        }
+        await request.response.close();
+      } on Object {
+        unawaited(request.response.close().then<void>((_) {}, onError: (Object _) {}));
+      }
+    });
+    final client = HttpClient();
+    final cache = (await BoundedMediaCache.open(
+      url: 'http://127.0.0.1:${origin.port}/video', headers: {}, trustedCaPem: '',
+      directory: '${root.path}/cache', budgetBytes: 32 * mib, prefetchBytes: 16 * mib,
+      demandStallTimeout: const Duration(milliseconds: 250)))!;
+    addTearDown(() async {
+      await cache.close();
+      client.close(force: true);
+      if (!release.isCompleted) release.complete();
+      await origin.close(force: true);
+      await root.delete(recursive: true);
+    });
+    cache.policy.concurrency = 4;
+    cache.setConsumed(0);
+    for (var i = 0; i < 200 && cache.storedBytes < 4 * prefix; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(cache.storedBytes, 4 * prefix);
+    expect(cache.activeDownloads, 4);
+    expect(starts, containsAll([0, 4 * mib, 8 * mib, 12 * mib]));
+
+    cache.seek(24 * mib);
+    expect(await read(client, cache, 24 * mib, 24 * mib + 99)
+        .timeout(const Duration(seconds: 2)), List.filled(100, 0));
+    expect(release.isCompleted, isFalse,
+      reason: 'replacement reads must not wait for old origins to send more data');
+    expect(starts, contains(24 * mib));
+    expect(cache.storedBytes + cache.reservedBytes, lessThanOrEqualTo(32 * mib));
+  });
+
   test('publishes a received prefix before its slow segment finishes, then rescues only the gap', () async {
     final origin = OriginFixture()..holdFirst = true; await origin.start();
     final root = await Directory.systemTemp.createTemp('prefix-cache-');

@@ -296,7 +296,9 @@ class MediaKitEngine extends PlaybackEngine {
     }
     final media = Media(
       _diskCache?.localUrl.toString() ?? payload.playUrl,
-      httpHeaders: payload.headers.isEmpty ? null : payload.headers,
+      // The cache owns origin headers. Passing them to the loopback decoder
+      // can override its own Range/Host and applies media credentials locally.
+      httpHeaders: _diskCache != null ? const <String, String>{} : payload.headers,
       start: payload.resumeMs > 0
           ? Duration(milliseconds: payload.resumeMs)
           : null,

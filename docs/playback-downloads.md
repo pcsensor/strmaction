@@ -46,6 +46,9 @@ ahead drops below ten seconds, before a full rebuffer is required.
   not change the user's play/pause intent or switch to whole-file transport.
 - **Windows / macOS:** publish each received prefix into the bounded disk store
   and wake local readers immediately, without retaining a full segment in RAM.
+  Cancellation closes the response body as well as the request: after headers
+  arrive, aborting the request alone cannot release a stalled connection. Origin
+  headers stay on upstream requests and are not applied to loopback decoder reads.
   Published bytes replace reserved bytes, so partial downloads count against the
   same disk budget. A requested gap that remains unavailable for three seconds
   replaces its stalled transfer, at most twice, starting after any cached prefix.

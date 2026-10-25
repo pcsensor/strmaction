@@ -229,10 +229,15 @@ class BoundedMediaCache {
 
   Future<void> _download(_Download job) async {
     final clock = Stopwatch()..start();
+    StreamIterator<List<int>>? body;
     try {
       final response = await _request(job);
-      await for (final chunk in response.timeout(const Duration(seconds: 20))) {
+      body = StreamIterator(response.timeout(const Duration(seconds: 20)));
+      job.body = body;
+      if (_closed || job.cancelled) throw const _Cancelled();
+      while (await body.moveNext()) {
         if (_closed || job.cancelled) throw const _Cancelled();
+        final chunk = body.current;
         _rate.add(chunk.length);
         if (job.received + chunk.length > job.size) throw const HttpException('片源返回范围过大');
         // Publish each received prefix. Readers never wait for the 4–8 MiB tail.
@@ -253,6 +258,7 @@ class BoundedMediaCache {
         }
         job.notify();
       }
+      if (_closed || job.cancelled) throw const _Cancelled();
       if (job.received != job.size) throw const HttpException('片源范围读取不完整');
       policy.completed(job.received, clock.elapsed);
       scheduleMicrotask(() => _prefetch(_focus));
@@ -260,7 +266,12 @@ class BoundedMediaCache {
       job.error = error;
       if (!job.cancelled && !_closed) policy.failed();
       rethrow;
-    } finally { _jobs.remove(job); job.notify(); }
+    } finally {
+      await body?.cancel();
+      job.body = null;
+      _jobs.remove(job);
+      job.notify();
+    }
   }
 
   void _makeDemandRoom(int number) {
@@ -419,10 +430,23 @@ class _Download {
   Future<void> get changed => _changed.future;
   void notify() { final before = _changed; _changed = Completer<void>(); before.complete(); }
   HttpClientRequest? request;
+  StreamIterator<List<int>>? body;
   late Future<void> result;
   _Download(this.start, this.end);
   int get size => end - start;
   bool contains(int block) => (block + 1) * BoundedMediaCache.blockSize > start && block * BoundedMediaCache.blockSize < end;
-  void cancel() { cancelled = true; request?.abort(const _Cancelled()); notify(); }
+  void cancel() {
+    if (cancelled) return;
+    cancelled = true;
+    request?.abort(const _Cancelled());
+    // abort() stops an outstanding request, but has no effect once response
+    // headers have arrived. Cancel its body too, releasing the connection even
+    // when a stalled origin never sends another chunk.
+    final stream = body;
+    if (stream != null) {
+      unawaited(stream.cancel().then<void>((_) {}, onError: (Object _) {}));
+    }
+    notify();
+  }
 }
 class _Cancelled implements Exception { const _Cancelled(); }
