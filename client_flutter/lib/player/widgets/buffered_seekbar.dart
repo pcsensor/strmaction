@@ -112,6 +112,18 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
     });
   }
 
+  void _cancel() {
+    _inDrag = false;
+    if (!_dragging) return;
+    _pendingTimer?.cancel();
+    setState(() {
+      _dragging = false;
+      _pendingPosition = null;
+    });
+    widget.onPreviewChanged?.call(null);
+    widget.onSeekingChanged?.call(false);
+  }
+
   @override
   void didUpdateWidget(covariant BufferedSeekBar oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -142,7 +154,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
       builder: (context, constraints) {
         final width = constraints.maxWidth;
         final shown = _dragging ? _dragPosition : (_pendingPosition ?? widget.position);
-        return MouseRegion(
+        final bar = MouseRegion(
           cursor: SystemMouseCursors.click,
           onHover: (event) => setState(() => _hoverX = event.localPosition.dx),
           onExit: (_) => setState(() => _hoverX = null),
@@ -153,11 +165,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
             onTapCancel: () {
               scheduleMicrotask(() {
                 if (mounted && !_inDrag && _dragging) {
-                  _pendingTimer?.cancel();
-                  _pendingPosition = null;
-                  setState(() => _dragging = false);
-                  widget.onPreviewChanged?.call(null);
-                  widget.onSeekingChanged?.call(false);
+                  _cancel();
                 }
               });
             },
@@ -171,16 +179,7 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
               _inDrag = false;
               _end(_lastX, width);
             },
-            onHorizontalDragCancel: () {
-              _inDrag = false;
-              if (_dragging) {
-                _pendingTimer?.cancel();
-                _pendingPosition = null;
-                setState(() => _dragging = false);
-                widget.onPreviewChanged?.call(null);
-                widget.onSeekingChanged?.call(false);
-              }
-            },
+            onHorizontalDragCancel: _cancel,
             child: SizedBox(
               height: 32,
               child: Stack(
@@ -225,6 +224,9 @@ class _BufferedSeekBarState extends State<BufferedSeekBar> {
             ),
           ),
         );
+        // An accepted drag also receives onEnd after a pointer cancellation.
+        // Clear the preview before that callback can commit a seek.
+        return Listener(onPointerCancel: (_) => _cancel(), child: bar);
       },
     );
   }
