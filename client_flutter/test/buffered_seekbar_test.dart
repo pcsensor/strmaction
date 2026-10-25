@@ -194,6 +194,9 @@ void main() {
 
       await tester.pumpWidget(bar());
       final gesture = await tester.startGesture(tester.getCenter(find.byType(BufferedSeekBar)));
+      // Let the tap deadline resolve, then drag: both paths freeze the line.
+      await tester.pump(const Duration(milliseconds: 200));
+      await gesture.moveBy(const Offset(24, 0));
       await tester.pump();
       // The engine publishes a longer cached range mid-drag.
       ranges = const [BufferedRange(0, 80)];
