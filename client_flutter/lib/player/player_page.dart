@@ -150,6 +150,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     widget.app.configNotifier.addListener(_onConfigChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
+      // 手机上进入播放器就隐藏系统栏：控制栏和画面要铺满整块屏幕。
+      // 全屏按钮只负责再锁定横屏，退出播放器时恢复系统栏和方向。
+      if (_mobile) unawaited(setMobileFullscreen(false, keepImmersive: true));
       _focusNode.requestFocus();
       _load();
       _refreshFullscreen();
@@ -494,8 +497,11 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   Future<void> _toggleFullscreen() async {
     if (_mobile) {
-      setState(() => _fullscreen = !_fullscreen);
-      await setMobileFullscreen(_fullscreen);
+      final next = !_fullscreen;
+      setState(() => _fullscreen = next);
+      // 退出横屏全屏时仍留在播放页，所以系统栏继续保持隐藏。
+      await setMobileFullscreen(next, keepImmersive: !next);
+      _showControls();
       return;
     }
     try {

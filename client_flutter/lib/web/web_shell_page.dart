@@ -21,6 +21,7 @@ import '../features/settings/settings_dialog.dart';
 import '../models/playback_payload.dart';
 import '../player/player_page.dart';
 import 'bridge_script.dart';
+import 'web_safe_area.dart';
 
 class WebShellPage extends StatefulWidget {
   final AppController app;
@@ -59,39 +60,24 @@ class _WebShellPageState extends State<WebShellPage> {
     final insets = MediaQuery.viewPaddingOf(context);
     if (insets == _safeInsets) return;
     _safeInsets = insets;
-    // Rotation or a display-cutout change: the page owns the insets now, so
-    // hand it the new values without shrinking the viewport.
+    // Rotation or a display-cutout change: the SafeArea and the injected CSS
+    // variables must follow the new orientation.
     WidgetsBinding.instance.addPostFrameCallback((_) => _applySafeArea());
   }
 
-  /// The library paints edge-to-edge. Its fixed header and bottom navigation
-  /// read these variables instead of the whole document being inset, which
-  /// showed as dark bands above and below the page on notched phones.
-  ///
-  /// The page takes the larger of this value and `env(safe-area-inset-*)`,
-  /// so a missing or late injection can never push the header buttons under
-  /// the notch again.
+  /// The library keeps its bottom navigation clear of the gesture bar. Its
+  /// fixed header no longer needs the variables for the top: Flutter already
+  /// lays the WebView below the cutout. They are still injected for the bottom
+  /// bar and for frontends that read them for other overlays.
   Future<void> _applySafeArea() async {
     final controller = _webController;
     if (controller == null) return;
     try {
-      await controller.evaluateJavascript(source: _safeAreaScript(_safeInsets));
+      await controller.evaluateJavascript(source: buildWebShellSafeAreaScript(_safeInsets));
     } on Object {
       // The document may be navigating again.
     }
   }
-
-  /// Same variables, applied as a document-start user script so the very first
-  /// paint already knows the cutout size.
-  static String _safeAreaScript(EdgeInsets insets) => '''
-(function () {
-  var root = document.documentElement;
-  root.style.setProperty('--safe-top-inset', '${insets.top.toStringAsFixed(1)}px');
-  root.style.setProperty('--safe-right-inset', '${insets.right.toStringAsFixed(1)}px');
-  root.style.setProperty('--safe-bottom-inset', '${insets.bottom.toStringAsFixed(1)}px');
-  root.style.setProperty('--safe-left-inset', '${insets.left.toStringAsFixed(1)}px');
-})();
-''';
 
   Future<void> _bootstrap() async {
     if (_bootstrapped) return;
@@ -434,7 +420,7 @@ class _WebShellPageState extends State<WebShellPage> {
           forMainFrameOnly: true,
         ),
         UserScript(
-          source: _safeAreaScript(MediaQuery.viewPaddingOf(context)),
+          source: buildWebShellSafeAreaScript(MediaQuery.viewPaddingOf(context)),
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
           forMainFrameOnly: true,
         ),
@@ -527,7 +513,7 @@ class _WebShellPageState extends State<WebShellPage> {
     return PopScope(
       canPop: false,
       child: Scaffold(
-        backgroundColor: const Color(0xFF0B0E13),
+        backgroundColor: const Color(0xFF07080A),
         body: LibraryViewport(child: Stack(
           fit: StackFit.expand,
           children: [
@@ -552,16 +538,26 @@ class _WebShellPageState extends State<WebShellPage> {
   }
 }
 
-/// The embedded page fills the whole window and receives the system insets as
-/// `--safe-*` CSS variables. Insetting the WebView here left dark bands above
-/// and below the library on notched phones.
+/// The WebView fills the window below the status bar / cutout and between the
+/// left and right cutouts. The bottom stays edge-to-edge and the page pads its
+/// own bottom navigation from `--safe-bottom-inset` / `env()`.
+///
+/// The shell owns the top and side insets because the page comes from the
+/// server: an older deployed frontend may ignore the injected variables, and
+/// its header buttons would still sit under the camera.
 class LibraryViewport extends StatelessWidget {
   final Widget child;
 
   const LibraryViewport({super.key, required this.child});
 
   @override
-  Widget build(BuildContext context) => child;
+  Widget build(BuildContext context) => SafeArea(
+        top: true,
+        bottom: false,
+        left: true,
+        right: true,
+        child: child,
+      );
 }
 
 class _SetupPrompt extends StatelessWidget {

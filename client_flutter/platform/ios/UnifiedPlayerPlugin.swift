@@ -161,6 +161,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
     func emit() {
         let audio = controller.ksCoordinator.playerLayer?.player.tracks(mediaType: .audio) ?? []
         let model = controller.ksCoordinator.subtitleModel
+        let videoSize = controller.ksCoordinator.playerLayer?.player.naturalSize ?? .zero
         let internalSubs: [[String: Any]] = model.subtitleInfos.map { ["id": $0.subtitleID, "title": $0.name] }
         let externalSubs: [[String: Any]] = subtitles.enumerated().map { ["id": "external:\($0.offset)", "title": $0.element.label, "external": true] }
         let loading = loaded && (controller.phase == .resolving || controller.phase == .connecting)
@@ -168,6 +169,7 @@ final class UnifiedPlayerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler {
             "session_id": sessionID as Any? ?? NSNull(),
             "position_ms": controller.currentPositionMs, "duration_ms": controller.durationMs,
             "buffered_ms": controller.bufferedPositionMs, "playing": controller.isPlaying,
+            "video_width": Double(videoSize.width), "video_height": Double(videoSize.height),
             "loading": loading, "buffering": controller.phase == .buffering,
             "notice": notice as Any? ?? NSNull(),
             "completed": completed, "error": controller.errorMessage as Any? ?? NSNull(),

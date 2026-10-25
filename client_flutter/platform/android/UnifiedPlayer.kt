@@ -224,6 +224,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
         if (sink == null && !loaded) return
         val player = exo
         val duration = player?.duration?.coerceAtLeast(0) ?: 0
+        val videoSize = player?.videoSize
         transferSession?.takeIf { it.supportsRanges }?.let { prefetch?.setContentLength(it.contentLength) }
         prefetch?.onTick(player?.currentPosition ?: 0, player?.bufferedPosition ?: 0, duration, player?.playbackState == Player.STATE_BUFFERING)
         val tracks = trackState(C.TRACK_TYPE_AUDIO)
@@ -232,6 +233,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
         sink?.success(mapOf(
             "position_ms" to (player?.currentPosition ?: 0), "duration_ms" to duration,
             "buffered_ms" to (player?.bufferedPosition ?: 0),
+            "video_width" to (videoSize?.width ?: 0), "video_height" to (videoSize?.height ?: 0),
             "playing" to (player?.isPlaying == true), "loading" to (loaded && player?.playbackState == Player.STATE_IDLE),
             "buffering" to (player?.playbackState == Player.STATE_BUFFERING),
             "completed" to (player?.playbackState == Player.STATE_ENDED),
