@@ -39,6 +39,7 @@ void main() {
       final start = int.parse(match[1]!);
       final end = min(4095, int.parse(match[2]!));
       request.response.statusCode = 206;
+      request.response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
       request.response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/4096');
       request.response.contentLength = end - start + 1;
       request.response.add(List.generate(end - start + 1, (index) => (start + index) % 251));

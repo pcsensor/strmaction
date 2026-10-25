@@ -109,6 +109,7 @@ void main() {
         final end = min(length - 1, int.parse(match[2]!));
         final probe = start == 0 && end == 0;
         request.response.statusCode = 206;
+        request.response.headers.set(HttpHeaders.contentTypeHeader, 'video/mp4');
         request.response.headers.set(HttpHeaders.contentRangeHeader, 'bytes $start-$end/$length');
         request.response.contentLength = end - start + 1;
         if (!probe) starts.add(start);
