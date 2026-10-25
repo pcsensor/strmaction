@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -78,14 +79,17 @@ class NativePlayerEngine extends PlaybackEngine {
     return width / height;
   }
 
-  /// ExoPlayer owns resize modes and KSPlayer owns aspect-fill, so those modes
-  /// must not be double-applied by sizing the platform view in Flutter.
+  /// 画面裁剪和固定画幅统一由 Flutter 的 VideoFrame 布局完成。
+  ///
+  /// 之前把 crop 交给 ExoPlayer 的 resizeMode / KSPlayer 的 aspect-fill，
+  /// 但两端在部分设备/图层组合下仍按 fit 渲染，横屏时左右留下黑边。现在
+  /// 原生只做 FIT，Flutter 把平台视图放大到覆盖视口并裁剪溢出部分，确保
+  /// 「铺满屏幕」一定生效，也避免原生和 Flutter 双重裁剪。
+  ///
+  /// Android 的 stretch 仍交给原生 FILL，因为它不依赖视频尺寸。
   @override bool handlesScaleNatively(VideoScaleMode mode) {
-    if (Platform.isIOS) return mode == VideoScaleMode.crop;
-    if (Platform.isAndroid) {
-      return mode == VideoScaleMode.crop || mode == VideoScaleMode.stretch;
-    }
-    return false;
+    return defaultTargetPlatform == TargetPlatform.android &&
+        mode == VideoScaleMode.stretch;
   }
 
   @override Future<void> setVideoScale(VideoScaleMode mode) async {
@@ -98,17 +102,22 @@ class NativePlayerEngine extends PlaybackEngine {
   /// Re-apply the current mode after a load: a new session rebuilds the
   /// platform view and forgets whatever the previous one was told.
   Future<void> _pushScaleToNative() async {
-    if (Platform.isIOS) {
+    final platform = defaultTargetPlatform;
+    if (platform == TargetPlatform.iOS) {
+      // 所有画幅模式都由 Flutter 布局；KSPlayer 保持 aspect-fit，避免裁剪
+      // 被执行两次。
       try {
-        await _call('aspectFill', videoScale == VideoScaleMode.crop);
+        await _call('aspectFill', false);
       } on Object catch (error) {
         debugPrint('画面比例设置失败（iOS）：$error');
       }
       return;
     }
-    if (!Platform.isAndroid) return;
+    if (platform != TargetPlatform.android) return;
     try {
-      await _call('scale', videoScale.id);
+      // crop / 固定画幅由 Flutter 裁剪，原生必须保持 FIT，否则会被二次
+      // 裁剪。只有拉伸铺满继续使用 ExoPlayer 的 FILL。
+      await _call('scale', videoScale == VideoScaleMode.stretch ? 'stretch' : 'fit');
     } on Object catch (error) {
       debugPrint('画面比例设置失败（Android）：$error');
     }

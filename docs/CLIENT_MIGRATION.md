@@ -116,6 +116,13 @@ Android / iOS applicationId 与 bundle identifier 均保留 `top.strmaction.comp
 - 进度队列会丢弃旧版本遗留的 `position_ms=0, finished=false` 快照；服务端同样忽略这类请求，保护所有客户端（Flutter、网页、companion）的已有进度。明确的「标记未看」仍可清零。
 - 版本 `2.0.10+30`。
 
+## 2.0.11 移动端「铺满屏幕」统一由 Flutter 裁剪
+
+- 之前 Android 的 crop 交给 ExoPlayer `resizeMode`、iOS 交给 KSPlayer aspect-fill，部分设备上仍按 fit 渲染，横屏时左右留下黑边。现在移动端原生始终使用 FIT，Flutter 的 `VideoFrame` 按真实视频尺寸把平台视图放大到覆盖视口并裁掉溢出部分，保证「铺满屏幕（裁剪）」一定填满。
+- Android 的「拉伸铺满」仍使用原生 `RESIZE_MODE_FILL`；其余画幅模式（原比例、裁剪、16:9、4:3、21:9）由 Flutter 统一布局，和桌面端一致，也避免原生与 Flutter 双重裁剪。
+- 原生 `aspectFill` / `scale` 命令保留但不再接收 crop，避免旧播放会话残留裁剪状态。
+- 版本 `2.0.11+31`。
+
 ## 验收记录
 
 CI 结果以对应提交的工作流和安装包为准。编译通过不等同于设备播放验收；以下项目需要下载安装包后记录结果，无需本地编译。

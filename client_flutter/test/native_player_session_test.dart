@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/models/playback_payload.dart';
@@ -69,7 +70,10 @@ void main() {
     final second = NativePlayerEngine(stateEvents: states.stream);
     await second.load(payload, cacheLimitMb: 128, tlsVerify: true);
     expect(first.sessionId, isNot(second.sessionId));
-    expect((calls.last.arguments as Map)['session_id'], second.sessionId);
+    expect(
+      (calls.lastWhere((call) => call.method == 'load').arguments as Map)['session_id'],
+      second.sessionId,
+    );
     states.add({'session_id': first.sessionId, 'error': "avformat can't open input", 'playing': false});
     expect(first.errorMessage, isNotNull);
     expect(second.errorMessage, isNull);
@@ -77,11 +81,52 @@ void main() {
     expect(second.isPaused, isFalse);
     expect(second.position, 1);
     await first.shutdown();
-    expect((calls.last.arguments as Map)['session_id'], first.sessionId);
+    expect(
+      (calls.lastWhere((call) => call.method == 'dispose').arguments as Map)['session_id'],
+      first.sessionId,
+    );
     states.add({'session_id': first.sessionId, 'error': 'late error'});
     expect(second.errorMessage, isNull);
     expect(second.isPaused, isFalse);
     await second.shutdown();
+    await states.close();
+  });
+  test('mobile renderers stay in fit mode so Flutter owns cropping', () async {
+    final calls = <MethodCall>[];
+    final messenger =
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(NativePlayerEngine.channel, (call) async {
+      calls.add(call);
+      return null;
+    });
+    addTearDown(() {
+      debugDefaultTargetPlatformOverride = null;
+      messenger.setMockMethodCallHandler(NativePlayerEngine.channel, null);
+    });
+    final states = StreamController<dynamic>.broadcast(sync: true);
+    final engine = NativePlayerEngine(stateEvents: states.stream);
+
+    debugDefaultTargetPlatformOverride = TargetPlatform.android;
+    // 裁剪必须由 Flutter 的 VideoFrame 完成，原生保持 FIT；拉伸仍可用原生的
+    // FILL，因为它不依赖视频尺寸，也不会有黑边。
+    expect(engine.handlesScaleNatively(VideoScaleMode.crop), isFalse);
+    expect(engine.handlesScaleNatively(VideoScaleMode.stretch), isTrue);
+    await engine.setVideoScale(VideoScaleMode.crop);
+    expect(calls.where((call) => call.method == 'scale').single.arguments, 'fit');
+
+    debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+    expect(engine.handlesScaleNatively(VideoScaleMode.crop), isFalse);
+    expect(engine.handlesScaleNatively(VideoScaleMode.stretch), isFalse);
+    await engine.setVideoScale(VideoScaleMode.crop);
+    expect(
+      calls.where((call) => call.method == 'aspectFill').single.arguments,
+      false,
+    );
+
+    debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+    expect(engine.handlesScaleNatively(VideoScaleMode.crop), isFalse);
+
+    await engine.shutdown();
     await states.close();
   });
 }
