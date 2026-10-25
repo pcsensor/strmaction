@@ -37,9 +37,12 @@ class BoundedMediaCache {
   var _closed = false;
   var _urgent = false;
   final Duration demandStallTimeout;
+  final Duration requestTimeout;
+  final void Function(String)? onDiagnostic;
 
   BoundedMediaCache._(this._client, this._origin, this._headers,
-      this._directory, this.budgetBytes, this.prefetchBytes, this.demandStallTimeout);
+      this._directory, this.budgetBytes, this.prefetchBytes, this.demandStallTimeout,
+      this.requestTimeout, this.onDiagnostic);
 
   Uri get localUrl => Uri.parse('http://127.0.0.1:${_server.port}/$_token');
   int get storedBytes => _bytes;
@@ -47,19 +50,25 @@ class BoundedMediaCache {
   int get activeDownloads => _jobs.length;
   bool get cacheReady => _jobs.isEmpty && _blocks.containsKey(_focus);
   double get networkSpeed => _rate.bytesPerSecond;
+  String get diagnosticState => 'focus=$_focus consumed=$_consumedBlock '
+      'stored=$_bytes reserved=$reservedBytes generation=$_generation '
+      'jobs=[${_jobs.map((job) => '${job.start}-${job.end}:${job.phase}:${job.received}').join(', ')}]';
   List<(int, int)> get ranges => _blocks.keys
       .map((n) => (n * blockSize, n * blockSize + _blockLengths[n]!)).toList();
 
   static Future<BoundedMediaCache?> open({required String url,
       required Map<String, String> headers, required String trustedCaPem,
       required String directory, required int budgetBytes, int? prefetchBytes,
-      Duration demandStallTimeout = const Duration(seconds: 3)}) async {
+      Duration demandStallTimeout = const Duration(seconds: 3),
+      Duration requestTimeout = const Duration(seconds: 15),
+      void Function(String)? onDiagnostic}) async {
     if (budgetBytes <= 0 || RegExp(r'\.(m3u8|mpd)$', caseSensitive: false).hasMatch(Uri.parse(url).path)) return null;
     final client = HttpClient(context: trustContext(trustedCaPem))
       ..connectionTimeout = const Duration(seconds: 10)
       ..maxConnectionsPerHost = 4;
     final cache = BoundedMediaCache._(client, Uri.parse(url), headers,
-        Directory(directory), budgetBytes, prefetchBytes ?? budgetBytes, demandStallTimeout);
+        Directory(directory), budgetBytes, prefetchBytes ?? budgetBytes, demandStallTimeout,
+        requestTimeout, onDiagnostic);
     try {
       if (!await cache._resolve()) { client.close(force: true); return null; }
       if (budgetBytes < min(blockSize, cache.length)) { client.close(force: true); return null; }
@@ -75,7 +84,19 @@ class BoundedMediaCache {
   Future<(HttpClientResponse, Uri)> _follow(Uri uri, int start, int end,
       {_Download? job}) async {
     for (var redirects = 0; redirects <= 5; redirects++) {
-      final request = await _client.getUrl(uri).timeout(const Duration(seconds: 15));
+      job?.phase = 'connect';
+      var abandoned = false;
+      final opening = _client.getUrl(uri).then((request) {
+        if (abandoned || _closed || job?.cancelled == true) {
+          request.abort(const _Cancelled());
+          throw const _Cancelled();
+        }
+        return request;
+      });
+      final request = await opening.timeout(requestTimeout, onTimeout: () {
+        abandoned = true;
+        throw TimeoutException('媒体连接等待超时', requestTimeout);
+      });
       if (_closed || job?.cancelled == true) { request.abort(); throw const _Cancelled(); }
       job?.request = request;
       request.followRedirects = false;
@@ -87,7 +108,21 @@ class BoundedMediaCache {
       request.headers.set(HttpHeaders.rangeHeader, 'bytes=$start-$end');
       request.headers.set(HttpHeaders.acceptEncodingHeader, 'identity');
       if (_validator != null && job != null) request.headers.set(HttpHeaders.ifRangeHeader, _validator!);
-      final response = await request.close().timeout(const Duration(seconds: 15));
+      job?.phase = 'headers';
+      final responding = request.close().then((response) async {
+        if (abandoned || _closed || job?.cancelled == true) {
+          await response.listen((_) {}).cancel();
+          throw const _Cancelled();
+        }
+        return response;
+      });
+      final response = await responding.timeout(requestTimeout, onTimeout: () {
+        abandoned = true;
+        final error = TimeoutException('媒体响应头等待超时', requestTimeout);
+        request.abort(error);
+        throw error;
+      });
+      onDiagnostic?.call('媒体响应 ${uri.host} HTTP ${response.statusCode} bytes=$start-$end');
       if (![301, 302, 303, 307, 308].contains(response.statusCode)) return (response, uri);
       final location = response.headers.value(HttpHeaders.locationHeader);
       await response.listen((_) {}).cancel();
@@ -230,10 +265,12 @@ class BoundedMediaCache {
   Future<void> _download(_Download job) async {
     final clock = Stopwatch()..start();
     StreamIterator<List<int>>? body;
+    var completed = false;
     try {
       final response = await _request(job);
       body = StreamIterator(response.timeout(const Duration(seconds: 20)));
       job.body = body;
+      job.phase = 'body';
       if (_closed || job.cancelled) throw const _Cancelled();
       while (await body.moveNext()) {
         if (_closed || job.cancelled) throw const _Cancelled();
@@ -261,16 +298,24 @@ class BoundedMediaCache {
       if (_closed || job.cancelled) throw const _Cancelled();
       if (job.received != job.size) throw const HttpException('片源范围读取不完整');
       policy.completed(job.received, clock.elapsed);
-      scheduleMicrotask(() => _prefetch(_focus));
+      completed = true;
     } on Object catch (error) {
       job.error = error;
-      if (!job.cancelled && !_closed) policy.failed();
+      if (!job.cancelled && !_closed) {
+        policy.failed();
+        onDiagnostic?.call('媒体分段失败 ${job.start}-${job.end} '
+            'phase=${job.phase} received=${job.received} error=${error.runtimeType}');
+      }
       rethrow;
     } finally {
-      await body?.cancel();
-      job.body = null;
-      _jobs.remove(job);
-      job.notify();
+      try {
+        await body?.cancel();
+      } finally {
+        job.body = null;
+        _jobs.remove(job);
+        job.notify();
+        if (completed && !_closed) scheduleMicrotask(() => _prefetch(_focus));
+      }
     }
   }
 
@@ -315,6 +360,8 @@ class BoundedMediaCache {
         final remaining = demandStallTimeout - waiting.elapsed;
         await job.changed.timeout(remaining.isNegative ? Duration.zero : remaining);
       } on TimeoutException {
+        onDiagnostic?.call('媒体读取停滞 offset=${number * blockSize + begin} '
+            'retry=${rescues + 1} $diagnosticState');
         if (++rescues > 2) {
           job.cancel(); _jobs.remove(job);
           throw const HttpException('当前播放分段持续无数据');
@@ -424,6 +471,7 @@ class _Download {
   final int end;
   bool cancelled = false;
   bool demand = false;
+  String phase = 'queued';
   int received = 0;
   Object? error;
   Completer<void> _changed = Completer<void>();

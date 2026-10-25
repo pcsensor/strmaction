@@ -24,6 +24,7 @@ class MediaKitEngine extends PlaybackEngine {
   NetworkRate _fallbackRate = NetworkRate();
   final Stopwatch _pollClock = Stopwatch()..start();
   Duration _lastRateSample = Duration.zero;
+  Duration _lastTransportLog = Duration.zero;
 
   double _position = 0;
   double _duration = 0;
@@ -281,7 +282,7 @@ class MediaKitEngine extends PlaybackEngine {
     if (cacheDirectory != null && diskLimitMb > 0) {
       final opened = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
         trustedCaPem: trustedCaPem, directory: '$cacheDirectory/$epoch', budgetBytes: diskLimitMb * 1024 * 1024,
-        prefetchBytes: cacheLimitMb * 1024 * 1024);
+        prefetchBytes: cacheLimitMb * 1024 * 1024, onDiagnostic: logger?.info);
       if (_disposed || epoch != _cacheEpoch) {
         await opened?.close();
         // A delayed opener may finish after shutdown removed the parent.
@@ -383,6 +384,13 @@ class MediaKitEngine extends PlaybackEngine {
       _updateDownloadPriority();
       if (disk != null && _duration > 0) disk.setConsumed((disk.length * _position / _duration).round());
       _networkSpeed = _diskCache?.networkSpeed ?? _fallbackRate.bytesPerSecond;
+      final now = _pollClock.elapsed;
+      if (disk != null && disk.activeDownloads > 0 && (_networkSpeed ?? 0) == 0 &&
+          now - _lastTransportLog >= const Duration(seconds: 5)) {
+        _lastTransportLog = now;
+        logger?.warning('桌面媒体无上游数据 position=$_position paused=$_paused '
+            'buffering=$_buffering ${disk.diagnosticState}');
+      }
       _notify();
     });
   }
