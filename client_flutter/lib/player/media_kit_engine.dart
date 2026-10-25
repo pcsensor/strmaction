@@ -9,8 +9,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 import '../core/app_logger.dart';
 import '../core/redaction.dart';
 import '../models/playback_payload.dart';
-import '../services/bounded_media_cache.dart';
 import '../services/download_policy.dart';
+import '../services/sequential_media_cache.dart';
 import 'playback_engine.dart';
 
 class MediaKitEngine extends PlaybackEngine {
@@ -49,7 +49,7 @@ class MediaKitEngine extends PlaybackEngine {
   Track? _track;
   bool _disposed = false;
 
-  BoundedMediaCache? _diskCache;
+  SequentialMediaCache? _diskCache;
   final String trustedCaPem;
   final String? caBundlePath;
   final String? cacheDirectory;
@@ -282,9 +282,9 @@ class MediaKitEngine extends PlaybackEngine {
     await previous?.close();
     if (_disposed || epoch != _cacheEpoch) return;
     if (cacheDirectory != null && diskLimitMb > 0) {
-      BoundedMediaCache? opened;
+      SequentialMediaCache? opened;
       try {
-        opened = await BoundedMediaCache.open(url: payload.playUrl, headers: payload.headers,
+        opened = await SequentialMediaCache.open(url: payload.playUrl, headers: payload.headers,
           trustedCaPem: trustedCaPem, directory: '$cacheDirectory/$epoch', budgetBytes: diskLimitMb * 1024 * 1024,
           prefetchBytes: cacheLimitMb * 1024 * 1024, onDiagnostic: logger?.info);
       } on Object catch (error) {
@@ -376,9 +376,10 @@ class MediaKitEngine extends PlaybackEngine {
       }
       await platform.setProperty('tls-verify', 'yes');
       if (caBundlePath != null) await platform.setProperty('tls-ca-file', caBundlePath!);
-      // media_kit defaults to five seconds, shorter than the cache's bounded
-      // three-attempt stall recovery. Let recovery finish before MPV gives up.
-      await platform.setProperty('network-timeout', '15');
+      // The sequential cache may need one full connect timeout (25s) before
+      // the first byte reaches the decoder. Keep the local read alive long
+      // enough for that single attempt instead of failing it at five seconds.
+      await platform.setProperty('network-timeout', '30');
       await platform.setProperty('cache-on-disk', 'no');
       await platform.setProperty('hwdec', 'auto-safe');
       await platform.setProperty('keep-open', 'always');

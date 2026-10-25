@@ -2,10 +2,13 @@
 
 The four clients automatically tune transport, with no new user controls:
 
-- Start with two requests, increase gradually to at most four, and back off on
-  failures or substantial throughput loss without reducing the policy below two.
-  Android reserves one slot for Media3. Actual active requests can be fewer when
-  the cache window is full, no eligible data remains, or prefetch is disabled.
+- Android and iOS start with two requests, increase gradually to at most four,
+  and back off on failures or substantial throughput loss without reducing the
+  policy below two. Android reserves one slot for Media3. Actual active requests
+  can be fewer when the cache window is full, no eligible data remains, or
+  prefetch is disabled. Windows and macOS instead keep one sequential stream
+  (see below): cloud-drive CDNs take 5–15s to establish a new connection, so
+  parallel range requests cost far more than they gain.
 - Use 4 MiB network segments, increasing to 8 MiB after healthy fast transfers.
   Disk storage remains in small blocks. Segment size is reduced for short files
   and small budgets.
@@ -44,24 +47,21 @@ ahead drops below ten seconds, before a full rebuffer is required.
   writers close on their owning worker and commit 2 MiB fragments. Buffering
   retains the nearest speculative worker and yields the other workers; it does
   not change the user's play/pause intent or switch to whole-file transport.
-- **Windows / macOS:** publish each received prefix into the bounded disk store
-  and wake local readers immediately, without retaining a full segment in RAM.
-  Cancellation closes the response body as well as the request: after headers
-  arrive, aborting the request alone cannot release a stalled connection. Origin
-  headers stay on upstream requests and are not applied to loopback decoder reads.
-  The decoder's network timeout allows the bounded three-attempt recovery to
-  complete instead of interrupting it at media_kit's five-second default.
-  Published bytes replace reserved bytes, so partial downloads count against the
-  same disk budget. A requested gap that remains unavailable for three seconds
-  replaces its stalled transfer, at most twice, starting after any cached prefix.
-  A request that is still connecting is never replaced: Dart's HttpClient cannot
-  abort a queued connect, so a retry would leave the old attempt in the per-host
-  connection queue and eventually starve every new request (observed as a
-  permanent zero-byte pull on a CDN that establishes connections slowly).
-  Stalled headers use a growing budget (3s, 6s, 12s) before replacement; body
-  stalls keep the fixed three-second watchdog and every received chunk resets it.
-  Far speculative work can yield a slot and space to a waiting reader. Buffering
-  limits speculative competition while preserving the parallel download policy.
+- **Windows / macOS:** a single sequential origin stream plus at most one short
+  probe (4 MiB, header/tail only). The stream starts at the playhead, reads to
+  EOF, publishes each received chunk into the bounded disk store and pauses when
+  it is `prefetch` bytes ahead; advancing the playhead resumes the same
+  connection instead of opening another one. Cached reads never touch the
+  origin. A miss near the playhead restarts the stream at the first missing
+  byte; a miss far away (header, tail moov, format probe) uses the probe.
+  Explicit seeks only update the playhead; stale local responses are stopped by
+  a per-response generation without cancelling the new stream. A connection
+  attempt is never cancelled: Dart's HttpClient cannot abort a queued
+  `getUrl`, so the only safe action is to let it finish. Timeouts are 25s for
+  connect/headers and 12s without body bytes; a restart resumes after the last
+  written byte, so failed attempts cannot leave holes. The local decoder's
+  `network-timeout` is 30s to cover one full connect attempt. See
+  [the transport redesign](desktop-playback-transport-redesign.md).
 - **iOS:** serve an available cached prefix before waiting on its owner; each
   speculative data callback wakes waiting readers. A missing range promotes its
   existing request, reduces speculative competition, and receives the same bounded
