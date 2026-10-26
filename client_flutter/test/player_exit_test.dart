@@ -23,6 +23,7 @@ class ExitEngine extends PlaybackEngine {
   PlaybackPayload? loadedPayload;
   String? error;
   double speedValue = 1;
+  double positionValue = 42;
   final speeds = <double>[];
   final loading = Completer<void>();
   final pending = Completer<void>();
@@ -32,7 +33,7 @@ class ExitEngine extends PlaybackEngine {
   @override
   Widget buildSurface() => const SizedBox.shrink();
   @override
-  double get position => 42;
+  double get position => positionValue;
   @override
   double get duration => 100;
   @override
@@ -238,7 +239,8 @@ void main() {
   testWidgets('a newly opened episode restores the saved playback speed', (
     tester,
   ) async {
-    final engine = ExitEngine();
+    // 位置保持 0，退出时不会触发进度上报的真实网络请求。
+    final engine = ExitEngine()..positionValue = 0;
     await openPlayer(
       tester,
       engine,
