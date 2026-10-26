@@ -44,10 +44,36 @@ class _WebShellPageState extends State<WebShellPage> {
   bool _bootstrapped = false;
   bool _isTv = false;
   bool _requestingPlayback = false;
-  bool _switchingPlayback = false;
+  String? _playbackCoverText;
   EdgeInsets _safeInsets = EdgeInsets.zero;
+  ApiClient? _apiClient;
 
   AppController get app => widget.app;
+
+  /// 同一份配置复用连接；服务器地址或证书变化时重建。
+  ApiClient get _api {
+    final cached = _apiClient;
+    if (cached != null && identical(cached.config, app.config)) return cached;
+    cached?.close();
+    return _apiClient = ApiClient(app.config);
+  }
+
+  @override
+  void dispose() {
+    _apiClient?.close();
+    _apiClient = null;
+    super.dispose();
+  }
+
+  void _showPlaybackCover(String text) {
+    if (!mounted || _playbackCoverText == text) return;
+    setState(() => _playbackCoverText = text);
+  }
+
+  void _hidePlaybackCover() {
+    if (!mounted || _playbackCoverText == null) return;
+    setState(() => _playbackCoverText = null);
+  }
 
   @override
   void initState() {
@@ -123,7 +149,7 @@ class _WebShellPageState extends State<WebShellPage> {
       _error = '';
       _loading = true;
     });
-    final result = await ApiClient(app.config).checkHealth();
+    final result = await _api.checkHealth();
     if (!mounted) return;
     if (!result.ok) {
       app.setLastError(result.message);
@@ -151,10 +177,13 @@ class _WebShellPageState extends State<WebShellPage> {
     return cookies.map((c) => '${c.name}=${c.value}').join('; ');
   }
 
-  Future<void> _refreshAccount() async {
+  Future<void> _refreshAccount({String? cookie}) async {
     if (!app.config.isConfigured) return;
     try {
-      final auth = await ApiClient(app.config).request('/api/auth/state', cookie: await _cookie());
+      final auth = await _api.request(
+        '/api/auth/state',
+        cookie: cookie ?? await _cookie(),
+      );
       final user = auth['user'];
       app.accountKey = user is Map ? '${app.config.serverUrl}|${user['id']}' : null;
     } on Object { app.accountKey = null; }
@@ -162,9 +191,6 @@ class _WebShellPageState extends State<WebShellPage> {
 
   Future<Map<String, dynamic>> _startPlayback(Map<String, dynamic> request) async {
     if (_requestingPlayback || _playerOpen) {
-      if (mounted && _switchingPlayback) {
-        setState(() => _switchingPlayback = false);
-      }
       return {'ok': false, 'error': '播放器正在打开'};
     }
     _requestingPlayback = true;
@@ -172,9 +198,19 @@ class _WebShellPageState extends State<WebShellPage> {
     try {
       final id = request['itemId'];
       if (id is! int || id <= 0) throw const ConfigException('条目 ID 无效');
-      await _refreshAccount();
+      // 校验参数后立刻给出反馈；不要等网络请求结束才让用户看到变化。
+      // 连播切集时遮罩已由播放页设置，这里不要覆盖成“正在打开播放器…”。
+      if (_playbackCoverText == null) {
+        _showPlaybackCover('正在打开播放器…');
+      }
+      final cookie = await _cookie();
+      // accountKey 通常已由页面加载时的 /api/auth/state 写入。只有本地配置了
+      // 账号级播放覆盖、但还不知道当前账号时才需要额外刷新。
+      if (app.accountKey == null && app.config.playbackOverrides.isNotEmpty) {
+        await _refreshAccount(cookie: cookie);
+      }
       final mode = request['mode'] ?? app.config.playbackOverrides[app.accountKey];
-      final raw = await ApiClient(app.config).request('/api/play/$id', cookie: await _cookie(), body: {
+      final raw = await _api.request('/api/play/$id', cookie: cookie, body: {
         if (mode == 'builtin' || mode == 'copy') 'mode': mode,
         if (request['mediaFileId'] != null) 'media_file_id': request['mediaFileId'],
       });
@@ -198,11 +234,8 @@ class _WebShellPageState extends State<WebShellPage> {
       return {'ok': false, 'error': '$error'};
     } finally {
       _requestingPlayback = false;
-      // 请求失败或进入复制模式时不会推入播放器，必须撤掉连播遮罩，
-      // 否则主页会一直被“正在加载下一集”盖住。
-      if (!opened && mounted && _switchingPlayback) {
-        setState(() => _switchingPlayback = false);
-      }
+      // 失败或进入复制模式时没有新播放页接管遮罩，必须在这里撤掉。
+      if (!opened) _hidePlaybackCover();
     }
   }
 
@@ -341,9 +374,7 @@ class _WebShellPageState extends State<WebShellPage> {
 
   Future<void> _openPlayer(PlaybackPayload payload) async {
     if (!mounted || _playerOpen) {
-      if (mounted && _switchingPlayback) {
-        setState(() => _switchingPlayback = false);
-      }
+      _hidePlaybackCover();
       return;
     }
     _playerOpen = true;
@@ -357,7 +388,7 @@ class _WebShellPageState extends State<WebShellPage> {
           _pendingRequestId = id;
           // 旧播放页还要等分集请求返回才会关闭；先盖住主页，
           // 避免连播切集时露出“闪回主页”的一瞬间。
-          if (mounted) setState(() => _switchingPlayback = true);
+          _showPlaybackCover('正在加载下一集…');
         },
       ),
       transitionDuration: Duration.zero,
@@ -365,12 +396,10 @@ class _WebShellPageState extends State<WebShellPage> {
       allowSnapshotting: false,
     );
     final pushed = Navigator.of(context).push(route);
-    if (_switchingPlayback) {
+    if (_playbackCoverText != null) {
       // 新播放页已经盖住遮罩，等它完成第一帧后再移除，避免中间露出主页。
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _switchingPlayback) {
-          setState(() => _switchingPlayback = false);
-        }
+        _hidePlaybackCover();
       });
     }
     await pushed;
@@ -380,9 +409,7 @@ class _WebShellPageState extends State<WebShellPage> {
     if (pending != null) {
       _requestItem(pending);
     } else {
-      if (_switchingPlayback && mounted) {
-        setState(() => _switchingPlayback = false);
-      }
+      _hidePlaybackCover();
       _dispatchProgressUpdated();
     }
   }
@@ -575,20 +602,20 @@ class _WebShellPageState extends State<WebShellPage> {
                 onRetry: _checkAndLoad,
                 onSettings: () => _showSettings(allowCancel: true),
               ),
-            if (_switchingPlayback)
-              const Positioned.fill(
+            if (_playbackCoverText != null)
+              Positioned.fill(
                 child: AbsorbPointer(
                   child: ColoredBox(
-                    color: Color(0xFF07080A),
+                    color: const Color(0xFF07080A),
                     child: Center(
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          CircularProgressIndicator(color: Color(0xFFF0A94D)),
-                          SizedBox(height: 16),
+                          const CircularProgressIndicator(color: Color(0xFFF0A94D)),
+                          const SizedBox(height: 16),
                           Text(
-                            '正在加载下一集…',
-                            style: TextStyle(color: Color(0xFFA9B0BE), fontSize: 13),
+                            _playbackCoverText!,
+                            style: const TextStyle(color: Color(0xFFA9B0BE), fontSize: 13),
                           ),
                         ],
                       ),

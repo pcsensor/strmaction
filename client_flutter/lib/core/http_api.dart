@@ -14,34 +14,44 @@ class HealthCheckResult {
 
 class ApiClient {
   final AppConfig config;
+  HttpClient? _client;
 
-  const ApiClient(this.config);
+  ApiClient(this.config);
 
-  HttpClient _createClient() {
-    return trustedClient(config);
+  /// 复用同一个 HttpClient，避免每次请求都重新建立 TCP/TLS 连接。
+  /// 播放前会连续请求多个接口，握手时间会直接叠加到“点击后多久进播放器”。
+  HttpClient _httpClient() {
+    final existing = _client;
+    if (existing != null) return existing;
+    final client = trustedClient(config)
+      ..connectionTimeout = const Duration(seconds: 5)
+      ..idleTimeout = const Duration(seconds: 30);
+    _client = client;
+    return client;
+  }
+
+  void close() {
+    _client?.close(force: true);
+    _client = null;
   }
 
   Future<Map<String, dynamic>> request(String path, {String cookie = '', Map<String, dynamic>? body}) async {
-    final client = _createClient();
-    try {
-      final request = await client.openUrl(body == null ? 'GET' : 'POST', Uri.parse('${config.serverUrl}$path')).timeout(const Duration(seconds: 10));
-      request.headers.set('X-StrmAction-Companion', '1');
-      request.headers.set('User-Agent', 'StrmActionCompanion/2.0');
-      if (cookie.isNotEmpty) request.headers.set(HttpHeaders.cookieHeader, cookie);
-      if (body != null) {
-        request.headers.contentType = ContentType.json;
-        request.add(utf8.encode(jsonEncode(body)));
-      }
-      final response = await request.close().timeout(const Duration(seconds: 15));
-      final text = await response.transform(utf8.decoder).join().timeout(const Duration(seconds: 15));
-      final data = jsonDecode(text) as Map<String, dynamic>;
-      if (response.statusCode < 200 || response.statusCode >= 300) {
-        throw ConfigException((data['error'] is Map ? data['error']['message'] : null)?.toString() ?? '服务器返回 HTTP ${response.statusCode}');
-      }
-      return data;
-    } finally {
-      client.close(force: true);
+    final client = _httpClient();
+    final request = await client.openUrl(body == null ? 'GET' : 'POST', Uri.parse('${config.serverUrl}$path')).timeout(const Duration(seconds: 10));
+    request.headers.set('X-StrmAction-Companion', '1');
+    request.headers.set('User-Agent', 'StrmActionCompanion/2.0');
+    if (cookie.isNotEmpty) request.headers.set(HttpHeaders.cookieHeader, cookie);
+    if (body != null) {
+      request.headers.contentType = ContentType.json;
+      request.add(utf8.encode(jsonEncode(body)));
     }
+    final response = await request.close().timeout(const Duration(seconds: 15));
+    final text = await response.transform(utf8.decoder).join().timeout(const Duration(seconds: 15));
+    final data = jsonDecode(text) as Map<String, dynamic>;
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw ConfigException((data['error'] is Map ? data['error']['message'] : null)?.toString() ?? '服务器返回 HTTP ${response.statusCode}');
+    }
+    return data;
   }
 
   Future<HealthCheckResult> checkHealth() async {
@@ -49,7 +59,7 @@ class ApiClient {
       return const HealthCheckResult(false, '尚未配置服务器地址');
     }
     final uri = Uri.parse('${config.serverUrl}/api/health');
-    final client = _createClient();
+    final client = _httpClient();
     try {
       final request = await client
           .getUrl(uri)
@@ -85,8 +95,6 @@ class ApiClient {
       return const HealthCheckResult(false, '服务器响应不是合法 JSON');
     } on Object catch (error) {
       return HealthCheckResult(false, '连接服务器失败：$error');
-    } finally {
-      client.close(force: true);
     }
   }
 }
