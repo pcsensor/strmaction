@@ -22,6 +22,8 @@ class ExitEngine extends PlaybackEngine {
   int shutdownCalls = 0;
   PlaybackPayload? loadedPayload;
   String? error;
+  double speedValue = 1;
+  final speeds = <double>[];
   final loading = Completer<void>();
   final pending = Completer<void>();
 
@@ -36,7 +38,13 @@ class ExitEngine extends PlaybackEngine {
   @override
   bool get isPaused => false;
   @override
-  double get speed => 1;
+  double get speed => speedValue;
+  @override
+  Future<void> setSpeed(double speed) async {
+    speeds.add(speed);
+    speedValue = speed;
+    notifyListeners();
+  }
   @override
   double get volume => 100;
   @override
@@ -114,6 +122,7 @@ Future<AppController> openPlayer(
   ValueChanged<int>? onRequestItem,
   bool failWindow = false,
   bool pendingWindow = false,
+  AppConfig config = const AppConfig(),
 }) async {
   final directory = Directory.systemTemp.createTempSync('strmaction-exit-');
   final paths = AppPaths(directory.path);
@@ -122,7 +131,7 @@ Future<AppController> openPlayer(
     configStore: ConfigStore(paths),
     logger: AppLogger(paths),
     options: const CliOptions(),
-    initialConfig: const AppConfig(),
+    initialConfig: config,
   );
   final messenger =
       TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
@@ -225,6 +234,23 @@ void main() {
     expect(engine.loadedPayload?.resumeMs, 42000);
     expect(tester.takeException(), isNull);
   }, variant: const TargetPlatformVariant({TargetPlatform.android}));
+
+  testWidgets('a newly opened episode restores the saved playback speed', (
+    tester,
+  ) async {
+    final engine = ExitEngine();
+    await openPlayer(
+      tester,
+      engine,
+      config: const AppConfig(customSpeed: 1.5),
+    );
+    engine.loading.complete();
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(engine.speeds, [1.5]);
+    expect(engine.speedValue, 1.5);
+    expect(tester.takeException(), isNull);
+  }, variant: const TargetPlatformVariant({TargetPlatform.windows}));
 
   for (final platform in [
     TargetPlatform.android,

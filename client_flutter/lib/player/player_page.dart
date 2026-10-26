@@ -146,7 +146,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       onCycleAudio: _cycleAudio,
       onToggleDrawer: _toggleDrawer,
     );
-    _normalSpeed = 1.0;
+    // 连播会关闭当前播放页并新建下一集的页面，倍速必须从持久化配置恢复，
+    // 否则每一集都会回到默认的 1.0x。
+    _normalSpeed = widget.app.config.customSpeed ?? 1.0;
     widget.app.configNotifier.addListener(_onConfigChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
@@ -184,6 +186,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     // A fresh session rebuilds the platform view, so the remembered picture
     // mode has to be handed to it again.
     await _engine.setVideoScale(_videoScale);
+    if ((_normalSpeed - 1.0).abs() > 0.001 ||
+        widget.app.config.customSpeed != null) {
+      await _engine.setSpeed(_normalSpeed);
+    }
     if (_engine.errorMessage == null) {
       _reporter.start();
       // 已经记录过进度的会话（例如出错后重试）保留原位置，等待引擎
@@ -372,8 +378,13 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     } finally {
       await _cleanupStep('恢复窗口', _exitFullscreenIfNeeded);
       if (mounted) {
-        if (itemId != null) widget.onRequestItem?.call(itemId);
-        Navigator.of(context).pop();
+        if (itemId != null) {
+          widget.onRequestItem?.call(itemId);
+          // 先让分集遮罩在播放页背后完成构建，再关闭当前路由。
+          // 否则零时长转场会先露出主页一帧，再进入加载遮罩。
+          await WidgetsBinding.instance.endOfFrame;
+        }
+        if (mounted) Navigator.of(context).pop();
       }
     }
   }

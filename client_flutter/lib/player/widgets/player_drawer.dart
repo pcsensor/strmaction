@@ -58,6 +58,7 @@ class PlayerDrawer extends StatefulWidget {
 class PlayerDrawerState extends State<PlayerDrawer> {
   String _tab = 'episodes';
   final FocusScopeNode _scope = FocusScopeNode(debugLabel: 'player-drawer');
+  final GlobalKey<_EpisodesState> _episodesKey = GlobalKey<_EpisodesState>();
 
   @override
   void initState() {
@@ -67,7 +68,12 @@ class PlayerDrawerState extends State<PlayerDrawer> {
 
   void openTab(String tab) {
     setState(() => _tab = tab);
-    WidgetsBinding.instance.addPostFrameCallback((_) { if (mounted && widget.visible) { _scope.requestFocus(); _scope.nextFocus(); } });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      // 每次打开选集都回到当前集，而不是停留在上次滚动的位置。
+      if (tab == 'episodes') _episodesKey.currentState?.scrollToCurrent();
+      if (widget.visible) { _scope.requestFocus(); _scope.nextFocus(); }
+    });
   }
 
   @override
@@ -111,6 +117,7 @@ class PlayerDrawerState extends State<PlayerDrawer> {
                   child: FocusScope(node: _scope, canRequestFocus: widget.visible, child: _DrawerPanel(
                     tab: _tab,
                     onTabChanged: (tab) => setState(() => _tab = tab),
+                    episodesKey: _episodesKey,
                     playlist: widget.playlist,
                     currentItemId: widget.currentItemId,
                     currentSpeed: widget.currentSpeed,
@@ -143,6 +150,7 @@ class PlayerDrawerState extends State<PlayerDrawer> {
 class _DrawerPanel extends StatelessWidget {
   final String tab;
   final ValueChanged<String> onTabChanged;
+  final Key? episodesKey;
   final List<PlaylistEntry> playlist;
   final int? currentItemId;
   final double currentSpeed;
@@ -165,6 +173,7 @@ class _DrawerPanel extends StatelessWidget {
   const _DrawerPanel({
     required this.tab,
     required this.onTabChanged,
+    this.episodesKey,
     required this.playlist,
     required this.currentItemId,
     required this.currentSpeed,
@@ -253,25 +262,32 @@ class _DrawerPanel extends StatelessWidget {
           ),
           const SizedBox(height: 14),
           Expanded(
-            child: SingleChildScrollView(
-              child: switch (tab) {
-                'episodes' => _Episodes(
-                    playlist: playlist,
-                    currentItemId: currentItemId,
-                    onSelected: onEpisodeSelected,
-                  ),
-                'speed' => _Speeds(
+            child: switch (tab) {
+              // 课程 / 家庭库可能有上千个视频，选集必须按需构建，
+              // 不能再用 Column 一次性创建全部卡片。
+              'episodes' => _Episodes(
+                  key: episodesKey,
+                  playlist: playlist,
+                  currentItemId: currentItemId,
+                  onSelected: onEpisodeSelected,
+                ),
+              'speed' => SingleChildScrollView(
+                  child: _Speeds(
                     currentSpeed: currentSpeed,
                     boostSpeed: boostSpeed,
                     onSpeedSelected: onSpeedSelected,
                     onBoostSpeedSelected: onBoostSpeedSelected,
                   ),
-                'frame' => _ScaleOptions(
+                ),
+              'frame' => SingleChildScrollView(
+                  child: _ScaleOptions(
                     current: videoScale,
                     modes: scaleModes,
                     onSelected: onScaleSelected,
                   ),
-                _ => _Tracks(
+                ),
+              _ => SingleChildScrollView(
+                  child: _Tracks(
                     subtitles: subtitles,
                     audioTracks: audioTracks,
                     currentSid: currentSid,
@@ -280,8 +296,8 @@ class _DrawerPanel extends StatelessWidget {
                     onSubtitleSelected: onSubtitleSelected,
                     onAudioSelected: onAudioSelected,
                   ),
-              },
-            ),
+                ),
+            },
           ),
         ],
       ),
@@ -326,45 +342,137 @@ class _TabChip extends StatelessWidget {
   }
 }
 
-class _Episodes extends StatelessWidget {
+class _Episodes extends StatefulWidget {
   final List<PlaylistEntry> playlist;
   final int? currentItemId;
   final ValueChanged<int> onSelected;
 
-  const _Episodes({required this.playlist, required this.currentItemId, required this.onSelected});
+  const _Episodes({
+    super.key,
+    required this.playlist,
+    required this.currentItemId,
+    required this.onSelected,
+  });
+
+  @override
+  State<_Episodes> createState() => _EpisodesState();
+}
+
+class _EpisodesState extends State<_Episodes> {
+  static const double _itemExtent = 58;
+  final ScrollController _controller = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollToCurrentAfterLayout();
+  }
+
+  @override
+  void didUpdateWidget(covariant _Episodes oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.playlist, widget.playlist) ||
+        oldWidget.currentItemId != widget.currentItemId) {
+      _scrollToCurrentAfterLayout();
+    }
+  }
+
+  void _scrollToCurrentAfterLayout() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted && _controller.hasClients) _jumpToCurrent();
+    });
+  }
+
+  /// 让当前集尽量出现在视口中间，靠近首尾时自动贴边。
+  void _jumpToCurrent() {
+    final index = _currentIndex;
+    if (index < 0) return;
+    final position = _controller.position;
+    final max = position.maxScrollExtent;
+    if (max <= 0) return;
+    final target = (index * _itemExtent -
+            (position.viewportDimension - _itemExtent) / 2)
+        .clamp(0.0, max)
+        .toDouble();
+    _controller.jumpTo(target);
+  }
+
+  void scrollToCurrent() {
+    if (!mounted) return;
+    if (!_controller.hasClients) {
+      _scrollToCurrentAfterLayout();
+      return;
+    }
+    _jumpToCurrent();
+  }
+
+  int get _currentIndex {
+    final marked = widget.playlist.indexWhere((entry) => entry.current);
+    if (marked >= 0) return marked;
+    return widget.playlist.indexWhere(
+      (entry) => entry.itemId != null && entry.itemId == widget.currentItemId,
+    );
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final playlist = widget.playlist;
     if (playlist.isEmpty) {
       return const Text('暂无选集', style: TextStyle(color: Color(0xFF8E9297), fontSize: 12));
     }
-    return Column(
-      children: [
-        for (final entry in playlist) ...[
-          _EpisodeCard(
+    return ListView.builder(
+      controller: _controller,
+      padding: const EdgeInsets.only(bottom: 8),
+      itemExtent: _itemExtent,
+      itemCount: playlist.length,
+      itemBuilder: (context, index) {
+        final entry = playlist[index];
+        return Padding(
+          padding: const EdgeInsets.only(bottom: 8),
+          child: _EpisodeCard(
             entry: entry,
-            current: entry.current || (entry.itemId != null && entry.itemId == currentItemId),
-            onTap: entry.itemId == null ? null : () => onSelected(entry.itemId!),
+            ordinal: index + 1,
+            current: entry.current ||
+                (entry.itemId != null && entry.itemId == widget.currentItemId),
+            onTap: entry.itemId == null
+                ? null
+                : () => widget.onSelected(entry.itemId!),
           ),
-          const SizedBox(height: 8),
-        ],
-      ],
+        );
+      },
     );
   }
 }
 
 class _EpisodeCard extends StatelessWidget {
   final PlaylistEntry entry;
+  final int ordinal;
   final bool current;
   final VoidCallback? onTap;
 
-  const _EpisodeCard({required this.entry, required this.current, required this.onTap});
+  const _EpisodeCard({
+    required this.entry,
+    required this.ordinal,
+    required this.current,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
+    // 课程 / 家庭视频没有季集号，服务端 code 为空；用播放列表序号兜底，
+    // 不能再把空集号补成 0，否则每一集都会显示 P00。
+    final episodeNo = entry.episodeNo;
     final code = entry.code.isNotEmpty
         ? entry.code
-        : 'P${(entry.episodeNo ?? 0).toString().padLeft(2, '0')}';
+        : episodeNo != null
+            ? 'P${episodeNo.toString().padLeft(2, '0')}'
+            : 'P${ordinal.toString().padLeft(2, '0')}';
     return Material(
       color: current ? const Color(0x2EF0A94D) : const Color(0x0DFFFFFF),
       shape: RoundedRectangleBorder(

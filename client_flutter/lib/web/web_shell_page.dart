@@ -44,6 +44,7 @@ class _WebShellPageState extends State<WebShellPage> {
   bool _bootstrapped = false;
   bool _isTv = false;
   bool _requestingPlayback = false;
+  bool _switchingPlayback = false;
   EdgeInsets _safeInsets = EdgeInsets.zero;
 
   AppController get app => widget.app;
@@ -160,8 +161,14 @@ class _WebShellPageState extends State<WebShellPage> {
   }
 
   Future<Map<String, dynamic>> _startPlayback(Map<String, dynamic> request) async {
-    if (_requestingPlayback || _playerOpen) return {'ok': false, 'error': '播放器正在打开'};
+    if (_requestingPlayback || _playerOpen) {
+      if (mounted && _switchingPlayback) {
+        setState(() => _switchingPlayback = false);
+      }
+      return {'ok': false, 'error': '播放器正在打开'};
+    }
     _requestingPlayback = true;
+    var opened = false;
     try {
       final id = request['itemId'];
       if (id is! int || id <= 0) throw const ConfigException('条目 ID 无效');
@@ -183,12 +190,20 @@ class _WebShellPageState extends State<WebShellPage> {
         if (Platform.isAndroid || Platform.isIOS) {
           await const MethodChannel('strmaction/native').invokeMethod<void>('trust', app.config.trustedCaPem);
         }
+        opened = true;
         unawaited(_openPlayer(payload));
       }
       return {'ok': true, 'mode': payload.mode};
     } on Object catch (error) {
       return {'ok': false, 'error': '$error'};
-    } finally { _requestingPlayback = false; }
+    } finally {
+      _requestingPlayback = false;
+      // 请求失败或进入复制模式时不会推入播放器，必须撤掉连播遮罩，
+      // 否则主页会一直被“正在加载下一集”盖住。
+      if (!opened && mounted && _switchingPlayback) {
+        setState(() => _switchingPlayback = false);
+      }
+    }
   }
 
   Future<bool> _showSettings({required bool allowCancel}) async {
@@ -325,34 +340,63 @@ class _WebShellPageState extends State<WebShellPage> {
   }
 
   Future<void> _openPlayer(PlaybackPayload payload) async {
-    if (!mounted || _playerOpen) return;
+    if (!mounted || _playerOpen) {
+      if (mounted && _switchingPlayback) {
+        setState(() => _switchingPlayback = false);
+      }
+      return;
+    }
     _playerOpen = true;
     _pendingRequestId = null;
-    await Navigator.of(context).push(
-      PageRouteBuilder<void>(
-        pageBuilder: (context, animation, secondaryAnimation) => PlayerPage(
-          app: app,
-          payload: payload,
-          isTv: _isTv,
-          onRequestItem: (id) => _pendingRequestId = id,
-        ),
-        transitionDuration: Duration.zero,
-        reverseTransitionDuration: Duration.zero,
-        allowSnapshotting: false,
+    final route = PageRouteBuilder<void>(
+      pageBuilder: (context, animation, secondaryAnimation) => PlayerPage(
+        app: app,
+        payload: payload,
+        isTv: _isTv,
+        onRequestItem: (id) {
+          _pendingRequestId = id;
+          // 旧播放页还要等分集请求返回才会关闭；先盖住主页，
+          // 避免连播切集时露出“闪回主页”的一瞬间。
+          if (mounted) setState(() => _switchingPlayback = true);
+        },
       ),
+      transitionDuration: Duration.zero,
+      reverseTransitionDuration: Duration.zero,
+      allowSnapshotting: false,
     );
+    final pushed = Navigator.of(context).push(route);
+    if (_switchingPlayback) {
+      // 新播放页已经盖住遮罩，等它完成第一帧后再移除，避免中间露出主页。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _switchingPlayback) {
+          setState(() => _switchingPlayback = false);
+        }
+      });
+    }
+    await pushed;
     _playerOpen = false;
     final pending = _pendingRequestId;
     _pendingRequestId = null;
     if (pending != null) {
       _requestItem(pending);
     } else {
+      if (_switchingPlayback && mounted) {
+        setState(() => _switchingPlayback = false);
+      }
       _dispatchProgressUpdated();
     }
   }
 
   void _requestItem(int itemId) {
-    unawaited(_startPlayback({'itemId': itemId, 'mode': 'builtin'}));
+    unawaited(_startPlayback({'itemId': itemId, 'mode': 'builtin'}).then((result) {
+      if (!mounted || result['ok'] == true) return;
+      final message = result['error'];
+      if (message is String && message.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(message)),
+        );
+      }
+    }));
   }
 
   void _dispatchProgressUpdated() {
@@ -530,6 +574,27 @@ class _WebShellPageState extends State<WebShellPage> {
                 message: _error,
                 onRetry: _checkAndLoad,
                 onSettings: () => _showSettings(allowCancel: true),
+              ),
+            if (_switchingPlayback)
+              const Positioned.fill(
+                child: AbsorbPointer(
+                  child: ColoredBox(
+                    color: Color(0xFF07080A),
+                    child: Center(
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          CircularProgressIndicator(color: Color(0xFFF0A94D)),
+                          SizedBox(height: 16),
+                          Text(
+                            '正在加载下一集…',
+                            style: TextStyle(color: Color(0xFFA9B0BE), fontSize: 13),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
               ),
           ],
         )),
