@@ -35,7 +35,7 @@ class NetworkRate {
   final Duration Function() _now;
   final Duration window;
   final List<(Duration, int)> _samples = [];
-  final Duration _started;
+  Duration _started;
 
   NetworkRate({Duration Function()? now, Duration window = const Duration(seconds: 3)})
       : this._(now ?? _clock(), window: window);
@@ -46,6 +46,11 @@ class NetworkRate {
   static Duration Function() _clock() {
     final clock = Stopwatch()..start();
     return () => clock.elapsed;
+  }
+
+  void reset([Duration? started]) {
+    _samples.clear();
+    _started = started ?? _now();
   }
 
   void add(int bytes) {
@@ -64,6 +69,7 @@ class NetworkRate {
   double get bytesPerSecond {
     final now = _now();
     _trim(now);
+    if (_samples.isEmpty) return 0;
     final elapsed = now - _started;
     final micros = elapsed.inMicroseconds.clamp(500000, window.inMicroseconds);
     return _samples.fold<int>(0, (sum, sample) => sum + sample.$2) * 1000000 / micros;

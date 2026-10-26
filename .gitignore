@@ -66,11 +66,6 @@ tmp_*
 # --- Android / Gradle ------------------------------------------------------
 .gradle/
 .kotlin/
-companion/.gradle/
-companion/captures/
-companion/gradle/wrapper/gradle-wrapper.jar
-companion/gradlew
-companion/gradlew.bat
 .cxx/
 .externalNativeBuild/
 local.properties
@@ -81,8 +76,6 @@ local.properties
 *.idsig
 *.apk.idsig
 
-# 其余 app/build 下的 APK/AAB 均由上面的 build/ 规则忽略
-companion/**/build/
 build/
 
 # --- IDE / 操作系统 --------------------------------------------------------

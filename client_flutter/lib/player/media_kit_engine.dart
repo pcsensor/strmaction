@@ -500,10 +500,6 @@ class MediaKitEngine extends PlaybackEngine {
       }
 
       final disk = _diskCache;
-      if (disk != null && _duration > 0) {
-        final diskRanges = disk.ranges.map((r) => BufferedRange(r.$1 / disk.length * _duration, r.$2 / disk.length * _duration));
-        _bufferedRanges = _mergeRanges([...merged, ...diskRanges]);
-      }
       if (disk == null) {
         final speed = _asDouble(decoded['raw-input-rate']);
         final now = _pollClock.elapsed;

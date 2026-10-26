@@ -176,10 +176,11 @@ class PlaybackPrefetcher(
     }
 
     /**
-     * 磁盘里当前视频已缓存的区间（毫秒），按整片字节/时长等比换算。
-     * 拿不到 Content-Length 或时长时返回空列表（调用方只看内存缓冲）。
+     * 进度条缓冲段由播放器解复用器真实可播区间反映。
+     * 全文件平均码率线性折算在 VBR 片源下会导致缓冲条位置严重错位并产生左侧异常缓冲条，
+     * 故此处不再将底层物理磁盘分块折算为时间区间。
      */
-    fun cachedSpansMs(): List<LongRange> = timeSnapshot
+    fun cachedSpansMs(): List<LongRange> = emptyList()
 
     /** 播放器已缓冲末端之后，连续缓存的末尾（字节）。 */
     private fun cachedEndBytes(ratio: Double): Long {

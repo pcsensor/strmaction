@@ -227,8 +227,7 @@ strmaction/
 │   │   ├── pages/            # 路由页面（首页、详情、搜索、用户、设置）
 │   │   └── store/            # 客户端状态管理
 │   └── package.json
-├── companion/                # Android 旧客户端与复用的 Media3 缓存核心
-├── client_flutter/           # 四端 Flutter 客户端、原生桥接和公共测试
+├── client_flutter/           # 多端 Flutter 客户端、平台原生桥接与公共测试套件
 ├── native/ios/               # 导入的 iOS 播放 / 缓存 / 证书核心
 ├── ci/                       # 四端构建准备、签名与产物追踪
 ├── deploy/                   # Caddy 反向代理配置示例

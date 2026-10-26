@@ -24,6 +24,7 @@ final class ThroughputSampler {
     func bytesPerSecond() -> Double {
         lock.lock(); defer { lock.unlock() }
         let now = clock(); trim(now)
+        guard !samples.isEmpty else { return 0 }
         return Double(samples.reduce(Int64(0)) { $0 + $1.1 }) / max(minimumElapsed, min(window, now - started))
     }
     func reset() { lock.lock(); defer { lock.unlock() }; samples.removeAll(); started = clock() }

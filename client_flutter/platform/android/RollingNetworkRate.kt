@@ -15,6 +15,7 @@ class RollingNetworkRate(private val clock: () -> Long = { System.nanoTime() / 1
     }
     @Synchronized fun sample(): Long {
         val now = clock(); trim(now)
+        if (samples.isEmpty()) return 0L
         return (samples.sumOf { it.second } * 1000.0 / (now - started).coerceIn(500, 3000)).toLong()
     }
     @Synchronized fun reset() { samples.clear(); started = clock() }

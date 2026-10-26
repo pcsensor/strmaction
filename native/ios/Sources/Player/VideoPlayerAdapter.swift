@@ -526,17 +526,10 @@ public final class VideoPlayerController: ObservableObject {
             session.setPacingEnabled(true)
         }
 
-        // 字节 → 时间：整文件线性折算。
-        let scale = Double(durationMs) / Double(snapshot.totalBytes)
-        let mapped = snapshot.ranges.map { range in
-            CachedSegment(
-                startMs: min(durationMs, Int64(Double(range.lowerBound) * scale)),
-                endMs: min(durationMs, Int64(Double(range.upperBound) * scale))
-            )
-        }
-        // 只在真的变了才发：否则每秒一次的无意义刷新会让进度条白白重绘。
-        if mapped != cachedSegments {
-            cachedSegments = mapped
+        // 进度条缓冲段仅反映播放器解复用器真实可播区间。
+        // 全文件平均码率线性折算在 VBR 片源下会导致缓冲条位置严重错位并产生左侧异常缓冲条。
+        if !cachedSegments.isEmpty {
+            cachedSegments = []
         }
     }
 

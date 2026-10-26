@@ -407,6 +407,15 @@ void main() {
     time = const Duration(seconds: 2); expect(rate.bytesPerSecond, 1.5 * mib);
     time = const Duration(milliseconds: 3500); expect(rate.bytesPerSecond, 0);
   });
+  test('network rate reset prevents initial connection delay from diluting speed', () {
+    var time = Duration.zero;
+    final rate = NetworkRate(now: () => time);
+    time = const Duration(seconds: 3);
+    rate.reset();
+    time = const Duration(milliseconds: 3500);
+    rate.add(5 * mib);
+    expect(rate.bytesPerSecond, 10 * mib);
+  });
   test('automatic policy increases gradually, backs off and never exceeds four', () {
     final policy = DownloadPolicy();
     expect(policy.concurrency, 2); expect(policy.segmentBytes, 4 * mib);

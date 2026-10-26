@@ -396,6 +396,9 @@ class SequentialMediaCache {
       transfer.phase = 'body';
       transfer.touch();
       transfer.notify();
+      if (!transfer.probe) {
+        _rate.reset();
+      }
       transfer.body = StreamIterator(response.timeout(const Duration(seconds: 20)));
       while (await transfer.body!.moveNext()) {
         if (_closed || transfer.cancelled) throw const _Cancelled();
@@ -464,13 +467,18 @@ class SequentialMediaCache {
 
   Future<void> _pace(_Transfer transfer) async {
     final window = prefetchBytes > 0 ? prefetchBytes : blockSize;
+    var wasPaused = false;
     while (!_closed &&
         !transfer.cancelled &&
         !_urgent &&
         transfer.start + transfer.received - _consumed > window &&
         transfer.start + transfer.received >= _demand) {
       transfer.pause();
+      wasPaused = true;
       await transfer.waitResume();
+    }
+    if (wasPaused && !transfer.cancelled) {
+      _rate.reset();
     }
   }
 

@@ -368,6 +368,7 @@ final class CacheServer {
                 return .now
             }, onMeta: { [weak self] meta in
                 guard let self, !self.isStopped else { return }
+                self.throughput.reset()
                 if let total = meta.totalLength, total > 0 { self.totalLength = total }
                 if meta.status == 200 { pace.writeOffset = 0 }
                 var head = "HTTP/1.1 \(meta.status) \(meta.status == 206 ? "Partial Content" : "OK")\r\n"

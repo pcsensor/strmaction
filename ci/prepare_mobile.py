@@ -22,8 +22,6 @@ def android():
         shutil.copy2(source, kotlin / source.name)
     old = CLIENT / 'android/app/src/main/kotlin/top/strmaction/strmaction_desktop/MainActivity.kt'
     old.unlink(missing_ok=True)
-    for name in ['PlaybackCache', 'PlaybackDiskCache', 'PlaybackPrefetcher', 'NetworkSpeedMeter', 'AutoDownloadPolicy', 'RollingNetworkRate']:
-        shutil.copy2(ROOT / f'companion/app/src/main/java/top/strmaction/companion/{name}.kt', kotlin / f'{name}.kt')
     tests = app / 'src/test/kotlin/top/strmaction/companion'
     tests.mkdir(parents=True, exist_ok=True)
     for source in (PLATFORM / 'android/test').glob('*.kt'):
@@ -42,7 +40,7 @@ def android():
     drawables = app / 'src/main/res/drawable'
     drawables.mkdir(parents=True, exist_ok=True)
     for name in ['ic_launcher.xml', 'banner.xml']:
-        shutil.copy2(ROOT / 'companion/app/src/main/res/drawable' / name, drawables / name)
+        shutil.copy2(PLATFORM / 'android/res/drawable' / name, drawables / name)
     gradle = app / 'build.gradle.kts'
     text = gradle.read_text().replace('top.strmaction.strmaction_desktop', 'top.strmaction.companion')
     if 'id("org.jetbrains.kotlin.android")' not in text:

@@ -26,7 +26,10 @@ object NetworkSpeedMeter : TransferListener {
         source: DataSource,
         dataSpec: DataSpec,
         isNetwork: Boolean,
-    ) = Unit
+    ) {
+        if (!isNetwork) return
+        rate.reset()
+    }
 
     override fun onBytesTransferred(
         source: DataSource,
