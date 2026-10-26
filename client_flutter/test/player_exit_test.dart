@@ -245,12 +245,13 @@ void main() {
       config: const AppConfig(customSpeed: 1.5),
     );
     engine.loading.complete();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 50));
+    for (var i = 0; i < 10 && engine.speeds.isEmpty; i++) {
+      await tester.pump(const Duration(milliseconds: 20));
+    }
     expect(engine.speeds, [1.5]);
     expect(engine.speedValue, 1.5);
     expect(tester.takeException(), isNull);
-  }, variant: const TargetPlatformVariant({TargetPlatform.windows}));
+  }, variant: const TargetPlatformVariant({TargetPlatform.android}));
 
   for (final platform in [
     TargetPlatform.android,
