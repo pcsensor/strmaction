@@ -2,7 +2,15 @@ name: Clients
 
 on:
   push:
+    paths:
+      - 'client_flutter/**'
+      - 'native/**'
+      - 'ci/**'
   pull_request:
+    paths:
+      - 'client_flutter/**'
+      - 'native/**'
+      - 'ci/**'
   workflow_dispatch:
 
 permissions:

@@ -1,6 +1,6 @@
 import { NavLink, useNavigate } from 'react-router-dom'
 import { motion } from 'framer-motion'
-import { AlertTriangle, Clapperboard, Library, LogOut, Search, Settings, Users } from 'lucide-react'
+import { AlertTriangle, Clapperboard, Library, LogOut, RefreshCw, Search, Settings, Users } from 'lucide-react'
 import { useHome, useLogout } from '../api/hooks'
 import { useAuthState } from '../api/hooks'
 import { useScrollDirection } from '../hooks/useTVMode'
@@ -24,7 +24,13 @@ export function Logo({ compact = false }: { compact?: boolean }) {
   )
 }
 
-export function TopBar() {
+export function TopBar({
+  onRefresh,
+  isRefreshing = false,
+}: {
+  onRefresh?: () => void
+  isRefreshing?: boolean
+} = {}) {
   const scrolled = useScrollDirection()
   const home = useHome()
   const navigate = useNavigate()
@@ -92,6 +98,22 @@ export function TopBar() {
         </nav>
 
         <div className="ml-auto flex items-center gap-1.5">
+          {onRefresh ? (
+            <button
+              type="button"
+              onClick={onRefresh}
+              disabled={isRefreshing}
+              className="btn-icon focus-ring"
+              aria-label={t('nav.refresh')}
+              title={`${t('nav.refresh')} (R)`}
+            >
+              <RefreshCw
+                className={`h-[18px] w-[18px] transition-transform ${
+                  isRefreshing ? 'animate-spin text-accent' : ''
+                }`}
+              />
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={() => navigate('/search')}

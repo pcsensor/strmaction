@@ -17,6 +17,7 @@ export const zhCN = {
     settings: '设置',
     admin: '管理',
     logout: '退出登录',
+    refresh: '刷新',
     needsAttention: '{count} 条待修正',
   },
   common: {
@@ -478,8 +479,15 @@ export const zhCN = {
     uploadSuccess: '图片已更新',
     uploadFailed: '图片上传失败',
     refreshStarted: '刷新任务已启动',
+    refreshed: '已同步至最新',
+    refreshFailed: '同步失败，请检查网络',
     unmatchDone: '已解除匹配',
     marked: '已更新观看状态',
+  },
+  pullToRefresh: {
+    pull: '下拉刷新',
+    release: '释放立即刷新',
+    refreshing: '正在同步…',
   },
   errors: {
     unauthorized: '登录已失效，请重新登录',

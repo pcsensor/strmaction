@@ -10,6 +10,8 @@ import { AutoNextOverlay } from './components/AutoNextOverlay'
 import type { ItemDetailResponse } from './api/types'
 import { useSpatialNavigation, useTVMode } from './hooks/useTVMode'
 import { useStartPlayback } from './hooks/useStartPlayback'
+import { useAppRefresh } from './hooks/useAppRefresh'
+import { PullToRefresh } from './components/PullToRefresh'
 import { useUIStore } from './store/ui'
 import { HomePage } from './pages/HomePage'
 import { LibrariesPage } from './pages/LibrariesPage'
@@ -37,11 +39,19 @@ function ScrollToTop() {
 function AppShell({ children }: { children: ReactNode }) {
   const tvMode = useUIStore((state) => state.tvMode)
   useSpatialNavigation(tvMode)
+  const { refresh, isRefreshing } = useAppRefresh()
+
   return (
     <div className={`min-h-screen ${tvMode ? 'tv-overscan' : ''}`}>
-      <TopBar />
+      <TopBar onRefresh={() => void refresh({ showToast: true })} isRefreshing={isRefreshing} />
       <ScrollToTop />
-      <main className="pb-8">{children}</main>
+      <PullToRefresh
+        onRefresh={() => refresh({ showToast: true })}
+        isRefreshing={isRefreshing}
+        disabled={tvMode}
+      >
+        <main className="pb-8">{children}</main>
+      </PullToRefresh>
       <footer className="mx-auto mt-8 max-w-[1680px] border-t border-white/6 px-5 pb-24 pt-6 text-center text-[10px] leading-relaxed text-ink-500 sm:px-10 md:pb-8 lg:px-16">
         {t('app.footer')}
       </footer>
