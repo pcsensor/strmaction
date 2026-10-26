@@ -41,6 +41,7 @@ class MediaKitEngine extends PlaybackEngine {
   String? _error;
   double? _networkSpeed;
   List<BufferedRange> _bufferedRanges = const [];
+  final PlaybackTimelineBuffer _timelineBuffer = PlaybackTimelineBuffer();
   double _bufferPosition = 0;
   List<TrackInfo> _audioTracks = const [];
   List<TrackInfo> _subtitleTracks = const [];
@@ -178,8 +179,15 @@ class MediaKitEngine extends PlaybackEngine {
           _seekTargetAt = null;
         }
         _position = seconds;
+        _updateTimelineBufferedRanges();
         _notify();
       }),
+    );
+    _subscriptions.add(
+      _player.stream.width.listen((_) => _notify()),
+    );
+    _subscriptions.add(
+      _player.stream.height.listen((_) => _notify()),
     );
     _subscriptions.add(
       _player.stream.duration.listen((value) {
@@ -190,7 +198,8 @@ class MediaKitEngine extends PlaybackEngine {
     _subscriptions.add(
       _player.stream.buffer.listen((value) {
         _bufferPosition = value.inMilliseconds / 1000.0;
-        _refreshBufferFallback();
+        _updateTimelineBufferedRanges();
+        _notify();
       }),
     );
     _subscriptions.add(
@@ -319,6 +328,9 @@ class MediaKitEngine extends PlaybackEngine {
     _seekTarget = null;
     _seekTargetAt = null;
     _duration = (payload.durationMs ?? 0) / 1000.0;
+    _timelineBuffer.reset(
+      initialPosition: payload.resumeMs > 0 ? payload.resumeMs / 1000.0 : 0.0,
+    );
     _bufferedRanges = const [];
     _networkSpeed = null;
     _notify();
@@ -417,11 +429,18 @@ class MediaKitEngine extends PlaybackEngine {
         await platform.setProperty('demuxer-max-bytes', '0');
       } else {
         await platform.setProperty('cache', 'yes');
-        await platform.setProperty('demuxer-max-bytes', '${cacheLimitMb}MiB');
+        final demuxerBytes = math.min(128, math.max(32, cacheLimitMb));
+        await platform.setProperty('demuxer-max-bytes', '${demuxerBytes}MiB');
         await platform.setProperty(
           'demuxer-max-back-bytes',
-          '${math.max(1, cacheLimitMb ~/ 4)}MiB',
+          '${math.max(1, demuxerBytes ~/ 4)}MiB',
         );
+        // Do not pause or stall playback waiting for huge memory caches to fill.
+        await platform.setProperty('demuxer-cache-wait', 'no');
+        await platform.setProperty('demuxer-cache-pause', 'no');
+        await platform.setProperty('demuxer-cache-pause-initial', 'no');
+        await platform.setProperty('demuxer-readahead-secs', '20');
+        await platform.setProperty('force-seekable', 'yes');
       }
       await platform.setProperty('tls-verify', 'yes');
       if (caBundlePath != null) await platform.setProperty('tls-ca-file', caBundlePath!);
@@ -489,15 +508,7 @@ class MediaKitEngine extends PlaybackEngine {
           ranges.add(BufferedRange(math.max(0, start), end));
         }
       }
-      final merged = _mergeRanges(ranges);
-      if (merged.isNotEmpty) {
-        if (!areBufferedRangesEqual(_bufferedRanges, merged)) {
-          _bufferedRanges = merged;
-          _notify();
-        }
-      } else {
-        _refreshBufferFallback();
-      }
+      _updateTimelineBufferedRanges(ranges);
 
       final disk = _diskCache;
       if (disk == null) {
@@ -513,32 +524,17 @@ class MediaKitEngine extends PlaybackEngine {
     } finally { _readingCache = false; }
   }
 
-  void _refreshBufferFallback() {
-    if (_bufferedRanges.isNotEmpty) return;
-    if (_bufferPosition > _position + 0.1) {
-      final fallback = [BufferedRange(_position, _bufferPosition)];
-      if (!areBufferedRangesEqual(_bufferedRanges, fallback)) {
-        _bufferedRanges = fallback;
-        _notify();
-      }
+  void _updateTimelineBufferedRanges([List<BufferedRange> nativeRanges = const []]) {
+    final updated = _timelineBuffer.update(
+      position: _position,
+      bufferedPosition: _bufferPosition,
+      duration: _duration,
+      nativeRanges: nativeRanges,
+    );
+    if (!areBufferedRangesEqual(_bufferedRanges, updated)) {
+      _bufferedRanges = updated;
+      _notify();
     }
-  }
-
-  List<BufferedRange> _mergeRanges(List<BufferedRange> ranges) {
-    if (ranges.isEmpty) return const [];
-    final sorted = [...ranges]..sort((a, b) => a.start.compareTo(b.start));
-    final merged = <BufferedRange>[];
-    for (final range in sorted) {
-      final end = _duration > 0 ? math.min(range.end, _duration) : range.end;
-      final start = math.max(0.0, range.start);
-      if (end <= start) continue;
-      if (merged.isEmpty || start > merged.last.end + 0.1) {
-        merged.add(BufferedRange(start, end));
-      } else if (end > merged.last.end) {
-        merged[merged.length - 1] = BufferedRange(merged.last.start, end);
-      }
-    }
-    return merged;
   }
 
   static double? _asDouble(dynamic value) {
@@ -581,6 +577,8 @@ class MediaKitEngine extends PlaybackEngine {
     _seekTarget = target;
     _seekTargetAt = DateTime.now();
     _position = target;
+    _timelineBuffer.onSeek(target);
+    _updateTimelineBufferedRanges();
     _notify();
     if (_duration > 0 && _diskCache != null) {
       final byte = (_diskCache!.length * target / _duration).round();
@@ -682,6 +680,7 @@ class MediaKitEngine extends PlaybackEngine {
     _networkTimer?.cancel();
     _cacheTimer?.cancel();
     _cacheTimer = null;
+    _timelineBuffer.reset();
     _bufferedRanges = const [];
     _seekTarget = null;
     _seekTargetAt = null;

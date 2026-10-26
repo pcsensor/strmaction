@@ -21,6 +21,7 @@ class NativePlayerEngine extends PlaybackEngine {
   String? _error;
   double _previousVolume = 100;
   List<BufferedRange> _bufferedRanges = const [];
+  final PlaybackTimelineBuffer _timelineBuffer = PlaybackTimelineBuffer();
   /// Seek target held until the native player reports that it arrived.
   /// AVPlayer and ExoPlayer both keep publishing the old position for a few
   /// frames after a seek; forwarding that makes the bar snap backwards.
@@ -49,12 +50,22 @@ class NativePlayerEngine extends PlaybackEngine {
         }
       }
       final actualPosition = _number('position_ms') / 1000;
-      _bufferedRanges = mergeBufferedRanges([
-        if (_number('buffered_ms') > _number('position_ms'))
-          BufferedRange(actualPosition, _number('buffered_ms') / 1000),
-        ...((_state['cached_ranges'] as List?) ?? []).whereType<Map>().map((r) =>
-          BufferedRange((r['start_ms'] as num).toDouble() / 1000, (r['end_ms'] as num).toDouble() / 1000)),
-      ]);
+      final rawBuffered = _state['buffered_ms'] as num?;
+      final buffered = rawBuffered != null ? rawBuffered.toDouble() / 1000 : null;
+      final totalDuration = _number('duration_ms') / 1000;
+      final nativeCached = ((_state['cached_ranges'] as List?) ?? [])
+          .whereType<Map>()
+          .map((r) => BufferedRange(
+                (r['start_ms'] as num).toDouble() / 1000,
+                (r['end_ms'] as num).toDouble() / 1000,
+              ))
+          .toList();
+      _bufferedRanges = _timelineBuffer.update(
+        position: actualPosition,
+        bufferedPosition: buffered,
+        duration: totalDuration,
+        nativeRanges: nativeCached,
+      );
       _error = _state['error'] as String?;
       notifyListeners();
     }, onError: (Object error) {
@@ -146,6 +157,9 @@ class NativePlayerEngine extends PlaybackEngine {
 
   @override Future<void> load(PlaybackPayload payload, {required int cacheLimitMb, required bool tlsVerify}) async {
     _state = {'loading': true};
+    _timelineBuffer.reset(
+      initialPosition: payload.resumeMs > 0 ? payload.resumeMs / 1000.0 : 0.0,
+    );
     _bufferedRanges = const [];
     _seekTarget = null;
     _seekTargetAt = null;
@@ -172,6 +186,7 @@ class NativePlayerEngine extends PlaybackEngine {
     if (total > 0 && target > total) target = total;
     _seekTarget = target;
     _seekTargetAt = DateTime.now();
+    _timelineBuffer.onSeek(target);
     notifyListeners();
     return _call('seek', (target * 1000).round());
   }
@@ -200,7 +215,11 @@ class NativePlayerEngine extends PlaybackEngine {
     _state['brightness'] = level.clamp(0.02, 1) * 100;
     return _call('brightnessLevel', level.clamp(0.02, 1));
   }
-  @override Future<void> stop() => pause();
+  @override Future<void> stop() async {
+    _timelineBuffer.reset();
+    _bufferedRanges = const [];
+    await pause();
+  }
   @override Future<void> shutdown() async {
     if (_disposed) return;
     _disposed = true;

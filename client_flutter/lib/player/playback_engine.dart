@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/widgets.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
@@ -63,6 +65,94 @@ List<BufferedRange> mergeBufferedRanges(Iterable<BufferedRange> ranges) {
     }
   }
   return merged;
+}
+
+/// Tracks confirmed, continuous timeline buffer intervals during a playback session.
+///
+/// In VBR (Variable Bit Rate) files, converting physical disk byte ranges
+/// linearly via `(byteOffset / contentLength) * duration` produces severe
+/// distortions (e.g. ghost buffer bars appearing to the left of seek targets).
+///
+/// Instead, [PlaybackTimelineBuffer] tracks the actual time spans observed by the
+/// player engines in the time domain:
+/// 1. The active playback segment starts at the playback or seek origin [_activeStart]
+///    and grows to `max(position, bufferedPosition)`.
+/// 2. When seeking, the previous active segment is committed into confirmed history,
+///    and a new active segment begins at the seek target.
+/// 3. Demuxer ranges reported natively by the decoder (e.g. MPV's seekable-ranges)
+///    are merged directly.
+/// 4. This ensures that already-played/buffered ranges before the playhead remain
+///    intact, no ghost bars appear on seeks, and seek targets snap naturally.
+class PlaybackTimelineBuffer {
+  List<BufferedRange> _confirmed = const [];
+  double _segmentStart = 0.0;
+  BufferedRange? _activeRange;
+
+  List<BufferedRange> get confirmedRanges => _confirmed;
+
+  void reset({double initialPosition = 0.0}) {
+    _confirmed = const [];
+    _segmentStart = initialPosition.isFinite && initialPosition >= 0 ? initialPosition : 0.0;
+    _activeRange = null;
+  }
+
+  void onSeek(double target) {
+    if (!target.isFinite || target < 0) return;
+    _commitActive();
+    _segmentStart = target;
+    _activeRange = null;
+  }
+
+  void _commitActive() {
+    final active = _activeRange;
+    if (active != null && active.end > active.start) {
+      _confirmed = mergeBufferedRanges([..._confirmed, active]);
+      _activeRange = null;
+    }
+  }
+
+  List<BufferedRange> update({
+    required double position,
+    double? bufferedPosition,
+    required double duration,
+    List<BufferedRange> nativeRanges = const [],
+  }) {
+    final pos = position.isFinite && position >= 0 ? position : 0.0;
+
+    // Adapt segment start for keyframe snap if position is slightly earlier
+    if (pos < _segmentStart && _segmentStart - pos <= 10.0) {
+      _segmentStart = pos;
+    }
+
+    if (bufferedPosition != null && bufferedPosition.isFinite && bufferedPosition > pos) {
+      final start = math.min(_segmentStart, pos);
+      final end = math.max(pos, bufferedPosition);
+      if (end > start) {
+        _activeRange = BufferedRange(start, end);
+      }
+    } else if (bufferedPosition == null) {
+      _activeRange = null;
+    }
+
+    final activeList = _activeRange != null ? [_activeRange!] : const <BufferedRange>[];
+    var merged = mergeBufferedRanges([
+      ..._confirmed,
+      ...activeList,
+      ...nativeRanges,
+    ]);
+
+    if (duration > 0) {
+      merged = merged
+          .map((r) => BufferedRange(
+                math.max(0.0, r.start),
+                math.min(duration, r.end),
+              ))
+          .where((r) => r.end > r.start)
+          .toList();
+    }
+
+    return merged;
+  }
 }
 
 abstract class PlaybackEngine extends ChangeNotifier {

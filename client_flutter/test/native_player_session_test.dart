@@ -129,4 +129,81 @@ void main() {
     await engine.shutdown();
     await states.close();
   });
+
+  test('mobile player displays buffered range prior to current playback position', () async {
+    final messenger = TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+    messenger.setMockMethodCallHandler(NativePlayerEngine.channel, (call) async => null);
+    addTearDown(() => messenger.setMockMethodCallHandler(NativePlayerEngine.channel, null));
+    final states = StreamController<dynamic>.broadcast(sync: true);
+    final engine = NativePlayerEngine(stateEvents: states.stream);
+
+    // Initial playback from 0 to 60s, buffered up to 90s
+    states.add({
+      'session_id': engine.sessionId,
+      'position_ms': 60000,
+      'buffered_ms': 90000,
+      'duration_ms': 300000,
+    });
+
+    expect(engine.bufferedRanges, hasLength(1));
+    // The range must start at 0 (prior to the 60s current position), not at 60s!
+    expect(engine.bufferedRanges.first.start, 0.0);
+    expect(engine.bufferedRanges.first.end, 90.0);
+
+    // User seeks forward to 180s
+    await engine.seek(180.0);
+    states.add({
+      'session_id': engine.sessionId,
+      'position_ms': 180000,
+      'buffered_ms': 200000,
+      'duration_ms': 300000,
+    });
+
+    // Both the previous watched range [0, 90] and new range [180, 200] must be preserved
+    expect(engine.bufferedRanges, hasLength(2));
+    expect(engine.bufferedRanges[0].start, 0.0);
+    expect(engine.bufferedRanges[0].end, 90.0);
+    expect(engine.bufferedRanges[1].start, 180.0);
+    expect(engine.bufferedRanges[1].end, 200.0);
+
+    // User seeks back into the first range (at 30s)
+    await engine.seek(30.0);
+    states.add({
+      'session_id': engine.sessionId,
+      'position_ms': 30000,
+      'buffered_ms': 90000,
+      'duration_ms': 300000,
+    });
+
+    // The [0, 90] range is fully retained without losing the 0..30s portion
+    expect(engine.bufferedRanges, hasLength(2));
+    expect(engine.bufferedRanges[0].start, 0.0);
+    expect(engine.bufferedRanges[0].end, 90.0);
+
+    await engine.shutdown();
+    await states.close();
+  });
+
+  test('PlaybackTimelineBuffer handles seeking, keyframe snaps, and resets cleanly', () {
+    final buffer = PlaybackTimelineBuffer();
+
+    // Start at 0, play to 10, buffered to 25
+    var ranges = buffer.update(position: 10.0, bufferedPosition: 25.0, duration: 100.0);
+    expect(ranges, [const BufferedRange(0.0, 25.0)]);
+
+    // Seek to 50
+    buffer.onSeek(50.0);
+    // Keyframe snap lands slightly earlier at 48.5
+    ranges = buffer.update(position: 48.5, bufferedPosition: 65.0, duration: 100.0);
+    expect(ranges, [const BufferedRange(0.0, 25.0), const BufferedRange(48.5, 65.0)]);
+
+    // Play continuously past 65 to 70
+    ranges = buffer.update(position: 60.0, bufferedPosition: 70.0, duration: 100.0);
+    expect(ranges, [const BufferedRange(0.0, 25.0), const BufferedRange(48.5, 70.0)]);
+
+    // Reset with initial resume position
+    buffer.reset(initialPosition: 80.0);
+    ranges = buffer.update(position: 80.0, bufferedPosition: 95.0, duration: 100.0);
+    expect(ranges, [const BufferedRange(80.0, 95.0)]);
+  });
 }
