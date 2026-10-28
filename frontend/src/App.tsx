@@ -3,7 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from 'react-route
 import { useQueryClient } from '@tanstack/react-query'
 import { AlertTriangle, Loader2 } from 'lucide-react'
 import { api } from './api/client'
-import { useAuthState } from './api/hooks'
+import { useAuthState, useTaskUpdates } from './api/hooks'
 import { TopBar, BottomNav, Logo } from './components/TopBar'
 import { ToastViewport } from './components/ToastViewport'
 import { AutoNextOverlay } from './components/AutoNextOverlay'
@@ -37,6 +37,7 @@ function ScrollToTop() {
 }
 
 function AppShell({ children }: { children: ReactNode }) {
+  useTaskUpdates()
   const tvMode = useUIStore((state) => state.tvMode)
   useSpatialNavigation(tvMode)
   const { refresh, isRefreshing } = useAppRefresh()

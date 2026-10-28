@@ -142,7 +142,7 @@ export function DetailPage() {
 
   useEffect(() => {
     if (!data) return
-    setSelectedFile(null)
+    setSelectedFile((current) => data.media_files.some((file) => file.id === current) ? current : null)
     if (data.seasons.length) {
       const withProgress = data.seasons.find((season) =>
         season.episodes.some(
@@ -150,7 +150,8 @@ export function DetailPage() {
             episode.progress && !episode.progress.finished && episode.progress.position_ms > 0,
         ),
       )
-      setActiveSeason(withProgress?.id ?? data.seasons[0].id)
+      setActiveSeason((current) => data.seasons.some((season) => season.id === current)
+        ? current : withProgress?.id ?? data.seasons[0].id)
     }
   }, [data])
 
@@ -179,14 +180,22 @@ export function DetailPage() {
     )
   }
 
+  const isEpisode = item.kind === 'episode'
+  const episodeImage = isEpisode ? item.still_large || item.still : null
+  const customPoster = item.locked_fields.includes('poster_path') ? item.poster_large || item.poster : null
+  const customBackdrop = item.locked_fields.includes('backdrop_path') ? item.backdrop_large || item.backdrop : null
   const backdrop =
+    customBackdrop ||
+    episodeImage ||
     item.backdrop_large ||
     series?.backdrop_large ||
     item.backdrop ||
     series?.backdrop ||
     parent?.backdrop_large ||
     null
-  const poster = item.poster_large || series?.poster_large || item.poster
+  const poster =
+    customPoster || episodeImage || item.poster_large ||
+    (isEpisode && parent?.poster_large) || series?.poster_large || item.poster
   const accent = item.color || series?.color || '#e8b06a'
   const currentSeason = data.seasons.find((season) => season.id === activeSeason) || data.seasons[0]
   const playTarget = item.play_target_id ?? item.id
@@ -194,7 +203,6 @@ export function DetailPage() {
   const canResume = Boolean(progress && !progress.finished && progress.position_ms > 2000)
   const mediaFiles = data.media_files.filter((file) => !file.missing)
   const selectedMedia = mediaFiles.find((file) => file.id === selectedFile) || mediaFiles[0]
-  const isEpisode = item.kind === 'episode'
   const isSeason = item.kind === 'season'
   const isSeries = item.kind === 'series'
   const cast = (item.cast || []) as CastMember[]
@@ -313,15 +321,23 @@ export function DetailPage() {
           </div>
         ) : null}
 
+        {data.image_status?.pending || data.image_status?.failed ? (
+          <p role="status" className="mb-5 text-xs text-ink-400">
+            {data.image_status.pending
+              ? `正在下载 ${data.image_status.pending} 张剧照，完成后会自动更新`
+              : `${data.image_status.failed} 张剧照下载失败，可刷新元数据重试`}
+          </p>
+        ) : null}
+
         <div className="flex flex-col gap-8 md:flex-row md:gap-10">
           <motion.div
             initial={{ opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ duration: 0.5, ease: [0.22, 1, 0.36, 1] }}
-            className="w-[152px] shrink-0 sm:w-[200px] md:w-[236px]"
+            className={`shrink-0 ${isEpisode ? 'w-full max-w-[480px] md:w-[360px]' : 'w-[152px] sm:w-[200px] md:w-[236px]'}`}
           >
-            <div className="poster-card aspect-[2/3] w-full">
-              <ImageWithFallback src={poster} alt={title} color={accent} kind={item.kind} eager />
+            <div className={`poster-card w-full ${isEpisode ? 'aspect-video' : 'aspect-[2/3]'}`}>
+              <ImageWithFallback src={poster} alt={isEpisode ? item.title : title} color={accent} kind={item.kind} eager />
             </div>
             {data.media_files.length && item.kind !== 'movie' ? (
               <div className="mt-4 hidden md:block">

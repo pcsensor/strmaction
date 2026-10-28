@@ -235,11 +235,25 @@ class ImageService:
             existing = session.exec(
                 select(ImageTask).where(
                     ImageTask.item_id == item_id,
+                    ImageTask.kind == kind,
                     ImageTask.remote_url == source,
-                    ImageTask.status.in_(["pending", "downloading", "done"]),
+                    ImageTask.target_field == target_field,
                 )
+                .order_by(ImageTask.id.desc())
             ).first()
             if existing is not None:
+                if existing.status in {"pending", "downloading"}:
+                    return
+                if existing.status == "done" and existing.sha and self.variants_exist(existing.sha, kind):
+                    self._apply_task(session, existing, existing.sha)
+                else:
+                    existing.status = "pending"
+                    existing.retry = 0
+                    existing.error = None
+                    existing.sha = None
+                    existing.updated_at = utcnow()
+                    session.add(existing)
+                session.commit()
                 return
             session.add(
                 ImageTask(
@@ -313,6 +327,9 @@ class ImageService:
             "logo": "logo_path",
             "still": "still_path",
         }.get(task.kind)
+        locked = item.get_locked_fields()
+        if target in locked or (target and target.startswith("cast:") and "cast" in locked):
+            return
         if target and target.startswith("cast:"):
             try:
                 index = int(target.split(":", 1)[1])

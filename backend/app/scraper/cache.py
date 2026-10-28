@@ -4,12 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import contextmanager
+from contextvars import ContextVar
+from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from sqlmodel import Session, select
 
 from ..models import ScrapeCache, utcnow
+
+_BYPASS_CACHE: ContextVar[bool] = ContextVar("scrape_bypass_cache", default=False)
+
+
+@contextmanager
+def bypass_cache(enabled: bool = True) -> Iterator[None]:
+    """仅当前异步刮削请求跳过缓存，避免影响同一 Provider 的并发任务。"""
+    token = _BYPASS_CACHE.set(enabled or _BYPASS_CACHE.get())
+    try:
+        yield
+    finally:
+        _BYPASS_CACHE.reset(token)
 
 
 def cache_key(*parts: Any) -> str:
@@ -18,6 +33,8 @@ def cache_key(*parts: Any) -> str:
 
 
 def cache_load(engine, provider: str, key: str) -> dict[str, Any] | None:
+    if _BYPASS_CACHE.get():
+        return None
     now = datetime.now(timezone.utc).isoformat(timespec="seconds")
     with Session(engine) as session:
         row = session.exec(

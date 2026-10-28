@@ -9,6 +9,8 @@ from typing import Any
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from sqlalchemy import or_
+from sqlalchemy.orm import aliased
 from sqlmodel import Session, select
 
 from .config_store import SettingsService
@@ -84,6 +86,39 @@ class TaskManager:
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
+    def _pending_item_ids(self, session: Session, library_id: int) -> list[int]:
+        season = aliased(Item)
+        episode = aliased(Item)
+        # 整剧已匹配后，新单集仍需刮削；历史缺图也允许通过普通刮削补齐。
+        incomplete_series = (
+            select(season.parent_id)
+            .join(episode, episode.parent_id == season.id)
+            .where(
+                season.kind == "season",
+                season.library_id == library_id,
+                season.deleted_at == None,  # noqa: E711
+                episode.kind == "episode",
+                episode.deleted_at == None,  # noqa: E711
+                or_(
+                    episode.match_state.in_(["pending", "failed", "skipped"]),
+                    episode.still_path == None,  # noqa: E711
+                ),
+            )
+        )
+        return list(
+            session.exec(
+                select(Item.id).where(
+                    Item.library_id == library_id,
+                    Item.kind.in_(["movie", "series"]),
+                    Item.deleted_at == None,  # noqa: E711
+                    or_(
+                        Item.match_state.in_(["pending", "failed", "skipped"]),
+                        Item.id.in_(incomplete_series),
+                    ),
+                ).order_by(Item.id)
+            ).all()
+        )
+
     # -- 扫描 -------------------------------------------------------------
     def start_scan(self, library_id: int) -> int:
         key = f"scan:{library_id}"
@@ -132,19 +167,7 @@ class TaskManager:
                         session.commit()
             if auto_scrape and has_provider:
                 with Session(self.engine) as session:
-                    item_ids = [
-                        i.id
-                        for i in session.exec(
-                            select(Item).where(
-                                Item.library_id == library_id,
-                                Item.kind.in_(["movie", "series"]),
-                                Item.match_state.in_(
-                                    ["pending", "failed", "skipped"]
-                                ),
-                                Item.deleted_at == None,  # noqa: E711
-                            )
-                        ).all()
-                    ]
+                    item_ids = self._pending_item_ids(session, library_id)
                 if item_ids:
                     scrape_stats = await self._scrape_ids(
                         task_id, item_ids, force=False, base_stats=stats
@@ -193,19 +216,17 @@ class TaskManager:
     async def _run_scrape(self, task_id: int, library_id: int, mode: str, key: str) -> None:
         try:
             with Session(self.engine) as session:
-                query = select(Item).where(
-                    Item.library_id == library_id,
-                    Item.kind.in_(["movie", "series"]),
-                    Item.deleted_at == None,  # noqa: E711
-                )
                 if mode == "pending":
-                    query = query.where(
-                        Item.match_state.in_(["pending", "failed", "skipped"])
+                    item_ids = self._pending_item_ids(session, library_id)
+                else:
+                    item_ids = list(
+                        session.exec(select(Item.id).where(
+                            Item.library_id == library_id,
+                            Item.kind.in_(["movie", "series"]),
+                            Item.deleted_at == None,  # noqa: E711
+                            Item.match_state != "manual",
+                        )).all()
                     )
-                elif mode == "refresh":
-                    query = query.where(Item.match_state != "manual")
-                items = session.exec(query).all()
-                item_ids = [i.id for i in items if i.id is not None]
             stats = await self._scrape_ids(task_id, item_ids, force=(mode == "refresh"))
             self._finish_task(task_id, "success", stats, "刮削完成")
         except Exception as exc:  # pragma: no cover

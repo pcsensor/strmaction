@@ -26,6 +26,8 @@ export interface ItemSummary {
   poster_large: string | null
   backdrop: string | null
   backdrop_large: string | null
+  still: string | null
+  still_large: string | null
   logo: string | null
   color: string | null
   certification: string | null
@@ -130,6 +132,7 @@ export interface ItemDetailResponse {
   next_episode_id: number | null
   prev_episode_id: number | null
   needs_attention: boolean
+  image_status: { pending: number; failed: number }
 }
 
 export interface HeroItem extends ItemSummary {

@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Film, Folder } from 'lucide-react'
 
 interface Props {
@@ -23,6 +23,7 @@ export function ImageWithFallback({
   eager = false,
 }: Props) {
   const [failed, setFailed] = useState(false)
+  useEffect(() => setFailed(false), [src])
   const showImage = Boolean(src) && !failed
   const accent = color || (kind === 'folder' ? '#d97706' : '#2b3242')
   return (

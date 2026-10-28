@@ -24,6 +24,7 @@ from .base import (
     ProviderError,
     SeasonDetail,
 )
+from .cache import bypass_cache
 from .matcher import classify, episode_penalty, rank_candidates
 from .merge import fill_missing
 from .nfo import find_nfo, parse_nfo
@@ -89,7 +90,8 @@ class ScrapeService:
         lock = _SINGLEFLIGHT.setdefault(item_id, asyncio.Lock())
         async with lock:
             try:
-                return await self._scrape(item_id, force=force, manual=manual)
+                with bypass_cache(force):
+                    return await self._scrape(item_id, force=force, manual=manual)
             except Exception as exc:  # pragma: no cover - 防御
                 self._set_failed(item_id, f"内部错误: {exc}")
                 return {"status": "failed", "item_id": item_id, "reason": str(exc)}
@@ -107,7 +109,14 @@ class ScrapeService:
             library = session.get(Library, target.library_id)
             if library is None or library.type in {"home", "course"}:
                 return {"status": "skipped", "item_id": target.id}
-            if target.match_state == "manual" and not force and not manual:
+            bound = bool(
+                target.provider
+                and target.provider != "nfo"
+                and target.provider_id
+                and target.match_state in {"auto", "manual"}
+            )
+            incremental = bound and target.kind == "series" and not force and not manual
+            if target.match_state == "manual" and not force and not manual and not incremental:
                 return {"status": "skipped", "item_id": target.id, "reason": "manual"}
             kind: Kind = "movie" if target.kind == "movie" else "tv"
             media = session.exec(
@@ -138,8 +147,11 @@ class ScrapeService:
             season_type = self.settings.tvdb_season_type(library)
             episodes, seasons = self._children(session, target)
 
+        if incremental:
+            return await self._refresh_bound_episodes(target, episodes, season_type)
+
         # ① 本地 .nfo 完全接管
-        if media is not None:
+        if media is not None and target.match_state != "manual":
             nfo_path = find_nfo(media.abs_path, kind, library.root_path)
             if nfo_path is not None:
                 data = parse_nfo(nfo_path)
@@ -156,7 +168,9 @@ class ScrapeService:
                     )
 
         providers: list[MetadataProvider] = []
-        for name in priority:
+        if bound:
+            explicit_ids[target.provider] = str(target.provider_id)
+        for name in ([target.provider] if bound else priority):
             provider = self.registry.get(name)
             if provider is None:
                 continue
@@ -245,7 +259,10 @@ class ScrapeService:
                 pass
             break
 
-        state = "manual" if manual else classify(score, self.settings.match_threshold())
+        state = (
+            "manual" if manual or target.match_state == "manual"
+            else classify(score, self.settings.match_threshold())
+        )
         return await self._persist(
             target.id,
             meta,
@@ -255,6 +272,74 @@ class ScrapeService:
             season_type=season_type,
             force=force,
         )
+
+    async def _fetch_episode_details(
+        self,
+        provider: MetadataProvider,
+        provider_id: str,
+        episodes: list[Item],
+        season_type: str,
+        *,
+        fallback_seasons: list[int] | None = None,
+    ) -> tuple[dict[int, SeasonDetail], list[EpisodeMeta] | None, list[str]]:
+        details: dict[int, SeasonDetail] = {}
+        absolute = None
+        warnings: list[str] = []
+        if not hasattr(provider, "fetch_season"):
+            return details, absolute, warnings
+        if season_type == "absolute" and hasattr(provider, "fetch_absolute"):
+            try:
+                needs_fresh = any(e.match_state != "auto" or not e.still_path for e in episodes)
+                with bypass_cache(needs_fresh):
+                    detail = await provider.fetch_absolute(provider_id)  # type: ignore[attr-defined]
+                absolute = detail.episodes
+            except ProviderError as exc:
+                warnings.append(f"absolute:{exc.kind}")
+        else:
+            numbers = sorted({e.season_no for e in episodes if e.season_no is not None})
+            for number in numbers or fallback_seasons or []:
+                needs_fresh = any(
+                    e.season_no == number and (e.match_state != "auto" or not e.still_path)
+                    for e in episodes
+                )
+                try:
+                    with bypass_cache(needs_fresh):
+                        details[number] = await provider.fetch_season(provider_id, number)
+                except ProviderError as exc:
+                    warnings.append(f"season {number}:{exc.kind}")
+        return details, absolute, warnings
+
+    async def _refresh_bound_episodes(
+        self, target: Item, episodes: list[Item], season_type: str
+    ) -> dict[str, Any]:
+        """沿用整剧绑定，仅补齐单集，保留整剧元数据和手工匹配状态。"""
+        provider = self.registry.get(target.provider)
+        if provider is None or not bool(getattr(provider, "enabled", False)):
+            return {"status": "skipped", "item_id": target.id, "reason": "provider_unavailable"}
+        if getattr(provider, "season_type", None) is not None:
+            provider.season_type = season_type  # type: ignore[attr-defined]
+        details, absolute, warnings = await self._fetch_episode_details(
+            provider, str(target.provider_id), episodes, season_type
+        )
+        jobs: list[tuple[int, str, str, str | None]] = []
+        with Session(self.engine) as session:
+            root = session.get(Item, target.id)
+            if root is None:
+                return {"status": "missing", "item_id": target.id}
+            current, _ = self._children(session, root)
+            self._apply_episodes(session, current, details, absolute, jobs)
+            session.commit()
+        for job in jobs:
+            self.images.enqueue(*job)
+        return {
+            "status": "failed" if warnings and not details and absolute is None else "ok",
+            "item_id": target.id,
+            "provider": target.provider,
+            "provider_id": target.provider_id,
+            "match_state": target.match_state,
+            "warnings": warnings,
+            "episodes_only": True,
+        }
 
     # -- 持久化 -----------------------------------------------------------
     async def _persist(
@@ -274,37 +359,18 @@ class ScrapeService:
         warnings: list[str] = []
         provider = self.registry.get(meta.provider)
 
-        if meta.kind == "tv" and provider is not None and hasattr(provider, "fetch_season"):
-            if season_type == "absolute" and hasattr(provider, "fetch_absolute"):
-                try:
-                    detail = await provider.fetch_absolute(meta.provider_id)  # type: ignore[attr-defined]
-                    absolute_episodes = detail.episodes
-                except ProviderError as exc:
-                    warnings.append(f"absolute:{exc.kind}")
-            else:
-                season_numbers = sorted(
-                    {ep.season_no for ep in episodes if ep.season_no is not None}
+        if meta.kind == "tv" and provider is not None:
+            with bypass_cache(force):
+                season_details, absolute_episodes, warnings = await self._fetch_episode_details(
+                    provider, meta.provider_id, episodes, season_type,
+                    fallback_seasons=[s.season_no for s in meta.seasons if s.season_no > 0][:10],
                 )
-                if not season_numbers:
-                    season_numbers = [
-                        s.season_no
-                        for s in meta.seasons
-                        if s.season_no and s.season_no > 0
-                    ][:10]
-                for number in season_numbers:
-                    if number == 0:
-                        continue
-                    try:
-                        season_details[number] = await provider.fetch_season(  # type: ignore[union-attr]
-                            meta.provider_id, number
-                        )
-                    except ProviderError as exc:
-                        warnings.append(f"season {number}:{exc.kind}")
 
         hash_payload: dict[str, Any] = meta.payload()
         hash_payload["episodes"] = self._episode_hash_payload(
             episodes, season_details, absolute_episodes
         )
+        hash_payload["local_episodes"] = [(e.id, e.season_no, e.episode_no) for e in episodes]
         payload_hash = __import__("hashlib").sha1(
             json.dumps(hash_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
         ).hexdigest()
@@ -318,14 +384,11 @@ class ScrapeService:
             episodes_db, _ = self._children(session, root)
             self._apply_item(session, root, meta, state)
             self._apply_seasons(session, root, meta, jobs)
+            # 哈希相同也要检查图片任务，允许恢复下载失败或丢失的剧照。
+            self._apply_episodes(
+                session, episodes_db, season_details, absolute_episodes, jobs
+            )
             if not unchanged:
-                self._apply_episodes(
-                    session,
-                    episodes_db,
-                    season_details,
-                    absolute_episodes,
-                    jobs,
-                )
                 root.meta_hash = payload_hash
                 root.updated_at = utcnow()
                 session.add(root)
@@ -465,11 +528,11 @@ class ScrapeService:
                 mapping[(season_no, episode.episode_no)] = episode
 
         if absolute_episodes:
-            ordered = sorted(
-                episodes, key=lambda e: (e.season_no or 0, e.episode_no or 0)
-            )
-            for episode, meta in zip(ordered, absolute_episodes):
-                self._apply_episode(session, episode, meta, enqueue_jobs)
+            mapping_absolute = {e.episode_no: e for e in absolute_episodes}
+            for episode in episodes:
+                meta = mapping_absolute.get(episode.episode_no)
+                if meta is not None:
+                    self._apply_episode(session, episode, meta, enqueue_jobs)
             return
 
         for episode in episodes:
@@ -496,7 +559,7 @@ class ScrapeService:
         if meta.air_date:
             episode.air_date = meta.air_date
         episode.match_state = "auto"
-        if meta.still_url:
+        if meta.still_url and "still_path" not in locked:
             enqueue_jobs.append((episode.id, "still", meta.still_url, "still_path"))
         episode.updated_at = utcnow()
         session.add(episode)
@@ -535,7 +598,8 @@ class ScrapeService:
                 }
             provider_id = resolved
         try:
-            meta = await provider.fetch(str(provider_id), kind=kind)
+            with bypass_cache():
+                meta = await provider.fetch(str(provider_id), kind=kind)
         except ProviderError as exc:
             return {"status": "failed", "reason": exc.kind, "message": exc.message}
         return await self._persist(
@@ -683,7 +747,10 @@ class ScrapeService:
     ) -> tuple[list[Item], list[Item]]:
         seasons = session.exec(
             select(Item)
-            .where(Item.parent_id == target.id, Item.kind == "season")
+            .where(
+                Item.parent_id == target.id, Item.kind == "season",
+                Item.deleted_at == None,  # noqa: E711
+            )
             .order_by(Item.season_no)
         ).all()
         season_ids = [s.id for s in seasons]
@@ -691,7 +758,10 @@ class ScrapeService:
         if season_ids:
             episodes = session.exec(
                 select(Item)
-                .where(Item.parent_id.in_(season_ids), Item.kind == "episode")
+                .where(
+                    Item.parent_id.in_(season_ids), Item.kind == "episode",
+                    Item.deleted_at == None,  # noqa: E711
+                )
                 .order_by(Item.season_no, Item.episode_no)
             ).all()
         return episodes, seasons

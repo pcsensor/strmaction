@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import {
   useMutation,
   useQuery,
@@ -103,6 +104,7 @@ export function useItem(id: number | null) {
     queryKey: keys.item(id ?? 0),
     queryFn: () => api.get<ItemDetailResponse>(`/api/items/${id}`),
     enabled: id !== null && Number.isFinite(id) && id > 0,
+    refetchInterval: (query) => query.state.data?.image_status?.pending ? 1500 : false,
   })
 }
 
@@ -185,15 +187,34 @@ export function useLibraryTask() {
   })
 }
 
-export function useTasks() {
+export function useTasks(enabled = true) {
   return useQuery({
     queryKey: keys.tasks,
     queryFn: () => api.get<{ tasks: TaskInfo[] }>('/api/tasks?limit=80'),
+    enabled,
     refetchInterval: (query) => {
       const data = query.state.data
       return data?.tasks?.some((task) => task.status === 'running') ? 1500 : false
     },
   })
+}
+
+export function useTaskUpdates() {
+  const auth = useAuthState()
+  const tasks = useTasks(auth.data?.user?.role === 'admin')
+  const queryClient = useQueryClient()
+  const completed = tasks.data?.tasks
+    .filter((task) => task.status !== 'running')
+    .map((task) => `${task.id}:${task.finished_at}`)
+    .join('|')
+  const previous = useRef('')
+  useEffect(() => {
+    if (completed === undefined || completed === previous.current) return
+    previous.current = completed
+    for (const queryKey of [['item'], ['items'], keys.home, keys.libraries, ['search']]) {
+      void queryClient.invalidateQueries({ queryKey })
+    }
+  }, [completed, queryClient])
 }
 
 export function useTask(id: number | null) {

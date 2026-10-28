@@ -82,6 +82,8 @@ def item_summary(
         "poster_large": poster_url(item.poster_path, 500),
         "backdrop": poster_url(item.backdrop_path, 780),
         "backdrop_large": poster_url(item.backdrop_path, 1280),
+        "still": poster_url(item.still_path, 300),
+        "still_large": poster_url(item.still_path, 780),
         "logo": poster_url(item.logo_path, 400),
         "color": item.color_primary,
         "certification": item.certification,

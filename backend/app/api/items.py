@@ -23,7 +23,7 @@ from ..deps import (
 from ..errors import APIError
 from ..images import ImageService
 from ..jobs import TaskManager
-from ..models import Item, Library, MediaFile, PlayProgress, utcnow
+from ..models import ImageTask, Item, Library, MediaFile, PlayProgress, utcnow
 from ..config_store import SettingsService
 from ..schemas import ItemPatch, MatchBody, MergeBody, ProgressBody, WatchedBody, CurrentUser
 from ..scraper.service import ScrapeService
@@ -613,6 +613,29 @@ def get_item(
             guard += 1
         ancestors.reverse()
 
+        image_item_ids = (
+            [e["id"] for season in seasons_payload for e in season["episodes"]]
+            if item.kind in {"series", "season"} else [item.id]
+        )
+        latest_images: dict[int, ImageTask] = {}
+        pending_image_ids: set[int] = set()
+        if image_item_ids:
+            for image in session.exec(
+                select(ImageTask).where(
+                    ImageTask.item_id.in_(image_item_ids), ImageTask.kind == "still"
+                ).order_by(ImageTask.id.desc())
+            ).all():
+                latest_images.setdefault(image.item_id, image)
+                if image.status in {"pending", "downloading"}:
+                    pending_image_ids.add(image.item_id)
+        image_status = {
+            "pending": len(pending_image_ids),
+            "failed": sum(
+                t.status in {"failed", "broken"} and t.item_id not in pending_image_ids
+                for t in latest_images.values()
+            ),
+        }
+
         return {
             "item": detail,
             "library": library_info,
@@ -628,6 +651,7 @@ def get_item(
             "next_episode_id": next_episode_id,
             "prev_episode_id": prev_episode_id,
             "needs_attention": needs_attention,
+            "image_status": image_status,
         }
 
 
