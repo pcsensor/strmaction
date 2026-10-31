@@ -16,6 +16,25 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 
 class MediaTransferSessionTest {
+    @Test fun redirectGuardRemovesCredentialsOnEveryCrossOriginRequest() {
+        Fixture().use { fixture ->
+            val session = MediaTransferSession(fixture.entry.url("/entry"))
+            val client = fixture.client(session).newBuilder().addNetworkInterceptor(session.redirectGuard()).build()
+            val request = fixture.request().newBuilder()
+                .header("Authorization", "Bearer secret")
+                .header("Cookie", "secret=value").build()
+            client.newCall(request).execute().use { it.body!!.bytes() }
+            client.newCall(request.newBuilder().header("Range", "bytes=4-7").build()).execute().use { it.body!!.bytes() }
+            val entry = fixture.entry.takeRequest()
+            assertEquals("Bearer secret", entry.getHeader("Authorization"))
+            repeat(2) {
+                val cdn = fixture.cdn.takeRequest()
+                assertNull(cdn.getHeader("Authorization"))
+                assertNull(cdn.getHeader("Cookie"))
+                assertEquals("https://pan.example/", cdn.getHeader("Referer"))
+            }
+        }
+    }
     private class Fixture : AutoCloseable {
         val entry = MockWebServer()
         val cdn = MockWebServer()

@@ -1,4 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
+import 'package:strmaction_desktop/app_controller.dart';
+import 'package:strmaction_desktop/core/app_logger.dart';
+import 'package:strmaction_desktop/core/app_paths.dart';
+import 'package:strmaction_desktop/core/cli_options.dart';
 import 'package:strmaction_desktop/core/config.dart';
 import 'package:strmaction_desktop/models/playback_payload.dart';
 import 'package:strmaction_desktop/player/widgets/buffered_seekbar.dart';
@@ -6,6 +12,27 @@ import 'package:strmaction_desktop/player/widgets/controls_overlay.dart';
 
 void main() {
   group('config', () {
+    test('concurrent settings changes are serialized against the latest values', () async {
+      final root = await Directory.systemTemp.createTemp('settings-race-');
+      final paths = AppPaths(root.path);
+      paths.ensureDirectories();
+      final logger = AppLogger(paths);
+      await logger.initialize();
+      final store = ConfigStore(paths);
+      final app = AppController(paths: paths, configStore: store, logger: logger,
+        options: CliOptions.parse([]), initialConfig: const AppConfig());
+      await Future.wait([
+        app.updateSettings((c) => c.copyWith(boostSpeed: 3)),
+        app.updateSettings((c) => c.copyWith(videoScale: 'crop')),
+        app.updateSettings((c) => c.copyWith(boostSpeed: 2)),
+      ]);
+      final saved = await store.load();
+      expect(saved.boostSpeed, 2);
+      expect(saved.videoScale, 'crop');
+      await app.shutdown();
+      app.dispose();
+      await root.delete(recursive: true);
+    });
     test('normalizes server url', () {
       expect(normalizeServerUrl(' https://media.example.com/ '),
           'https://media.example.com');

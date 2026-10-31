@@ -20,6 +20,7 @@ import '../features/connection/error_page.dart';
 import '../features/settings/settings_dialog.dart';
 import '../models/playback_payload.dart';
 import '../player/player_page.dart';
+import '../services/progress_outbox.dart';
 import 'bridge_script.dart';
 import 'web_safe_area.dart';
 
@@ -44,6 +45,7 @@ class _WebShellPageState extends State<WebShellPage> {
   bool _bootstrapped = false;
   bool _isTv = false;
   bool _requestingPlayback = false;
+  bool _warnedProgressRecovery = false;
   String? _playbackCoverText;
   EdgeInsets _safeInsets = EdgeInsets.zero;
   ApiClient? _apiClient;
@@ -179,14 +181,33 @@ class _WebShellPageState extends State<WebShellPage> {
 
   Future<void> _refreshAccount({String? cookie}) async {
     if (!app.config.isConfigured) return;
+    final currentCookie = cookie ?? await _cookie();
     try {
       final auth = await _api.request(
         '/api/auth/state',
-        cookie: cookie ?? await _cookie(),
+        cookie: currentCookie,
       );
       final user = auth['user'];
       app.accountKey = user is Map ? '${app.config.serverUrl}|${user['id']}' : null;
-    } on Object { app.accountKey = null; }
+    } on Object {
+      app.accountKey = null;
+      return;
+    }
+    if (app.accountKey != null) {
+      try {
+        final unresolved = await ProgressOutbox('${app.paths.baseDir}/progress-outbox.json').replay(
+          app.config.trustedCaPem, accountKey: app.accountKey, cookie: currentCookie);
+        if (unresolved > 0 && mounted && !_warnedProgressRecovery) {
+          _warnedProgressRecovery = true;
+          ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+            content: Text('部分历史播放进度无法自动同步，已保留在本机。'),
+            duration: Duration(seconds: 6),
+          ));
+        }
+      } on Object catch (error) {
+        app.logger.warning('进度队列恢复失败：$error');
+      }
+    }
   }
 
   Future<Map<String, dynamic>> _startPlayback(Map<String, dynamic> request) async {
@@ -204,16 +225,16 @@ class _WebShellPageState extends State<WebShellPage> {
         _showPlaybackCover('正在打开播放器…');
       }
       final cookie = await _cookie();
-      // accountKey 通常已由页面加载时的 /api/auth/state 写入。只有本地配置了
-      // 账号级播放覆盖、但还不知道当前账号时才需要额外刷新。
-      if (app.accountKey == null && app.config.playbackOverrides.isNotEmpty) {
-        await _refreshAccount(cookie: cookie);
-      }
+      // Resolve account and replay its pending progress before reading the resume point.
+      await _refreshAccount(cookie: cookie);
       final mode = request['mode'] ?? app.config.playbackOverrides[app.accountKey];
       final raw = await _api.request('/api/play/$id', cookie: cookie, body: {
         if (mode == 'builtin' || mode == 'copy') 'mode': mode,
         if (request['mediaFileId'] != null) 'media_file_id': request['mediaFileId'],
       });
+      if (raw['user_id'] is int) {
+        app.accountKey = '${app.config.serverUrl}|${raw['user_id']}';
+      }
       if (!app.config.inheritCacheDefaults) {
         raw['buffer_limit_mb'] = app.config.cacheLimitMb;
         raw['disk_cache_limit_mb'] = app.config.diskCacheLimitMb;

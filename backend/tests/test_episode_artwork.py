@@ -63,6 +63,29 @@ class Registry:
         pass
 
 
+async def test_root_image_source_is_preserved_for_recovery(media):
+    db, settings, images, provider, service, scanner, library_id, series_id, add = media
+    meta = await provider.fetch("100", kind="tv")
+    meta.poster_url = provider.image
+    await service._persist(series_id, meta, state="auto", score=1, filled=[], season_type="default", force=True)
+    await images.process_pending()
+    with Session(db.engine) as session:
+        task = session.exec(select(ImageTask).where(
+            ImageTask.item_id == series_id, ImageTask.kind == "poster"
+        )).one()
+        assert task.status == "done" and task.remote_url == provider.image
+        sha = task.sha
+    (images.image_dir / f"{sha}_342.webp").unlink()
+    images.start_worker()
+    with Session(db.engine) as session:
+        task = session.exec(select(ImageTask).where(
+            ImageTask.item_id == series_id, ImageTask.kind == "poster"
+        )).one()
+        assert task.status == "pending"
+    await images.process_pending()
+    assert images.variants_exist(sha, "poster")
+
+
 @pytest.fixture()
 def media(tmp_path, monkeypatch):
     monkeypatch.setenv("STRMACTION_DATA_DIR", str(tmp_path / "data"))

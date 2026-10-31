@@ -369,6 +369,7 @@ async def play(
         if not duration_ms and target.runtime_min:
             duration_ms = int(target.runtime_min) * 60_000
         progress_updated_at = progress.updated_at if progress else None
+        progress_revision = progress.revision if progress else 0
         media_id = media.id
         play_url = media.url
         library_name = library.name if library else None
@@ -428,6 +429,7 @@ async def play(
         "resume_ms": resume_ms,
         "duration_ms": duration_ms,
         "item_id": target_id,
+        "user_id": user.id,
         "kind": target_kind,
         "series_id": series_id,
         "library": library_name,
@@ -443,6 +445,7 @@ async def play(
         "subtitles": subtitle_payload,
         "media_file_id": media_id,
         "progress_updated_at": progress_updated_at,
+        "progress_revision": progress_revision,
         "next_item_id": next_episode_id,
         "next_title": next_title,
         "next_episode_code": next_code,

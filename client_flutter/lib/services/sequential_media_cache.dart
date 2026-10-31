@@ -4,6 +4,7 @@ import 'dart:math';
 
 import '../core/trust.dart';
 import 'download_policy.dart';
+import 'media_redirect.dart';
 
 /// A playback cache with exactly one sequential origin stream.
 ///
@@ -201,7 +202,7 @@ class SequentialMediaCache {
       request.followRedirects = false;
       _headers.forEach((key, value) {
         if (!['host', 'range', 'connection', 'accept-encoding']
-            .contains(key.toLowerCase())) {
+            .contains(key.toLowerCase()) && forwardMediaHeader(_origin, uri, key)) {
           request.headers.set(key, value);
         }
       });
@@ -235,10 +236,7 @@ class SequentialMediaCache {
       final location = response.headers.value(HttpHeaders.locationHeader);
       await response.listen((_) {}).cancel();
       if (location == null) throw const HttpException('片源重定向缺少地址');
-      uri = uri.resolve(location);
-      if (!['http', 'https'].contains(uri.scheme)) {
-        throw const HttpException('片源重定向协议无效');
-      }
+      uri = checkedMediaRedirect(uri, location);
     }
     throw const HttpException('片源重定向次数过多');
   }

@@ -122,6 +122,7 @@ class UnifiedPlayer(private val activity: MainActivity) {
             .connectTimeout(15, TimeUnit.SECONDS).readTimeout(30, TimeUnit.SECONDS)
             .followRedirects(true).followSslRedirects(true)
             .addInterceptor(session)
+            .addNetworkInterceptor(session.redirectGuard())
             .build()
         transport = client
         fun dataSource(speculative: Boolean): DataSource.Factory {

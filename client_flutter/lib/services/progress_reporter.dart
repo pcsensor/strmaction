@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import '../core/app_logger.dart';
 import '../core/version.dart';
@@ -21,8 +22,11 @@ class ProgressReporter {
   final bool verifySsl;
   final String trustedCaPem;
   final void Function()? onAuthError;
+  final void Function()? onConflict;
   final AppLogger? logger;
   final String? outboxPath;
+  final String? accountKey;
+  final int? baseRevision;
 
   HttpClient? _client;
   Timer? _timer;
@@ -46,8 +50,11 @@ class ProgressReporter {
     required this.verifySsl,
     this.trustedCaPem = '',
     this.onAuthError,
+    this.onConflict,
     this.logger,
     this.outboxPath,
+    this.accountKey,
+    this.baseRevision,
     String? sessionId,
   })  : _session = sessionId ?? _randomSession(),
         intervalMs = intervalMs.clamp(2000, 60000);
@@ -88,11 +95,11 @@ class ProgressReporter {
   void finish() {
     _finished = true;
     _dirty = true;
-    unawaited(_send(force: true));
+    unawaited(flushOnce(force: true));
   }
 
   void requestFlush() {
-    unawaited(_send(force: true));
+    unawaited(flushOnce(force: true));
   }
 
   Future<bool> flushOnce({bool force = false}) async {
@@ -124,10 +131,11 @@ class ProgressReporter {
       return true;
     }
     try {
-      if (outboxPath != null) await ProgressOutbox(outboxPath!).save(url, playToken, payload);
+      if (outboxPath != null) await ProgressOutbox(outboxPath!).save(url, playToken, payload, accountKey: accountKey);
       final request = await client.postUrl(Uri.parse(url)).timeout(
             const Duration(seconds: 5),
           );
+      request.followRedirects = false;
       request.headers.contentType = ContentType.json;
       request.headers.set(
         HttpHeaders.authorizationHeader,
@@ -148,11 +156,17 @@ class ProgressReporter {
         _authFailed = true;
         _timer?.cancel();
         logger?.warning('进度上报鉴权失败（${response.statusCode}），停止上报');
-        if (outboxPath != null) await ProgressOutbox(outboxPath!).acknowledge(url, payload['client_key'] as String);
         onAuthError?.call();
         return false;
       }
-      if (response.statusCode >= 400) {
+      if (response.statusCode == 409) {
+        _authFailed = true;
+        _timer?.cancel();
+        logger?.warning('播放进度已在其他会话中更新');
+        onConflict?.call();
+        return false;
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
         logger?.warning('进度上报失败：HTTP ${response.statusCode}');
         _dirty = true;
         return false;
@@ -187,6 +201,9 @@ class ProgressReporter {
       'duration_ms': duration,
       'finished': finished,
       'client_key': 'desktop-$_session-$_sequence',
+      if (baseRevision != null) 'client_session': _session,
+      if (baseRevision != null) 'client_sequence': _sequence,
+      if (baseRevision != null) 'base_revision': baseRevision,
     };
   }
 
@@ -208,7 +225,7 @@ class ProgressReporter {
   }
 
   static String _randomSession() {
-    final now = DateTime.now().microsecondsSinceEpoch;
-    return now.toRadixString(16).padLeft(12, '0').substring(0, 12);
+    final random = Random.secure();
+    return List.generate(16, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')).join();
   }
 }

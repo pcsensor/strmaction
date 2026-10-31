@@ -34,7 +34,7 @@ from ..jobs import SchedulerService, TaskManager
 from ..players import clean_headers
 from ..scanner.walker import ensure_library_root
 from ..schemas import LibraryCreate, LibraryPatch, CurrentUser
-from ..serializers import library_payload, ready_item_ids
+from ..serializers import library_payload, ready_item_query
 
 router = APIRouter(prefix="/libraries", tags=["libraries"])
 
@@ -43,19 +43,16 @@ VALID_PROVIDERS = {"tmdb", "tvdb"}
 
 
 def _counts(session: Session, library_id: int) -> dict[str, int]:
-    ready = ready_item_ids(session, library_id)
-    counts: dict[str, int] = {}
-    if ready:
-        rows = session.exec(
-            select(Item.kind, func.count(Item.id))
-            .where(
-                Item.library_id == library_id,
-                Item.deleted_at == None,  # noqa: E711
-                Item.id.in_(ready),
-            )
-            .group_by(Item.kind)
-        ).all()
-        counts = {str(kind): int(count) for kind, count in rows}
+    rows = session.exec(
+        select(Item.kind, func.count(Item.id))
+        .where(
+            Item.library_id == library_id,
+            Item.deleted_at == None,  # noqa: E711
+            Item.id.in_(ready_item_query(library_id)),
+        )
+        .group_by(Item.kind)
+    ).all()
+    counts = {str(kind): int(count) for kind, count in rows}
     files = session.exec(
         select(func.count(MediaFile.id)).where(
             MediaFile.library_id == library_id,

@@ -9,6 +9,7 @@ import json
 import os
 import secrets
 import time
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -45,6 +46,11 @@ class AuthService:
         self._secret = self._load_secret()
         self._failures: dict[str, list[float]] = {}
         self._lock: dict[str, float] = {}
+        # Bound memory while serializing the check/verify/update sequence per key.
+        self._login_locks = [threading.Lock() for _ in range(128)]
+
+    def login_lock(self, key: str):
+        return self._login_locks[hash(key) % len(self._login_locks)]
 
     # -- secret -----------------------------------------------------------
     def _load_secret(self) -> bytes:

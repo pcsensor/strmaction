@@ -135,6 +135,9 @@ class PlayProgress(SQLModel, table=True):
     dismissed: bool = False
     updated_at: str = Field(default_factory=utcnow)
     last_client_key: str | None = None
+    revision: int = 0
+    client_session: str | None = None
+    client_sequence: int = 0
 
 
 class PlaySession(SQLModel, table=True):

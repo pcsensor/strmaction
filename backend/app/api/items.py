@@ -7,8 +7,8 @@ import json
 from typing import Any
 
 from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
-from sqlalchemy import case, or_
-from sqlmodel import Session, select
+from sqlalchemy import case, or_, text
+from sqlmodel import Session, select, func
 
 from ..deps import (
     authorize_item_access,
@@ -37,6 +37,7 @@ from ..serializers import (
     playlist_key,
     progress_payload,
     ready_item_ids,
+    ready_item_query,
     series_of,
 )
 from ..text import natural_sort_key, normalize_title
@@ -339,12 +340,10 @@ def list_items(
             query = query.order_by(Item.updated_at.desc())
         else:
             query = query.order_by(Item.created_at.desc())
-        rows = session.exec(query).all()
-        ready = ready_item_ids(session, library_id)
-        rows = [row for row in rows if row.id in ready]
-        total = len(rows)
+        query = query.where(Item.id.in_(ready_item_query(library_id)))
+        total = session.exec(select(func.count()).select_from(query.order_by(None).subquery())).one()
         start = (page - 1) * page_size
-        page_rows = rows[start : start + page_size]
+        page_rows = session.exec(query.offset(start).limit(page_size)).all()
         progress = _progress_map(session, [r.id for r in page_rows if r.id], user.id)
         media = _media_map(session, [r.id for r in page_rows if r.id])
         items = []
@@ -868,7 +867,13 @@ def report_progress(
     if not current_user:
         raise APIError(401, "UNAUTHORIZED", "请先登录")
 
+    version_fields = (body.client_session, body.client_sequence, body.base_revision)
+    if any(value is not None for value in version_fields) and any(value is None for value in version_fields):
+        raise APIError(400, "INVALID_PROGRESS_VERSION", "进度版本参数不完整")
+
     with Session(engine) as session:
+        # Serialize the read/check/write transaction across worker threads/processes.
+        session.exec(text("BEGIN IMMEDIATE"))
         item = _get_item(session, item_id)
         if item.kind not in {"movie", "episode", "video"}:
             raise APIError(
@@ -886,6 +891,15 @@ def report_progress(
                 PlayProgress.item_id == item_id
             )
         ).first()
+        if body.client_session is not None:
+            revision = row.revision if row else 0
+            if row and row.client_session == body.client_session:
+                if body.client_sequence <= row.client_sequence:
+                    return {"position_ms": row.position_ms, "duration_ms": row.duration_ms,
+                            "finished": bool(row.finished), "updated_at": row.updated_at,
+                            "revision": revision, "duplicate": True}
+            elif body.base_revision != revision:
+                raise APIError(409, "PROGRESS_CONFLICT", "播放进度已在其他会话中更新", {"revision": revision})
         if (
             body.client_key
             and row is not None
@@ -941,12 +955,16 @@ def report_progress(
             row.last_client_key = body.client_key
             row.updated_at = utcnow()
         session.add(row)
+        row.revision = (row.revision or 0) + 1
+        row.client_session = body.client_session
+        row.client_sequence = body.client_sequence or 0
         session.commit()
         return {
             "position_ms": row.position_ms,
             "duration_ms": row.duration_ms,
             "finished": bool(row.finished),
             "updated_at": row.updated_at,
+            "revision": row.revision,
         }
 
 
@@ -959,6 +977,7 @@ def mark_watched(
 ):
     """v0.9: 标记已看/未看，按 user_id 隔离。"""
     with Session(engine) as session:
+        session.exec(text("BEGIN IMMEDIATE"))
         item = _get_item(session, item_id)
 
         # 检查用户是否有权访问该条目所属的库
@@ -993,6 +1012,9 @@ def mark_watched(
                 )
             row.position_ms = 0
             row.finished = bool(body.finished)
+            row.revision = (row.revision or 0) + 1
+            row.client_session = None
+            row.client_sequence = 0
             row.updated_at = utcnow()
             if row.duration_ms is None:
                 row.duration_ms = None
@@ -1049,6 +1071,7 @@ def dismiss_continue(
     否则移掉最新一集后，旧集会顶上来，卡片看起来只是换了个集号。
     """
     with Session(engine) as session:
+        session.exec(text("BEGIN IMMEDIATE"))
         item = _get_item(session, item_id)
 
         # 检查用户是否有权访问该条目所属的库
@@ -1078,6 +1101,9 @@ def dismiss_continue(
         for row in rows:
             if row.item_id in member_ids:
                 row.dismissed = True
+                row.revision = (row.revision or 0) + 1
+                row.client_session = None
+                row.client_sequence = 0
                 session.add(row)
         session.commit()
     return {"ok": True, "item_id": item_id}

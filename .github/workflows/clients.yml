@@ -57,7 +57,9 @@ jobs:
         working-directory: client_flutter
       - name: Test Flutter client
         if: ${{ !cancelled() && steps.flutter-deps.outcome == 'success' }}
-        run: flutter test
+        # Report the last test and fail promptly if a leaked server or process
+        # prevents the test runner from exiting.
+        run: timeout --signal=TERM --kill-after=15s 180s flutter test --reporter expanded
         working-directory: client_flutter
       - uses: actions/upload-artifact@v4
         if: always()

@@ -17,6 +17,24 @@ import java.util.concurrent.atomic.AtomicBoolean
 
 /** Per-playback signed URL lease, shared by the decoder and prefetch workers. */
 class MediaTransferSession(private val origin: HttpUrl) : Interceptor {
+    private fun sameOrigin(url: HttpUrl) = origin.scheme == url.scheme && origin.host == url.host && origin.port == url.port
+    private val safeRedirectHeaders = setOf("user-agent", "referer", "accept", "accept-language")
+
+    /** Runs for every network hop, including OkHttp redirects. */
+    fun redirectGuard(): Interceptor = Interceptor { chain ->
+        val request = chain.request()
+        if (origin.scheme == "https" && request.url.scheme != "https") throw IOException("片源重定向协议不安全")
+        val builder = request.newBuilder()
+        if (!sameOrigin(request.url)) {
+            for (name in request.headers.names()) {
+                val lower = name.lowercase()
+                if (lower !in safeRedirectHeaders && lower !in setOf("range", "if-range", "accept-encoding", "host", "connection")) {
+                    builder.removeHeader(name)
+                }
+            }
+        }
+        chain.proceed(builder.build())
+    }
     private class Purpose(val speculative: Boolean, val cancelled: (() -> Boolean)?)
     private val speculation = ConcurrentHashMap<Call, LongRange>()
     fun callFactory(client: okhttp3.OkHttpClient, speculative: Boolean): Call.Factory = object : Call.Factory {

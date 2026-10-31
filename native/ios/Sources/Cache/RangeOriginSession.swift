@@ -202,7 +202,7 @@ final class RangeOriginSession {
         let started = ProcessInfo.processInfo.systemUptime
         var received: Int64 = 0
         var delivered = false
-        var requestHeaders = headers.filter { $0.key.lowercased() != "if-range" }
+        var requestHeaders = safeMediaHeaders(headers, origin: sourceURL, target: url).filter { $0.key.lowercased() != "if-range" }
         if let validator, supportsRanges { requestHeaders["If-Range"] = validator }
         let offset = request.start + request.received
         client.fetch(url: url, headers: requestHeaders, start: offset, end: request.end,

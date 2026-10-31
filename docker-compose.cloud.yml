@@ -29,6 +29,8 @@ services:
     environment:
       TZ: Asia/Shanghai
       STRMACTION_DATA_DIR: /data
+      # Set to the actual proxy address as seen by the container, never '*'.
+      FORWARDED_ALLOW_IPS: ${FORWARDED_ALLOW_IPS:-127.0.0.1}
     ports:
       - "127.0.0.1:8080:8080"
     volumes:

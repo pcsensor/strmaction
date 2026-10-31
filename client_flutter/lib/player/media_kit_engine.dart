@@ -11,6 +11,7 @@ import '../core/app_logger.dart';
 import '../core/redaction.dart';
 import '../models/playback_payload.dart';
 import '../services/download_policy.dart';
+import '../services/media_redirect.dart';
 import '../services/sequential_media_cache.dart';
 import 'playback_engine.dart';
 
@@ -349,6 +350,7 @@ class MediaKitEngine extends PlaybackEngine {
           trustedCaPem: trustedCaPem, directory: '$cacheDirectory/$epoch', budgetBytes: diskLimitMb * 1024 * 1024,
           prefetchBytes: cacheLimitMb * 1024 * 1024, onDiagnostic: logger?.info);
       } on Object catch (error) {
+        if (error is UnsafeMediaRedirect) rethrow;
         // A cache that cannot resolve the origin must not abort playback:
         // media_kit can still open the origin directly with the same headers.
         logger?.warning('本地缓存初始化失败，回退直连：${error.runtimeType}: ${_redacted('$error')}');
@@ -368,6 +370,10 @@ class MediaKitEngine extends PlaybackEngine {
       }
     }
     if (_diskCache == null) {
+      final origin = Uri.parse(payload.playUrl);
+      if (payload.headers.keys.any((key) => !forwardMediaHeader(origin, origin.replace(host: 'invalid.invalid'), key))) {
+        throw const HttpException('无法为包含凭证的媒体启用安全传输');
+      }
       logger?.info('播放直连 origin=${redactUrl(payload.playUrl)} '
           '磁盘上限=${diskLimitMb}MB 预读=${cacheLimitMb}MB');
     }

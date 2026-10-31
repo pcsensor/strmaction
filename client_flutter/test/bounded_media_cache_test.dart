@@ -3,9 +3,16 @@ import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:strmaction_desktop/services/bounded_media_cache.dart';
+import 'package:strmaction_desktop/services/media_redirect.dart';
 
 void main() {
-  test('media headers survive cross-origin redirects and subsequent cached range reads', () async {
+  test('media redirects reject HTTPS downgrade and restrict sensitive headers', () {
+    final source = Uri.parse('https://media.example/file');
+    expect(() => checkedMediaRedirect(source, 'http://media.example/file'), throwsA(isA<UnsafeMediaRedirect>()));
+    expect(forwardMediaHeader(source, Uri.parse('https://cdn.example/file'), 'Authorization'), isFalse);
+    expect(forwardMediaHeader(source, source.resolve('/other'), 'Authorization'), isTrue);
+  });
+  test('cross-origin redirects retain compatibility headers but strip credentials', () async {
     final root = await Directory.systemTemp.createTemp('media-headers-');
     final entry = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
     final origin = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
@@ -18,21 +25,22 @@ void main() {
     };
     var entries = 0;
     var reads = 0;
-    void checkHeaders(HttpRequest request) {
+    void checkHeaders(HttpRequest request, {required bool original}) {
       for (final header in headers.entries) {
-        expect(request.headers.value(header.key), header.value);
+        final safe = ['user-agent', 'referer'].contains(header.key.toLowerCase());
+        expect(request.headers.value(header.key), original || safe ? header.value : isNull);
       }
       expect(request.headers.value(HttpHeaders.acceptEncodingHeader), 'identity');
     }
     entry.listen((request) async {
-      checkHeaders(request);
+      checkHeaders(request, original: true);
       entries++;
       request.response.statusCode = 302;
       request.response.headers.set(HttpHeaders.locationHeader, 'http://localhost:${origin.port}/media');
       await request.response.close();
     });
     origin.listen((request) async {
-      checkHeaders(request);
+      checkHeaders(request, original: false);
       reads++;
       final match = RegExp(r'^bytes=(\d+)-(\d+)$')
           .firstMatch(request.headers.value(HttpHeaders.rangeHeader)!)!;

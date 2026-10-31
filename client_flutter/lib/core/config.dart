@@ -265,9 +265,6 @@ class ConfigStore {
       const JsonEncoder.withIndent('  ').convert(normalized.toJson()),
       flush: true,
     );
-    if (await file.exists()) {
-      await file.delete();
-    }
     await tmp.rename(file.path);
   }
 }

@@ -213,4 +213,80 @@ void main() {
     await directory.delete(recursive: true);
   });
 
+  test('completion during an in-flight report sends the completion promptly', () async {
+    final firstArrived = Completer<void>();
+    final releaseFirst = Completer<void>();
+    final finishedArrived = Completer<void>();
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      final body = jsonDecode(await utf8.decoder.bind(request).join()) as Map<String, dynamic>;
+      if (!firstArrived.isCompleted) {
+        firstArrived.complete();
+        await releaseFirst.future;
+      } else if (body['finished'] == true && !finishedArrived.isCompleted) {
+        finishedArrived.complete();
+      }
+      await request.response.close();
+    });
+    final reporter = ProgressReporter(serverUrl: 'http://127.0.0.1:${server.port}', itemId: 7,
+      playToken: 'pt_12345678', intervalMs: 60000, verifySsl: true);
+    reporter.start();
+    reporter.update(20000, durationMs: 100000);
+    final first = reporter.flushOnce();
+    await firstArrived.future;
+    reporter.finish();
+    releaseFirst.complete();
+    await first;
+    await finishedArrived.future.timeout(const Duration(seconds: 3));
+    await reporter.stop();
+    await subscription.cancel();
+    await server.close(force: true);
+  });
+
+  test('outbox isolates accounts and uses a renewed session for recovery', () async {
+    final root = await Directory.systemTemp.createTemp('progress-accounts-');
+    final path = '${root.path}/queue.json';
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final received = <String?>[];
+    final subscription = server.listen((request) async {
+      received.add(request.headers.value(HttpHeaders.cookieHeader));
+      await request.drain<void>();
+      await request.response.close();
+    });
+    final base = 'http://127.0.0.1:${server.port}';
+    final url = '$base/api/items/1/progress';
+    final outbox = ProgressOutbox(path);
+    await outbox.save(url, 'expired-a', {'position_ms': 1, 'client_key': 'a', 'client_session': 'a'}, accountKey: '$base|1');
+    await outbox.save(url, 'expired-b', {'position_ms': 2, 'client_key': 'b', 'client_session': 'b'}, accountKey: '$base|2');
+    await outbox.replay('', accountKey: '$base|2', cookie: 'st_sess=b');
+    expect(received, ['st_sess=b']);
+    final remaining = jsonDecode(await File(path).readAsString()) as List;
+    expect(remaining, hasLength(1));
+    expect(remaining.single['account_key'], '$base|1');
+    await subscription.cancel();
+    await server.close(force: true);
+    await root.delete(recursive: true);
+  });
+
+  test('expired credentials do not discard pending progress', () async {
+    final root = await Directory.systemTemp.createTemp('progress-expired-');
+    final path = '${root.path}/queue.json';
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final subscription = server.listen((request) async {
+      await request.drain<void>();
+      request.response.statusCode = request.headers.value(HttpHeaders.cookieHeader) == 'st_sess=new' ? 200 : 401;
+      await request.response.close();
+    });
+    final base = 'http://127.0.0.1:${server.port}';
+    final outbox = ProgressOutbox(path);
+    await outbox.save('$base/api/items/1/progress', 'expired',
+      {'position_ms': 1, 'client_key': 'a', 'client_session': 'a'}, accountKey: '$base|1');
+    expect(await outbox.replay('', accountKey: '$base|1'), 1);
+    expect(jsonDecode(await File(path).readAsString()), hasLength(1));
+    expect(await outbox.replay('', accountKey: '$base|1', cookie: 'st_sess=new'), 0);
+    expect(jsonDecode(await File(path).readAsString()), isEmpty);
+    await subscription.cancel();
+    await server.close(force: true);
+    await root.delete(recursive: true);
+  });
 }

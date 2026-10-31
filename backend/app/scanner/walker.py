@@ -53,15 +53,15 @@ def iter_strm_files(
     results: list[WalkEntry] = []
 
     if not os.path.isdir(root):
-        return results
+        raise OSError(f"媒体库目录不可访问: {root_path}")
 
     def walk(directory: str, depth: int) -> None:
         if depth > max_depth:
             return
         try:
             entries = sorted(os.scandir(directory), key=lambda e: e.name.lower())
-        except (PermissionError, FileNotFoundError, NotADirectoryError):
-            return
+        except OSError as exc:
+            raise OSError(f"无法扫描目录 {directory}: {exc}") from exc
         for entry in entries:
             name = entry.name
             if _is_ignored(name, patterns):
@@ -91,8 +91,8 @@ def iter_strm_files(
                             size=int(stat.st_size),
                         )
                     )
-            except OSError:
-                continue
+            except OSError as exc:
+                raise OSError(f"无法检查路径 {entry.path}: {exc}") from exc
 
     walk(root, 0)
     results.sort(key=lambda e: e.rel_path.lower())

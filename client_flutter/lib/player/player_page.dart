@@ -125,7 +125,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       verifySsl: true,
       trustedCaPem: widget.app.config.trustedCaPem,
       outboxPath: '${widget.app.paths.baseDir}/progress-outbox.json',
+      accountKey: widget.app.accountKey,
+      baseRevision: widget.payload.progressRevision,
       onAuthError: _onProgressAuthError,
+      onConflict: _onProgressConflict,
       logger: widget.app.logger,
     );
     widget.app.activeProgress = _reporter;
@@ -607,7 +610,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _normalSpeed = speed;
     _engine.setSpeed(speed);
     _reporter.requestFlush();
-    unawaited(widget.app.saveSettings(widget.app.config.copyWith(customSpeed: speed)));
+    unawaited(widget.app.updateSettings((config) => config.copyWith(customSpeed: speed)));
   }
 
   void _onBoostSpeedSelected(double speed) {
@@ -615,7 +618,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
       _boostSpeed = speed;
       _keyboard.boostSpeed = speed;
     });
-    unawaited(widget.app.saveSettings(widget.app.config.copyWith(boostSpeed: speed)));
+    unawaited(widget.app.updateSettings((config) => config.copyWith(boostSpeed: speed)));
   }
 
   void _onSubtitleSelected(String? id) {
@@ -640,7 +643,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     }
     setState(() => _videoScale = mode);
     unawaited(_engine.setVideoScale(mode));
-    unawaited(widget.app.saveSettings(widget.app.config.copyWith(videoScale: mode.id)));
+    unawaited(widget.app.updateSettings((config) => config.copyWith(videoScale: mode.id)));
     _flashCenterText(mode.label);
   }
 
@@ -653,6 +656,14 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         duration: Duration(seconds: 4),
       ),
     );
+  }
+
+  void _onProgressConflict() {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(
+      content: Text('播放进度已在其他设备更新，本次进度已保留，请重新打开播放。'),
+      duration: Duration(seconds: 5),
+    ));
   }
 
   void _startVerticalGesture(DragStartDetails details) {

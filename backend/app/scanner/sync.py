@@ -953,9 +953,42 @@ def missing_cleanup(
     )
     deleted = 0
     rows = session.exec(select(Item).where(Item.deleted_at != None)).all()  # noqa: E711
-    for item in rows:
-        if item.deleted_at and item.deleted_at < cutoff:
+    candidates = {item.id: item for item in rows if item.id and item.deleted_at < cutoff}
+    verified_libraries: dict[int, bool] = {}
+    # Delete leaves only; a live or recent child must keep its parent intact.
+    while candidates:
+        children = session.exec(select(Item.id, Item.parent_id).where(
+            Item.parent_id.in_(list(candidates))
+        )).all()
+        parents = {parent_id for _, parent_id in children}
+        leaves = [item for item_id, item in candidates.items() if item_id not in parents]
+        if not leaves:
+            break
+        for item in leaves:
+            library = session.get(Library, item.library_id)
+            media = session.exec(select(MediaFile).where(MediaFile.item_id == item.id)).all()
+            # An offline mount or a restored file must not result in data loss.
+            if library and library.id not in verified_libraries:
+                try:
+                    config = settings.scanner()
+                    iter_strm_files(library.root_path, ignore=config.get("ignore"),
+                                    max_depth=int(config.get("max_depth") or 6),
+                                    follow_symlinks=bool(config.get("follow_symlinks")))
+                    verified_libraries[library.id] = True
+                except OSError:
+                    verified_libraries[library.id] = False
+            if not library or not verified_libraries.get(library.id, False) or any(
+                not entry.missing or os.path.exists(entry.abs_path) for entry in media
+            ):
+                candidates.pop(item.id, None)
+                continue
+            for entry in media:
+                session.delete(entry)
+            ScannerService._delete_item_dependents(session, item.id)
+            session.flush()
             session.delete(item)
+            session.flush()
+            candidates.pop(item.id, None)
             deleted += 1
     if deleted:
         session.commit()

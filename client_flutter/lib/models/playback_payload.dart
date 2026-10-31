@@ -70,6 +70,7 @@ class PlaybackPayload {
   final String nextTitle;
   final int currentIndex;
   final int? durationMs;
+  final int? progressRevision;
 
   const PlaybackPayload({
     this.mode = 'builtin',
@@ -89,6 +90,7 @@ class PlaybackPayload {
     required this.nextTitle,
     required this.currentIndex,
     required this.durationMs,
+    this.progressRevision,
   });
 
   /// 重试时从当前播放位置继续，而不是回到打开播放器时的续播点。
@@ -112,6 +114,7 @@ class PlaybackPayload {
       nextTitle: nextTitle,
       currentIndex: currentIndex,
       durationMs: durationMs,
+      progressRevision: progressRevision,
     );
   }
 
@@ -178,6 +181,7 @@ class PlaybackPayload {
       nextTitle: nextTitle,
       currentIndex: currentIndex,
       durationMs: duration,
+      progressRevision: raw['progress_revision'] is int ? raw['progress_revision'] as int : null,
     );
   }
 

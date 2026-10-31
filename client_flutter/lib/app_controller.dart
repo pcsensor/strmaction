@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
@@ -10,7 +11,6 @@ import 'core/cli_options.dart';
 import 'core/config.dart';
 import 'core/version.dart';
 import 'services/progress_reporter.dart';
-import 'services/progress_outbox.dart';
 
 class AppController {
   String? accountKey;
@@ -24,6 +24,7 @@ class AppController {
   ProgressReporter? activeProgress;
   Future<void> Function()? _playbackShutdown;
   bool _shutDown = false;
+  Future<void>? _configTail;
 
   AppController({
     required this.paths,
@@ -60,8 +61,6 @@ class AppController {
       logger.warning('配置读取失败，使用默认配置：$error');
       config = const AppConfig();
     }
-    try { await ProgressOutbox('${paths.baseDir}/progress-outbox.json').replay(config.trustedCaPem); }
-    on Object catch (error) { logger.warning('进度队列恢复失败：$error'); }
     return AppController(
       paths: paths,
       configStore: store,
@@ -71,22 +70,37 @@ class AppController {
     );
   }
 
-  Future<bool> saveSettings(AppConfig next) async {
-    final previousServer = config.serverUrl;
-    final normalized = next.normalized();
-    await configStore.save(normalized);
-    configNotifier.value = normalized;
-    logger.info('客户端设置已保存，服务器=${normalized.serverUrl}');
-    return normalized.serverUrl != previousServer;
+  Future<bool> saveSettings(AppConfig next) {
+    final before = config.toJson();
+    final desired = next.normalized().toJson();
+    final changed = {...before.keys, ...desired.keys}.where(
+      (key) => jsonEncode(before[key]) != jsonEncode(desired[key]),
+    ).toList();
+    return updateSettings((current) {
+      final merged = current.toJson();
+      for (final key in changed) {
+        if (desired.containsKey(key)) { merged[key] = desired[key]; }
+        else { merged.remove(key); }
+      }
+      return AppConfig.fromJson(merged);
+    });
+  }
+
+  Future<bool> updateSettings(AppConfig Function(AppConfig) update) {
+    final result = (_configTail ?? Future<void>.value()).then((_) async {
+      final previousServer = config.serverUrl;
+      final normalized = update(config).normalized();
+      await configStore.save(normalized);
+      configNotifier.value = normalized;
+      logger.info('客户端设置已保存，服务器=${normalized.serverUrl}');
+      return normalized.serverUrl != previousServer;
+    });
+    _configTail = result.then<void>((_) {}, onError: (Object _, StackTrace stack) {});
+    return result;
   }
 
   Future<void> persistWindowSize(int width, int height) async {
-    final next = config.copyWith(windowWidth: width, windowHeight: height);
-    if (next.windowWidth == config.windowWidth &&
-        next.windowHeight == config.windowHeight) {
-      return;
-    }
-    await saveSettings(next);
+    await updateSettings((current) => current.copyWith(windowWidth: width, windowHeight: height));
   }
 
   void setLastError(String message) {
@@ -100,6 +114,8 @@ class AppController {
   Future<void> shutdown() async {
     if (_shutDown) return;
     _shutDown = true;
+    final writes = _configTail;
+    if (writes != null) await writes;
     try {
       if (_playbackShutdown != null) { await _playbackShutdown!(); }
       else { await activeProgress?.stop(flush: true); }
