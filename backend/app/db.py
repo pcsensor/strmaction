@@ -48,6 +48,7 @@ INDEXES = [
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_media_abs ON media_file(abs_path)",
     "CREATE INDEX IF NOT EXISTS idx_media_item ON media_file(item_id)",
     "CREATE INDEX IF NOT EXISTS idx_media_library ON media_file(library_id)",
+    "CREATE INDEX IF NOT EXISTS idx_media_playable ON media_file(invalid, missing, item_id)",
     "CREATE INDEX IF NOT EXISTS idx_task_started ON task_log(started_at)",
     "CREATE UNIQUE INDEX IF NOT EXISTS uq_scrape_cache ON scrape_cache(provider, query_hash)",
     "CREATE INDEX IF NOT EXISTS idx_image_status ON image_task(status)",
@@ -71,6 +72,9 @@ COLUMN_MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "play_progress": [
         ("dismissed", "BOOLEAN DEFAULT 0"),
         ("user_id", "INTEGER"),  # v0.9 多用户
+        ("revision", "INTEGER NOT NULL DEFAULT 0"),
+        ("client_session", "TEXT"),
+        ("client_sequence", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "play_token": [("user_id", "INTEGER")],  # v0.9 多用户
     "session": [

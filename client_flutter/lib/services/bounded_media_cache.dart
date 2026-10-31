@@ -4,6 +4,7 @@ import 'dart:math';
 
 import '../core/trust.dart';
 import 'download_policy.dart';
+import 'media_redirect.dart';
 
 /// A per-playback Range cache. Transport segments are 4–8 MiB; disk blocks stay
 /// small. Reservations include in-flight segments, so parallel reads cannot
@@ -103,7 +104,7 @@ class BoundedMediaCache {
       job?.request = request;
       request.followRedirects = false;
       _headers.forEach((key, value) {
-        if (!['host', 'range', 'connection', 'accept-encoding'].contains(key.toLowerCase())) {
+        if (!['host', 'range', 'connection', 'accept-encoding'].contains(key.toLowerCase()) && forwardMediaHeader(_origin, uri, key)) {
           request.headers.set(key, value);
         }
       });
@@ -131,8 +132,7 @@ class BoundedMediaCache {
       final location = response.headers.value(HttpHeaders.locationHeader);
       await response.listen((_) {}).cancel();
       if (location == null) throw const HttpException('片源重定向缺少地址');
-      uri = uri.resolve(location);
-      if (!['http', 'https'].contains(uri.scheme)) throw const HttpException('片源重定向协议无效');
+      uri = checkedMediaRedirect(uri, location);
     }
     throw const HttpException('片源重定向次数过多');
   }

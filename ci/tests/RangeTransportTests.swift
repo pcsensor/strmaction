@@ -31,6 +31,12 @@ func require(_ value: @autoclosure () -> Bool, _ message: String) throws {
     }
     static func main() async throws {
         let base = URL(string: ProcessInfo.processInfo.environment["RANGE_FIXTURE_URL"]!)!
+        let secretHeaders = ["Authorization": "secret", "Cookie": "session", "Referer": "https://pan.example/"]
+        let other = URL(string: "https://cdn.example/video")!
+        let filtered = safeMediaHeaders(secretHeaders, origin: base, target: other)
+        try require(filtered["Authorization"] == nil && filtered["Cookie"] == nil, "cross-origin credentials leaked")
+        try require(filtered["Referer"] == secretHeaders["Referer"], "cross-origin referer missing")
+        try require(safeMediaHeaders(secretHeaders, origin: base, target: base) == secretHeaders, "same-origin credentials stripped")
         let queue = DispatchQueue(label: "range-tests")
         let session = RangeOriginSession(url: base.appendingPathComponent("entry"), headers: headers, queue: queue)
         let first = try await fetch(session, queue, 0, 4 * 1_048_576)

@@ -114,14 +114,19 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
         # 继续观看：按 user_id 过滤；同一个播放列表只保留最后一次播放的那一条。
         continue_rows: list[dict[str, Any]] = []
         # 分组后可能只剩少数几个播放列表，所以原始行要多取一些再截断。
-        progress_rows = session.exec(
-            select(PlayProgress)
+        progress_query = (
+            select(PlayProgress).join(Item, Item.id == PlayProgress.item_id)
             .where(
                 PlayProgress.user_id == user.id,
                 PlayProgress.finished == False,  # noqa: E712
                 PlayProgress.position_ms > 0,
                 PlayProgress.dismissed == False,  # noqa: E712
             )
+        )
+        if accessible_ids is not None:
+            progress_query = progress_query.where(Item.library_id.in_(accessible_ids))
+        progress_rows = session.exec(
+            progress_query
             # updated_at 只精确到秒，同秒时用自增 id 兜底，保证「最后播放」稳定。
             .order_by(PlayProgress.updated_at.desc(), PlayProgress.id.desc())
             .limit(200)

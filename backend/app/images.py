@@ -241,6 +241,17 @@ class ImageService:
                 )
                 .order_by(ImageTask.id.desc())
             ).first()
+            latest = session.exec(
+                select(ImageTask.id).where(
+                    ImageTask.item_id == item_id,
+                    ImageTask.kind == kind,
+                    ImageTask.target_field == target_field,
+                ).order_by(ImageTask.id.desc()).limit(1)
+            ).first()
+            # A source may return after a newer source replaced it. Create a
+            # new task so the old task cannot outrank the current selection.
+            if existing is not None and latest != existing.id:
+                existing = None
             if existing is not None:
                 if existing.status in {"pending", "downloading"}:
                     return
@@ -296,7 +307,10 @@ class ImageService:
 
         async def work(row: dict) -> None:
             async with semaphore:
-                sha = await self.ensure(row["url"], row["kind"])
+                try:
+                    sha = await self.ensure(row["url"], row["kind"])
+                except Exception:
+                    sha = None
                 with Session(self.engine) as session:
                     task = session.get(ImageTask, row["id"])
                     if task is None:
@@ -314,12 +328,31 @@ class ImageService:
                     session.add(task)
                     session.commit()
 
-        await asyncio.gather(*(work(row) for row in task_rows), return_exceptions=True)
+        results = await asyncio.gather(*(work(row) for row in task_rows), return_exceptions=True)
+        failed = [row["id"] for row, result in zip(task_rows, results) if isinstance(result, Exception)]
+        if failed:
+            with Session(self.engine) as session:
+                for task in session.exec(select(ImageTask).where(ImageTask.id.in_(failed))).all():
+                    if task.status == "downloading":
+                        task.retry += 1
+                        task.status = "broken" if task.retry >= 3 else "pending"
+                        task.error = "图片任务处理失败"
+                        task.updated_at = utcnow()
+                        session.add(task)
+                session.commit()
         return len(task_rows)
 
     def _apply_task(self, session: Session, task: ImageTask, sha: str) -> None:
         item = session.get(Item, task.item_id)
         if item is None:
+            return
+        newer = session.exec(select(ImageTask.id).where(
+            ImageTask.item_id == task.item_id,
+            ImageTask.kind == task.kind,
+            ImageTask.target_field == task.target_field,
+            ImageTask.id > task.id,
+        ).limit(1)).first()
+        if newer is not None:
             return
         target = task.target_field or {
             "poster": "poster_path",
@@ -368,6 +401,19 @@ class ImageService:
 
     def start_worker(self) -> None:
         if self._worker is None:
+            # A single worker owns this queue in the supported deployment. A
+            # process restart otherwise leaves interrupted downloads stuck.
+            with Session(self.engine) as session:
+                for task in session.exec(select(ImageTask).where(
+                    ImageTask.status.in_(["downloading", "done"])
+                )).all():
+                    if task.status == "downloading" or (
+                        task.sha and not self.variants_exist(task.sha, task.kind)
+                    ):
+                        task.status = "pending"
+                        task.updated_at = utcnow()
+                        session.add(task)
+                session.commit()
             self._worker = asyncio.create_task(self.worker_loop())
 
     # -- 过期清理 ---------------------------------------------------------
@@ -375,10 +421,28 @@ class ImageService:
         cutoff = (
             datetime.now(timezone.utc).timestamp() - days * 86400
         )
+        # Referenced variants include uploads, which cannot be reconstructed
+        # from a remote source and must not expire merely because they are old.
+        referenced: set[str] = set()
+        with Session(self.engine) as session:
+            for item in session.exec(select(Item)).all():
+                referenced.update(value for value in (
+                    item.poster_path, item.backdrop_path, item.logo_path, item.still_path
+                ) if value)
+                try:
+                    cast = json.loads(item.cast or "[]")
+                    if isinstance(cast, list):
+                        referenced.update(member["avatar"] for member in cast
+                                          if isinstance(member, dict) and isinstance(member.get("avatar"), str))
+                except (ValueError, TypeError):
+                    # Corrupt metadata should not cause unrelated image loss.
+                    return 0
+            referenced.update(sha for sha in session.exec(select(ImageTask.sha)).all() if sha)
         removed = 0
         for file in self.image_dir.glob("*.webp"):
             try:
-                if file.stat().st_mtime < cutoff:
+                sha = file.stem.rsplit("_", 1)[0]
+                if sha not in referenced and file.stat().st_mtime < cutoff:
                     file.unlink()
                     removed += 1
             except OSError:

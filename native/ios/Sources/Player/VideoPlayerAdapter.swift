@@ -100,7 +100,7 @@ public final class VideoPlayerController: ObservableObject {
     /// 建立证书固定关系、组装选项、创建图层。整个过程是确定的单行道。
     public func load(_ request: PlaybackRequest, presentationID: String? = nil) async {
         guard !Task.isCancelled else { return }
-        D.log("engine", "load \(request.url.absoluteString.prefix(110)) resumeMs=\(request.resumeMs) buffer=\(request.bufferLimitMb)MB")
+        D.log("engine", "load host=\(request.url.host ?? "-") resumeMs=\(request.resumeMs) buffer=\(request.bufferLimitMb)MB")
 
         destroy()
         let generation = loadGeneration
@@ -307,11 +307,11 @@ public final class VideoPlayerController: ObservableObject {
     public func installKSPlayerCallbacks() {
         let generation = loadGeneration
         ksCoordinator.onStateChanged = { [weak self] layer, state in
-            let layerURL = layer.url.absoluteString
+            let layerHost = layer.url.host ?? "-"
             DispatchQueue.main.async {
                 guard let self, self.loadGeneration == generation else { return }
                 let isCurrent = self.ksCoordinator.playerLayer === layer
-                D.log("state", "\(state) 是当前图层=\(isCurrent) url=\(layerURL.prefix(50))")
+                D.log("state", "\(state) 是当前图层=\(isCurrent) host=\(layerHost)")
                 guard isCurrent else { return }
 
                 if state == .readyToPlay && layer.state != .error {

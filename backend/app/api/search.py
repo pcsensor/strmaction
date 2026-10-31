@@ -7,37 +7,20 @@ from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query
-from sqlalchemy import or_
+from sqlalchemy import case, exists, func, or_
 from sqlmodel import Session, select
 
 from ..deps import get_engine, get_current_user, get_accessible_library_ids
 from ..models import Item
 from ..schemas import CurrentUser
-from ..serializers import item_summary, ready_item_ids
+from ..serializers import item_summary, ready_item_query
 
 router = APIRouter(tags=["search"])
 
 
 def _genre_filter_clause(genre_term: str):
-    escaped = json.dumps(genre_term, ensure_ascii=True).strip('"')
-    if escaped != genre_term:
-        return or_(
-            Item.genres.like(f'%"{genre_term}"%'),
-            Item.genres.like(f'%"{escaped}"%'),
-        )
-    return Item.genres.like(f'%"{genre_term}"%')
-
-
-def _item_has_genre(item: Item, genre_term: str) -> bool:
-    if not item.genres:
-        return False
-    try:
-        val = json.loads(item.genres)
-        if isinstance(val, list):
-            return genre_term in val
-    except Exception:
-        pass
-    return f'"{genre_term}"' in item.genres
+    values = func.json_each(case((func.json_valid(Item.genres), Item.genres), else_="[]")).table_valued("value")
+    return exists(select(1).select_from(values).where(values.c.value == genre_term))
 
 
 @router.get("/search")
@@ -67,21 +50,15 @@ def search(
                 return {"q": term, "items": [], "total": 0, "genres": []}
             base_query = base_query.where(Item.library_id.in_(accessible_ids))
 
-        ready = ready_item_ids(session)
+        base_query = base_query.where(Item.id.in_(ready_item_query()))
 
         if not term:
             query = base_query.where(Item.kind.in_(["movie", "series"]))
             if genre_term:
                 query = query.where(_genre_filter_clause(genre_term))
-            rows = session.exec(
-                query.order_by(Item.rating.desc(), Item.created_at.desc())
-            ).all()
-            rows = [r for r in rows if r.id in ready]
-            if genre_term:
-                rows = [r for r in rows if _item_has_genre(r, genre_term)]
-            total = len(rows)
-            results = rows[:limit]
-            genres = _genre_counts(session, ready, accessible_ids)
+            total = session.exec(select(func.count()).select_from(query.subquery())).one()
+            results = session.exec(query.order_by(Item.rating.desc(), Item.created_at.desc()).limit(limit)).all()
+            genres = _genre_counts(session, accessible_ids)
             return {
                 "q": "",
                 "items": [item_summary(r) for r in results],
@@ -102,35 +79,27 @@ def search(
         if genre_term:
             query = query.where(_genre_filter_clause(genre_term))
 
-        rows = session.exec(
-            query.order_by(Item.rating.desc(), Item.created_at.desc())
-        ).all()
-        rows = [r for r in rows if r.id in ready]
-        if genre_term:
-            rows = [r for r in rows if _item_has_genre(r, genre_term)]
-        total = len(rows)
-        results = rows[:limit]
         lowered = term.lower()
-        results.sort(
-            key=lambda r: (
-                0 if (r.title or "").lower() == lowered else 1,
-                0 if (r.title or "").lower().startswith(lowered) else 1,
-                -(r.rating or 0),
-            )
-        )
+        total = session.exec(select(func.count()).select_from(query.subquery())).one()
+        results = session.exec(query.order_by(
+            case((func.lower(Item.title) == lowered, 0), else_=1),
+            case((func.lower(Item.title).startswith(lowered, autoescape=True), 0), else_=1),
+            Item.rating.desc(), Item.created_at.desc(),
+        ).limit(limit)).all()
         return {
             "q": term,
             "items": [item_summary(r) for r in results],
             "total": total,
-            "genres": _genre_counts(session, ready, accessible_ids),
+            "genres": _genre_counts(session, accessible_ids),
         }
 
 
-def _genre_counts(session: Session, ready: set[int], accessible_ids: list[int] | None) -> list[dict[str, Any]]:
+def _genre_counts(session: Session, accessible_ids: list[int] | None) -> list[dict[str, Any]]:
     """v0.9: 统计类型，按用户可访问库过滤。"""
     query = select(Item.genres).where(
         Item.deleted_at == None,  # noqa: E711
         Item.kind.in_(["movie", "series"]),
+        Item.id.in_(ready_item_query()),
     )
 
     if accessible_ids is not None:

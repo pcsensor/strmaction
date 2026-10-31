@@ -4,6 +4,14 @@ import Security
 
 enum PaceDecision { case now, after(TimeInterval), suspend }
 
+func safeMediaHeaders(_ headers: [String: String], origin: URL, target: URL) -> [String: String] {
+    func port(_ url: URL) -> Int { url.port ?? (url.scheme?.lowercased() == "https" ? 443 : 80) }
+    let same = origin.scheme?.lowercased() == target.scheme?.lowercased()
+        && origin.host?.lowercased() == target.host?.lowercased() && port(origin) == port(target)
+    let safe = Set(["user-agent", "referer", "accept", "accept-language"])
+    return same ? headers : headers.filter { safe.contains($0.key.lowercased()) }
+}
+
 /// HTTP/1.1 byte transport. A session-owned pool reuses fully consumed bounded
 /// responses; decoder/backpressure sockets are never returned to the pool early.
 final class OriginConnectionPool {
@@ -183,7 +191,10 @@ final class OriginClient {
                           let next = URL(string: location, relativeTo: url)?.absoluteURL else {
                         onEnd(OriginError.tooManyRedirects); return
                     }
-                    self.start(url: next, headers: headers, start: start, end: end, redirectsLeft: redirectsLeft - 1,
+                    guard !(url.scheme?.lowercased() == "https" && next.scheme?.lowercased() != "https") else {
+                        onEnd(OriginError.invalidURL); return
+                    }
+                    self.start(url: next, headers: safeMediaHeaders(headers, origin: url, target: next), start: start, end: end, redirectsLeft: redirectsLeft - 1,
                                pace: pace, validate: validate, onMeta: onMeta, onData: onData, onEnd: onEnd)
                     return
                 }

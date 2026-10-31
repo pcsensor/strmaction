@@ -160,31 +160,29 @@ def task_payload(row: TaskLog) -> dict[str, Any]:
 
 def ready_item_ids(session: Session, library_id: int | None = None) -> set[int]:
     """可展示条目：至少有一个有效且未缺失 media_file 的条目及其祖先，排除软删除。"""
-    media_query = select(MediaFile.item_id).where(
-        MediaFile.invalid == False,  # noqa: E712
-        MediaFile.missing == False,  # noqa: E712
+    return set(session.exec(ready_item_query(library_id)).all())
+
+
+def ready_item_query(library_id: int | None = None):
+    """Database-side playable descendants and their non-deleted ancestors."""
+    from sqlalchemy.orm import aliased
+
+    base = select(Item.id, Item.parent_id).join(MediaFile, MediaFile.item_id == Item.id).where(
+        MediaFile.invalid == False, MediaFile.missing == False, Item.deleted_at == None,  # noqa: E711,E712
     )
+    deleted = select(Item.id).where(Item.deleted_at != None)  # noqa: E711
     if library_id is not None:
-        media_query = media_query.where(MediaFile.library_id == library_id)
-    media_ids = {row for row in session.exec(media_query).all() if row}
-    item_query = select(Item.id, Item.parent_id, Item.deleted_at)
-    if library_id is not None:
-        item_query = item_query.where(Item.library_id == library_id)
-    rows = session.exec(item_query).all()
-    parent_of = {row[0]: row[1] for row in rows}
-    deleted = {row[0] for row in rows if row[2]}
-    ready = {item_id for item_id in media_ids if item_id not in deleted}
-    for item_id in list(ready):
-        current = parent_of.get(item_id)
-        guard = 0
-        while current and guard < 32:
-            if current in deleted:
-                ready.discard(item_id)
-                break
-            ready.add(current)
-            current = parent_of.get(current)
-            guard += 1
-    return ready
+        base = base.where(Item.library_id == library_id, MediaFile.library_id == library_id)
+        deleted = deleted.where(Item.library_id == library_id)
+    blocked = deleted.cte("blocked_items", recursive=True)
+    child = aliased(Item)
+    blocked = blocked.union(select(child.id).join(blocked, child.parent_id == blocked.c.id))
+    ready = base.cte("ready_items", recursive=True)
+    parent = aliased(Item)
+    ready = ready.union(select(parent.id, parent.parent_id).join(
+        ready, parent.id == ready.c.parent_id
+    ).where(parent.deleted_at == None))  # noqa: E711
+    return select(ready.c.id).where(~ready.c.id.in_(select(blocked.c.id))).distinct()
 
 
 def series_of(session: Session, item: Item) -> Item | None:

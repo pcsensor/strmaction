@@ -69,6 +69,9 @@ class ProgressBody(BaseModel):
     duration_ms: int | None = None
     finished: bool = False
     client_key: str | None = None
+    client_session: str | None = Field(default=None, min_length=1, max_length=128)
+    client_sequence: int | None = Field(default=None, ge=1)
+    base_revision: int | None = Field(default=None, ge=0)
 
 
 class WatchedBody(BaseModel):

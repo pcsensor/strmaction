@@ -115,15 +115,14 @@ def login(
         raise APIError(428, "SETUP_REQUIRED", "尚未设置管理员密码")
 
     key = _client_key(request, body.username)
-    if auth.is_locked(key):
-        raise APIError(429, "TOO_MANY_ATTEMPTS", "登录失败次数过多，请 5 分钟后再试")
-
-    user = auth.verify_user(body.username, body.password)
-    if not user:
-        auth._record_failure(key)
-        raise APIError(401, "INVALID_CREDENTIALS", "用户名或密码错误")
-
-    auth.reset_failures(key)
+    with auth.login_lock(key):
+        if auth.is_locked(key):
+            raise APIError(429, "TOO_MANY_ATTEMPTS", "登录失败次数过多，请 5 分钟后再试")
+        user = auth.verify_user(body.username, body.password)
+        if not user:
+            auth._record_failure(key)
+            raise APIError(401, "INVALID_CREDENTIALS", "用户名或密码错误")
+        auth.reset_failures(key)
     token, expires = auth.create_session(user)
     _set_session_cookie(response, request, token, expires)
 

@@ -414,6 +414,15 @@ class ScrapeService:
                     root.color_primary = color
                 if logo_sha and "logo_path" not in locked:
                     root.logo_path = logo_sha
+                # Retain each origin so a missing cached variant can be rebuilt
+                # after a restart instead of leaving a permanent broken image.
+                for kind, source, field in (
+                    ("poster", meta.poster_url, "poster_path"),
+                    ("backdrop", meta.backdrop_url, "backdrop_path"),
+                    ("logo", meta.logo_url, "logo_path"),
+                ):
+                    if source and field not in locked:
+                        jobs.append((root.id, kind, source, field))
                 cast = _loads(root.cast)
                 if isinstance(cast, list):
                     for index, member in enumerate(cast):

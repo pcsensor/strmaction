@@ -399,7 +399,16 @@ class SchedulerService:
                     self.tasks.start_scrape(library.id, mode="refresh")
 
     async def _cleanup(self) -> None:
-        with Session(self.engine) as session:
-            missing_cleanup(session, self.settings, 7)
-        purge_expired(self.engine)
-        self.images.purge_older_than(90)
+        def cleanup_missing() -> None:
+            with Session(self.engine) as session:
+                missing_cleanup(session, self.settings, 7)
+
+        for name, operation in (
+            ("missing", cleanup_missing),
+            ("scrape cache", lambda: purge_expired(self.engine)),
+            ("images", lambda: self.images.purge_older_than(90)),
+        ):
+            try:
+                operation()
+            except Exception as exc:
+                print(f"[cleanup] {name}: {exc}")
