@@ -28,6 +28,7 @@ class MediaKitEngine extends PlaybackEngine {
   final Stopwatch _pollClock = Stopwatch()..start();
   Duration _lastRateSample = Duration.zero;
   Duration _lastTransportLog = Duration.zero;
+  Duration _lastNetworkNotify = Duration.zero;
 
   double _position = 0;
   double _duration = 0;
@@ -81,9 +82,40 @@ class MediaKitEngine extends PlaybackEngine {
       '播放器渲染模式：${hardwareAcceleration ? '硬件加速（ANGLE/DXGI）' : '软件渲染'}',
     );
     _bindStreams();
+    unawaited(_cleanupOldCacheDirectories());
   }
 
   final bool hardwareAcceleration;
+
+  Future<void> _cleanupOldCacheDirectories() async {
+    final current = cacheDirectory;
+    if (current == null) return;
+    try {
+      final parent = Directory(current).parent;
+      if (!await parent.exists()) return;
+      await for (final entity in parent.list()) {
+        if (entity is! Directory || entity.path == current) continue;
+        final name = entity.path.split(Platform.pathSeparator).last;
+        if (!name.startsWith('playback-')) continue;
+        try {
+          final stat = await entity.stat();
+          if (DateTime.now().difference(stat.modified) <
+              const Duration(hours: 1)) {
+            continue;
+          }
+        } on FileSystemException {
+          continue;
+        }
+        try {
+          await entity.delete(recursive: true);
+        } on FileSystemException {
+          // Another live player may still hold files.
+        }
+      }
+    } on FileSystemException {
+      // Cache cleanup is best effort.
+    }
+  }
 
   @override
   VideoController? get videoController => _videoController;
@@ -474,15 +506,23 @@ class MediaKitEngine extends PlaybackEngine {
       final disk = _diskCache;
       _updateDownloadPriority();
       if (disk != null && _duration > 0) disk.setConsumed((disk.length * _position / _duration).round());
-      _networkSpeed = _diskCache?.networkSpeed ?? _fallbackRate.bytesPerSecond;
+      final previousSpeed = _networkSpeed;
+      final nextSpeed = _diskCache?.networkSpeed ?? _fallbackRate.bytesPerSecond;
+      _networkSpeed = nextSpeed;
       final now = _pollClock.elapsed;
-      if (disk != null && disk.activeDownloads > 0 && (_networkSpeed ?? 0) == 0 &&
+      final speedChanged = previousSpeed == null ||
+          (nextSpeed - previousSpeed).abs() >= 1024;
+      if (disk != null && disk.activeDownloads > 0 && nextSpeed == 0 &&
           now - _lastTransportLog >= const Duration(seconds: 5)) {
         _lastTransportLog = now;
         logger?.warning('桌面媒体无上游数据 position=$_position paused=$_paused '
             'buffering=$_buffering ${disk.diagnosticState}');
       }
-      _notify();
+      // 网络速度只是辅助信息，最多每秒刷新一次，避免播放页每 500ms 全量重建。
+      if (speedChanged || now - _lastNetworkNotify >= const Duration(seconds: 1)) {
+        _lastNetworkNotify = now;
+        _notify();
+      }
     });
   }
 
@@ -736,7 +776,8 @@ class MediaKitEngine extends PlaybackEngine {
     if (lowered.contains('video') && lowered.contains('init')) {
       return '视频输出初始化失败，请更新显卡驱动';
     }
-    return text.isEmpty ? '播放失败，请查看日志或稍后重试' : text;
+    final safe = _redacted(text);
+    return safe.isEmpty ? '播放失败，请查看日志或稍后重试' : safe;
   }
 
   @override

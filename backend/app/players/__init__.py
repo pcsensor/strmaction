@@ -61,9 +61,5 @@ def select_adapter(
     settings: SettingsService,
     engine,
 ) -> PlayerAdapter:
-    """按 mode 选服务端适配器。
-
-    内部播放由客户端执行；复制链接时服务端仅返回剪贴板动作。
-    """
-    # Playback itself is always performed by the App. No server-side launcher.
+    """按 mode 选服务端适配器；客户端播放，服务端只负责剪贴板动作。"""
     return ClipboardAdapter()

@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
-from collections import Counter
 from typing import Any
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import and_, case, func, or_, true
 from sqlmodel import Session, select
 
 from ..deps import get_engine, get_current_user, get_accessible_library_ids
@@ -17,12 +16,14 @@ from ..serializers import (
     item_summary,
     library_payload,
     parse_json,
-    playlist_key,
-    ready_item_ids,
+    playlist_key_map,
+    ready_item_query,
     series_of,
 )
 
 router = APIRouter(tags=["home"])
+
+ITEM_KINDS = ["movie", "series", "video", "folder"]
 
 
 def _dedupe_items_for_admin(items: list[Item]) -> list[Item]:
@@ -63,59 +64,227 @@ def _hero(item: Item) -> dict[str, Any]:
     return data
 
 
+def _base_query(
+    accessible_ids: list[int] | None, kinds: list[str], library_id: int | None = None
+):
+    query = select(Item).where(
+        Item.deleted_at == None,  # noqa: E711
+        Item.kind.in_(kinds),
+        Item.id.in_(ready_item_query(library_id)),
+    )
+    if accessible_ids is not None:
+        query = query.where(Item.library_id.in_(accessible_ids))
+    if library_id is not None:
+        query = query.where(Item.library_id == library_id)
+    return query
+
+
+def _take(
+    session: Session,
+    query,
+    *,
+    order_by,
+    limit: int,
+    dedupe: bool,
+) -> list[Item]:
+    # 管理员去重后再截断，因此先多取一些候选；普通用户可直接限量。
+    rows = session.exec(
+        query.order_by(*order_by).limit(limit * 3 if dedupe else limit)
+    ).all()
+    if dedupe:
+        rows = _dedupe_items_for_admin(rows)
+    return rows[:limit]
+
+
 @router.get("/home")
 def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engine)):
     """v0.9: 首页聚合，管理员看所有库（去重+标注多库），普通用户只看授权库。"""
     with Session(engine) as session:
-        # 获取用户可访问的库
         accessible_ids = get_accessible_library_ids(user, engine)
+        if accessible_ids is not None and not accessible_ids:
+            return {
+                "hero": [],
+                "continue": [],
+                "rows": [],
+                "stats": {"movies": 0, "series": 0, "episodes": 0, "videos": 0},
+                "needs_attention": 0,
+                "libraries": [],
+            }
 
-        # 构造查询条件
-        ready = ready_item_ids(session)
-        query = select(Item).where(
-            Item.deleted_at == None,  # noqa: E711
-            Item.kind.in_(["movie", "series", "video", "folder"]),
+        dedupe = user.role == "admin"
+
+        # 每个区块只查需要返回的行，不再把整个媒体库加载到 Python。
+        hero_candidates = _take(
+            session,
+            _base_query(accessible_ids, ["movie", "series"]).where(
+                Item.backdrop_path != None  # noqa: E711
+            ),
+            order_by=(Item.rating.desc(), Item.updated_at.desc()),
+            limit=6,
+            dedupe=dedupe,
+        )
+        hero = [_hero(i) for i in hero_candidates]
+
+        recent = _take(
+            session,
+            _base_query(accessible_ids, ["movie", "series"]),
+            order_by=(Item.created_at.desc(),),
+            limit=20,
+            dedupe=dedupe,
+        )
+        top_rated = _take(
+            session,
+            _base_query(accessible_ids, ["movie", "series"]).where(
+                Item.rating != None  # noqa: E711
+            ),
+            order_by=(Item.rating.desc(), Item.created_at.desc()),
+            limit=20,
+            dedupe=dedupe,
         )
 
-        # 按用户权限过滤
-        if accessible_ids is not None:  # 普通用户
-            if not accessible_ids:
-                # 用户没有授权任何库
-                return {
-                    "hero": [],
-                    "continue": [],
-                    "rows": [],
-                    "stats": {"movies": 0, "series": 0, "episodes": 0, "videos": 0},
-                    "needs_attention": 0,
-                    "libraries": [],
+        rows: list[dict[str, Any]] = []
+        if recent:
+            rows.append(
+                {
+                    "key": "recent",
+                    "title": "最近添加",
+                    "items": [item_summary(i) for i in recent],
                 }
-            query = query.where(Item.library_id.in_(accessible_ids))
+            )
+        if top_rated:
+            rows.append(
+                {
+                    "key": "top",
+                    "title": "评分最高",
+                    "items": [item_summary(i) for i in top_rated],
+                }
+            )
 
-        all_items = session.exec(query).all()
-        playable = [i for i in all_items if i.id in ready]
-
-        # 管理员去重逻辑（用于推荐流，不影响单库展示）
-        deduped_playable = (
-            _dedupe_items_for_admin(playable)
-            if user.role == "admin" and accessible_ids is None
-            else playable
+        # 按类型：先在数据库侧统计前 4 个类型，再分别限量取条目。
+        genre_values = func.json_each(
+            case((func.json_valid(Item.genres), Item.genres), else_="[]")
+        ).table_valued("value")
+        genre_query = (
+            select(genre_values.c.value, func.count().label("count"))
+            .select_from(Item)
+            .join(genre_values, true())
+            .where(
+                Item.deleted_at == None,  # noqa: E711
+                Item.kind.in_(["movie", "series"]),
+                Item.id.in_(ready_item_query()),
+            )
         )
+        if accessible_ids is not None:
+            genre_query = genre_query.where(Item.library_id.in_(accessible_ids))
+        genre_rows = session.exec(
+            genre_query.group_by(genre_values.c.value)
+            .order_by(func.count().desc())
+            .limit(4)
+        ).all()
+        for genre, _count in genre_rows:
+            if not genre:
+                continue
+            items = _take(
+                session,
+                _base_query(accessible_ids, ["movie", "series"]).where(
+                    Item.genres.like(f'%"{genre}"%')
+                ),
+                order_by=(Item.rating.desc(), Item.created_at.desc()),
+                limit=20,
+                dedupe=dedupe,
+            )
+            if items:
+                rows.append(
+                    {
+                        "key": f"genre:{genre}",
+                        "title": str(genre),
+                        "items": [item_summary(i) for i in items],
+                    }
+                )
 
-        hero_candidates = [
-            i
-            for i in deduped_playable
-            if i.kind in {"movie", "series"} and i.backdrop_path
-        ]
-        hero_candidates.sort(
-            key=lambda i: (-(i.rating or 0), i.updated_at or ""), reverse=False
+        # 按媒体库
+        libraries_query = select(Library).order_by(Library.id)
+        if accessible_ids is not None:
+            libraries_query = libraries_query.where(Library.id.in_(accessible_ids))
+        libraries = session.exec(libraries_query).all()
+
+        for library in libraries:
+            if library.type in {"home", "course"}:
+                lib_items = _take(
+                    session,
+                    _base_query(accessible_ids, ["folder", "video"], library.id).where(
+                        Item.parent_id == None  # noqa: E711
+                    ),
+                    order_by=(Item.episode_no.asc(), Item.title.asc()),
+                    limit=20,
+                    dedupe=False,
+                )
+            else:
+                lib_items = _take(
+                    session,
+                    _base_query(accessible_ids, ["movie", "series", "video"], library.id),
+                    order_by=(Item.created_at.desc(),),
+                    limit=20,
+                    dedupe=False,
+                )
+            if not lib_items:
+                continue
+            rows.append(
+                {
+                    "key": f"library:{library.id}",
+                    "title": library.name,
+                    "items": [item_summary(i) for i in lib_items],
+                }
+            )
+
+        needs_attention = 0
+        if user.role == "admin":
+            attention_query = select(func.count(Item.id)).where(
+                Item.deleted_at == None,  # noqa: E711
+                Item.kind.in_(["movie", "series"]),
+                or_(
+                    Item.match_state == "failed",
+                    and_(Item.match_state == "pending", Item.provider != None),  # noqa: E711
+                ),
+            )
+            if accessible_ids is not None:
+                attention_query = attention_query.where(
+                    Item.library_id.in_(accessible_ids)
+                )
+            needs_attention = int(session.exec(attention_query).one() or 0)
+
+        # 统计：数据库聚合，不再加载全部条目。
+        stats_query = (
+            select(Item.kind, func.count(Item.id))
+            .where(
+                Item.deleted_at == None,  # noqa: E711
+                Item.kind.in_(ITEM_KINDS),
+                Item.id.in_(ready_item_query()),
+            )
+            .group_by(Item.kind)
         )
-        hero = [_hero(i) for i in hero_candidates[:6]]
+        if accessible_ids is not None:
+            stats_query = stats_query.where(Item.library_id.in_(accessible_ids))
+        kind_counts = {str(kind): int(count) for kind, count in session.exec(stats_query).all()}
 
-        # 继续观看：按 user_id 过滤；同一个播放列表只保留最后一次播放的那一条。
-        continue_rows: list[dict[str, Any]] = []
-        # 分组后可能只剩少数几个播放列表，所以原始行要多取一些再截断。
+        episode_query = select(func.count(Item.id)).where(
+            Item.deleted_at == None,  # noqa: E711
+            Item.kind == "episode",
+            Item.id.in_(ready_item_query()),
+        )
+        if accessible_ids is not None:
+            episode_query = episode_query.where(Item.library_id.in_(accessible_ids))
+        stats = {
+            "movies": kind_counts.get("movie", 0),
+            "series": kind_counts.get("series", 0),
+            "episodes": int(session.exec(episode_query).one() or 0),
+            "videos": kind_counts.get("video", 0),
+        }
+
+        # 继续观看：只查最近 200 条进度，并批量计算播放列表根。
         progress_query = (
-            select(PlayProgress).join(Item, Item.id == PlayProgress.item_id)
+            select(PlayProgress)
+            .join(Item, Item.id == PlayProgress.item_id)
             .where(
                 PlayProgress.user_id == user.id,
                 PlayProgress.finished == False,  # noqa: E712
@@ -126,24 +295,39 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
         if accessible_ids is not None:
             progress_query = progress_query.where(Item.library_id.in_(accessible_ids))
         progress_rows = session.exec(
-            progress_query
-            # updated_at 只精确到秒，同秒时用自增 id 兜底，保证「最后播放」稳定。
-            .order_by(PlayProgress.updated_at.desc(), PlayProgress.id.desc())
-            .limit(200)
+            progress_query.order_by(
+                PlayProgress.updated_at.desc(), PlayProgress.id.desc()
+            ).limit(200)
         ).all()
-        progress_map = {row.item_id: row for row in progress_rows}
-        progress_items = session.exec(
-            select(Item).where(Item.id.in_(list(progress_map)))
-        ).all() if progress_map else []
+        progress_items = (
+            session.exec(
+                select(Item).where(Item.id.in_([row.item_id for row in progress_rows]))
+            ).all()
+            if progress_rows
+            else []
+        )
         item_map = {i.id: i for i in progress_items}
-        # 已按时间倒序，同组只收第一条 = 该播放列表最后一次播放的条目。
+        ready_progress_ids = (
+            set(
+                session.exec(
+                    select(Item.id).where(
+                        Item.id.in_(list(item_map)),
+                        Item.id.in_(ready_item_query()),
+                    )
+                ).all()
+            )
+            if item_map
+            else set()
+        )
+        playlist_keys = playlist_key_map(session, progress_items)
+
+        continue_rows: list[dict[str, Any]] = []
         grouped: dict[int, tuple[PlayProgress, Item]] = {}
         for row in progress_rows:
             item = item_map.get(row.item_id)
-            if item is None or item.id not in ready:
+            if item is None or item.id not in ready_progress_ids:
                 continue
-            grouped.setdefault(playlist_key(session, item), (row, item))
-        # 插入顺序即「组内最新一条」的时间倒序，也就是组间的展示顺序。
+            grouped.setdefault(playlist_keys.get(item.id, item.id), (row, item))
         for row, item in grouped.values():
             series = series_of(session, item)
             display = series if series and series.kind == "series" else item
@@ -167,14 +351,15 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
                 )
             else:
                 subtitle = f"剩余 {remaining} 分钟" if remaining else "继续观看"
+            display_summary = item_summary(display)
             continue_rows.append(
                 {
-                    **item_summary(display),
+                    **display_summary,
                     "continue_item_id": item.id,
                     "title": display.title,
                     "subtitle": subtitle,
-                    "poster": item_summary(display)["poster"],
-                    "backdrop": item_summary(display)["backdrop"],
+                    "poster": display_summary["poster"],
+                    "backdrop": display_summary["backdrop"],
                     "progress": {
                         "position_ms": row.position_ms,
                         "duration_ms": row.duration_ms,
@@ -186,118 +371,6 @@ def home(user: CurrentUser = Depends(get_current_user), engine=Depends(get_engin
             )
             if len(continue_rows) >= 12:
                 break
-
-        recent = sorted(
-            [i for i in deduped_playable if i.kind in {"movie", "series"}],
-            key=lambda i: i.created_at or "",
-            reverse=True,
-        )[:20]
-        top_rated = sorted(
-            [i for i in deduped_playable if i.rating],
-            key=lambda i: (-(i.rating or 0), i.created_at or ""),
-        )[:20]
-
-        rows: list[dict[str, Any]] = []
-        if recent:
-            rows.append(
-                {
-                    "key": "recent",
-                    "title": "最近添加",
-                    "items": [item_summary(i) for i in recent],
-                }
-            )
-        if top_rated:
-            rows.append(
-                {
-                    "key": "top",
-                    "title": "评分最高",
-                    "items": [item_summary(i) for i in top_rated],
-                }
-            )
-
-        # 按类型
-        genre_counter: Counter[str] = Counter()
-        for item in deduped_playable:
-            if item.kind not in {"movie", "series"}:
-                continue
-            for genre in parse_json(item.genres, []) or []:
-                genre_counter[str(genre)] += 1
-        for genre, _count in genre_counter.most_common(4):
-            items = [
-                i
-                for i in deduped_playable
-                if i.kind in {"movie", "series"}
-                and genre in (parse_json(i.genres, []) or [])
-            ]
-            items.sort(key=lambda i: (-(i.rating or 0), i.created_at or ""))
-            rows.append(
-                {
-                    "key": f"genre:{genre}",
-                    "title": genre,
-                    "items": [item_summary(i) for i in items[:20]],
-                }
-            )
-
-        # 按媒体库
-        libraries_query = select(Library).order_by(Library.id)
-        if accessible_ids is not None:
-            libraries_query = libraries_query.where(Library.id.in_(accessible_ids))
-        libraries = session.exec(libraries_query).all()
-
-        for library in libraries:
-            if library.type in {"home", "course"}:
-                lib_items = [
-                    i
-                    for i in playable
-                    if i.library_id == library.id
-                    and i.parent_id is None
-                    and i.kind in {"folder", "video"}
-                ]
-                lib_items.sort(key=lambda i: (i.episode_no or 0, i.title))
-            else:
-                lib_items = [
-                    i
-                    for i in playable
-                    if i.library_id == library.id
-                    and i.kind in {"movie", "series", "video"}
-                ]
-                lib_items.sort(key=lambda i: i.created_at or "", reverse=True)
-            if not lib_items:
-                continue
-            rows.append(
-                {
-                    "key": f"library:{library.id}",
-                    "title": library.name,
-                    "items": [item_summary(i) for i in lib_items[:20]],
-                }
-            )
-
-        needs_attention = (
-            sum(
-                1
-                for i in all_items
-                if i.kind in {"movie", "series"}
-                and (
-                    i.match_state == "failed"
-                    or (i.match_state == "pending" and i.provider)
-                )
-            )
-            if user.role == "admin"
-            else 0
-        )
-        episodes_query = select(Item).where(
-            Item.kind == "episode",
-            Item.deleted_at == None,  # noqa: E711
-        )
-        if accessible_ids is not None:
-            episodes_query = episodes_query.where(Item.library_id.in_(accessible_ids))
-        episodes_all = session.exec(episodes_query).all()
-        stats = {
-            "movies": sum(1 for i in playable if i.kind == "movie"),
-            "series": sum(1 for i in playable if i.kind == "series"),
-            "episodes": sum(1 for i in episodes_all if i.id in ready),
-            "videos": sum(1 for i in playable if i.kind == "video"),
-        }
 
         return {
             "hero": hero,

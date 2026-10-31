@@ -203,7 +203,7 @@ def test_pick_artwork_language():
 
 def test_image_variants_and_color(env, tmp_path):
     config, db, settings, images = env
-    source = tmp_path / "src.jpg"
+    source = settings.image_dir / "src.jpg"
     image = Image.new("RGB", (1200, 675), (18, 52, 186))
     image.save(source, "JPEG")
 
@@ -219,7 +219,7 @@ def test_image_variants_and_color(env, tmp_path):
 
 def test_image_logo_preserves_alpha(env, tmp_path):
     config, db, settings, images = env
-    source = tmp_path / "logo.png"
+    source = settings.image_dir / "logo.png"
     # Create an image with transparent background and some content
     image = Image.new("RGBA", (800, 200), (0, 0, 0, 0))
     image.putpixel((100, 50), (255, 255, 255, 255))
@@ -302,7 +302,7 @@ class FakeProvider:
             )
         ]
 
-    async def fetch(self, provider_id, *, kind):
+    async def fetch(self, provider_id, *, kind, season_type=None):
         if kind == "movie":
             return CanonicalMeta(
                 provider=self.name,
@@ -335,7 +335,7 @@ class FakeProvider:
             seasons=[SeasonSummary(season_no=1, name="第 1 季", episode_count=2)],
         )
 
-    async def fetch_season(self, provider_id, season_no):
+    async def fetch_season(self, provider_id, season_no, season_type=None):
         return SeasonDetail(
             season_no=season_no,
             episodes=[

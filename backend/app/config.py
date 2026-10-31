@@ -81,6 +81,14 @@ DEFAULT_CONFIG: dict[str, Any] = {
 }
 
 SECRET_KEYS = {"api_key", "pin", "password_hash", "token", "secret"}
+SENSITIVE_HEADER_KEYS = {
+    "authorization",
+    "cookie",
+    "set-cookie",
+    "proxy-authorization",
+    "x-api-key",
+    "x-auth-token",
+}
 
 # v1.3 移除了服务端 mpv（desktop_mpv）与外部 mpv（external_mpv）能力。
 # 旧配置里残留的字段与模式在这里被丢弃，避免继续出现在设置接口里。
@@ -128,6 +136,27 @@ def is_masked(value: Any) -> bool:
     return isinstance(value, str) and value.startswith("****")
 
 
+def mask_headers(headers: Any) -> Any:
+    """打码请求头 map 中的凭证值；普通兼容头保持原样。"""
+    if not isinstance(headers, dict):
+        return headers
+    return {
+        key: ("****" if str(key).lower() in SENSITIVE_HEADER_KEYS and value else value)
+        for key, value in headers.items()
+    }
+
+
+def mask_play_headers_json(raw: Any) -> Any:
+    """库级别 play_headers 以 JSON 字符串存储，导出前解析并打码。"""
+    if not isinstance(raw, str) or not raw:
+        return raw
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return raw
+    return json.dumps(mask_headers(parsed), ensure_ascii=False)
+
+
 def mask_config(config: Any) -> Any:
     """递归打码敏感字段（用于 GET /settings）。"""
     if isinstance(config, dict):
@@ -135,6 +164,8 @@ def mask_config(config: Any) -> Any:
         for key, value in config.items():
             if key in SECRET_KEYS and isinstance(value, str):
                 out[key] = mask_secret(value)
+            elif str(key).lower() == "play_headers" and isinstance(value, dict):
+                out[key] = mask_headers(value)
             else:
                 out[key] = mask_config(value)
         return out
@@ -149,6 +180,16 @@ def strip_masked_keys(config: Any) -> Any:
         out: dict[str, Any] = {}
         for key, value in config.items():
             if key in SECRET_KEYS and is_masked(value):
+                continue
+            if str(key).lower() == "play_headers" and isinstance(value, dict):
+                out[key] = {
+                    header: header_value
+                    for header, header_value in value.items()
+                    if not (
+                        str(header).lower() in SENSITIVE_HEADER_KEYS
+                        and is_masked(header_value)
+                    )
+                }
                 continue
             out[key] = strip_masked_keys(value)
         return out

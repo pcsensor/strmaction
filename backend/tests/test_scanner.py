@@ -148,7 +148,7 @@ def test_missing_mark_and_move(env, tmp_path):
 
     # 删除文件 → 第一次扫描：missing=True, missing_count=1，且立即从 ready_item_ids 中排除
     new_path.unlink()
-    scanner.scan_library(lib_id)
+    scanner.scan_library(lib_id, allow_empty=True)
     with Session(db.engine) as session:
         media = session.exec(select(MediaFile)).one()
         assert media.missing is True
@@ -159,7 +159,7 @@ def test_missing_mark_and_move(env, tmp_path):
         assert item_id not in ready
 
     # 第二次扫描：missing_count 递增至 2
-    scanner.scan_library(lib_id)
+    scanner.scan_library(lib_id, allow_empty=True)
     with Session(db.engine) as session:
         media = session.exec(select(MediaFile)).one()
         assert media.missing is True
@@ -168,7 +168,7 @@ def test_missing_mark_and_move(env, tmp_path):
         assert item.deleted_at is None
 
     # 第三次扫描：missing_count 递增至 3，触发软删除
-    scanner.scan_library(lib_id)
+    scanner.scan_library(lib_id, allow_empty=True)
     with Session(db.engine) as session:
         media = session.exec(select(MediaFile)).one()
         assert media.missing is True

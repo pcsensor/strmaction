@@ -5,32 +5,26 @@ from __future__ import annotations
 import json
 import os
 import re
-from collections import defaultdict
+from collections import defaultdict, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable
 
-from sqlalchemy import delete
 from sqlmodel import Session, select
 
 from ..config_store import SettingsService
-from ..models import (
-    ImageTask,
-    Item,
-    Library,
-    MediaFile,
-    PlayProgress,
-    PlaySession,
-    PlayToken,
-    Setting,
-    utcnow,
-)
+from ..item_lifecycle import delete_item_dependents
+from ..models import Item, Library, MediaFile, Setting, utcnow
 from ..parser import PARSER_VERSION, Parsed, parse_path
 from ..serializers import ready_item_ids
 from ..text import normalize_title
 from .walker import WalkEntry, iter_strm_files, read_strm
 
 ProgressCB = Callable[[dict[str, Any]], None]
+
+
+class ScanSafetyError(RuntimeError):
+    """扫描结果不可信时中止，避免把临时空目录当成“全部文件已删除”。"""
 
 
 def _loads(value: str | None) -> dict:
@@ -154,19 +148,28 @@ class ScannerService:
 
     # -- 公共入口 ---------------------------------------------------------
     def scan_library(
-        self, library_id: int, progress_cb: ProgressCB | None = None
+        self,
+        library_id: int,
+        progress_cb: ProgressCB | None = None,
+        *,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         with self.session_factory() as session:
             library = session.get(Library, library_id)
             if library is None:
                 return {"error": "library_not_found"}
-            stats = self._scan(session, library, progress_cb)
+            stats = self._scan(session, library, progress_cb, allow_empty=allow_empty)
             session.commit()
             return stats
 
     # -- 主流程 -----------------------------------------------------------
     def _scan(
-        self, session: Session, library: Library, progress_cb: ProgressCB | None
+        self,
+        session: Session,
+        library: Library,
+        progress_cb: ProgressCB | None,
+        *,
+        allow_empty: bool = False,
     ) -> dict[str, Any]:
         stats = ScanStats()
         config = self.settings.scanner()
@@ -188,6 +191,14 @@ class ScannerService:
         media_files = session.exec(
             select(MediaFile).where(MediaFile.library_id == library.id)
         ).all()
+        # 空目录不能证明文件已被删除：挂载点未就绪、容器启动顺序、网络盘
+        # 临时不可见都会得到 0 个文件。已有媒体时直接中止，避免后续 missing
+        # 标记以及 missing_cleanup 误删数据。
+        if not entries and media_files and not allow_empty:
+            raise ScanSafetyError(
+                "媒体目录当前为空，但数据库已有媒体记录；已中止扫描。"
+                "如确认要清空媒体库，请先删除媒体库或使用显式的强制清理。"
+            )
         by_path: dict[str, MediaFile] = {m.abs_path: m for m in media_files}
         by_url: dict[str, MediaFile] = {}
         for media in media_files:
@@ -297,7 +308,8 @@ class ScannerService:
                 media.invalid = False
                 self._restore_item_hierarchy(session, media.item_id)
             except Exception as exc:  # pragma: no cover - 单文件失败不阻塞扫描
-                stats.invalid_examples.append(f"{entry.rel_path} ({exc})")
+                if len(stats.invalid_examples) < 20:
+                    stats.invalid_examples.append(f"{entry.rel_path} ({exc})")
                 continue
 
         # 缺失标记
@@ -611,54 +623,6 @@ class ScannerService:
             session.add(episode)
         return episode
 
-    def _resolve_home(
-        self,
-        session: Session,
-        library: Library,
-        index: ItemIndex,
-        parsed: Parsed,
-        stats: ScanStats,
-    ) -> Item:
-        parent: Item | None = None
-        if parsed.group_title:
-            norm = normalize_title(parsed.group_title)
-            for candidate in index.series.get(norm, []):
-                if candidate.parent_id is None:
-                    parent = candidate
-                    break
-            if parent is None:
-                parent = self._new_item(
-                    session,
-                    library,
-                    index,
-                    kind="series",
-                    title=parsed.group_title,
-                    match_state="skipped",
-                    parse_payload={"group_title": parsed.group_title},
-                )
-                stats.added_items += 1
-        norm_title = normalize_title(parsed.title)
-        video = index.videos.get((parent.id if parent else None, norm_title))
-        if video is None:
-            video = self._new_item(
-                session,
-                library,
-                index,
-                kind="video",
-                title=parsed.title,
-                parent_id=parent.id if parent else None,
-                match_state="skipped",
-                parse_payload={"parse_title": parsed.title},
-            )
-            stats.added_items += 1
-        else:
-            if _better_title(video):
-                video.title = parsed.title or video.title
-                video.sort_title = normalize_title(video.title)
-            video.updated_at = utcnow()
-            session.add(video)
-        return video
-
     def _resolve_tv_orphan(
         self,
         session: Session,
@@ -871,14 +835,8 @@ class ScannerService:
 
     @staticmethod
     def _delete_item_dependents(session: Session, item_id: int) -> None:
-        """删除指向 item 的子表行，否则 SQLite 外键会阻止清理旧条目。
-
-        典型场景：旧版本把整季入成一条 movie，升级重扫后该 movie 被拆成
-        series/season/episode，旧 movie 上残留的播放进度/缓存/凭证会让
-        `DELETE FROM item` 触发 FOREIGN KEY constraint failed。
-        """
-        for model in (ImageTask, PlayProgress, PlaySession, PlayToken):
-            session.exec(delete(model).where(model.item_id == item_id))
+        """删除指向 item 的子表行，避免 SQLite 外键阻止清理旧条目。"""
+        delete_item_dependents(session, item_id)
 
     # -- 清理 -------------------------------------------------------------
     def _prune_orphans(self, session: Session, library_id: int) -> None:
@@ -895,41 +853,32 @@ class ScannerService:
             if item.id is not None:
                 children[item.parent_id].append(item.id)
 
-        deletable: list[Item] = []
+        child_counts = {item_id: len(children.get(item_id, ())) for item_id in by_id}
+        queue = deque(
+            item_id
+            for item_id in by_id
+            if item_id not in media_item_ids and child_counts[item_id] == 0
+        )
+        deletable_ids: set[int] = set()
+        while queue:
+            item_id = queue.popleft()
+            if item_id in deletable_ids or item_id in media_item_ids:
+                continue
+            deletable_ids.add(item_id)
+            parent_id = by_id[item_id].parent_id
+            if parent_id is None or parent_id not in by_id:
+                continue
+            child_counts[parent_id] -= 1
+            if (
+                child_counts[parent_id] == 0
+                and parent_id not in media_item_ids
+                and parent_id not in deletable_ids
+            ):
+                queue.append(parent_id)
+
         # 自底向上：先删除空 episode/video/movie，再删除空 season/series/folder
         order = {"episode": 0, "video": 0, "movie": 0, "season": 1, "series": 2, "folder": 3}
-        for item in sorted(items, key=lambda i: order.get(i.kind, 3), reverse=True):
-            if item.id is None:
-                continue
-            if item.id in media_item_ids:
-                continue
-            if children.get(item.id):
-                # 子项可能马上被删除，稍后由第二轮处理
-                continue
-            if item.deleted_at:
-                deletable.append(item)
-                continue
-            deletable.append(item)
-
-        # 迭代直到没有新的空节点
-        changed = True
-        while changed:
-            changed = False
-            for item in list(items):
-                if item in deletable or item.id is None:
-                    continue
-                if item.id in media_item_ids:
-                    continue
-                live_children = [
-                    c
-                    for c in children.get(item.id, [])
-                    if c not in {d.id for d in deletable}
-                ]
-                if not live_children:
-                    deletable.append(item)
-                    changed = True
-
-        # 先删叶子，再删父级，避免自引用外键约束失败
+        deletable = [by_id[item_id] for item_id in deletable_ids]
         deletable.sort(key=lambda i: order.get(i.kind, 3))
         current_level = None
         for item in deletable:
@@ -971,10 +920,14 @@ def missing_cleanup(
             if library and library.id not in verified_libraries:
                 try:
                     config = settings.scanner()
-                    iter_strm_files(library.root_path, ignore=config.get("ignore"),
-                                    max_depth=int(config.get("max_depth") or 6),
-                                    follow_symlinks=bool(config.get("follow_symlinks")))
-                    verified_libraries[library.id] = True
+                    entries = iter_strm_files(
+                        library.root_path,
+                        ignore=config.get("ignore"),
+                        max_depth=int(config.get("max_depth") or 6),
+                        follow_symlinks=bool(config.get("follow_symlinks")),
+                    )
+                    # 目录存在但为空同样不可信；只有确实看到文件才允许清理。
+                    verified_libraries[library.id] = bool(entries)
                 except OSError:
                     verified_libraries[library.id] = False
             if not library or not verified_libraries.get(library.id, False) or any(

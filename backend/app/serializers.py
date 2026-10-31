@@ -228,6 +228,51 @@ def playlist_key(session: Session, item: Item) -> int:
     return root.id if root is not None and root.id is not None else item.id
 
 
+def playlist_key_map(session: Session, items: list[Item]) -> dict[int, int]:
+    """批量计算播放列表根，避免为每一行进度逐级查询祖先。"""
+    by_id: dict[int, Item] = {
+        item.id: item for item in items if item.id is not None
+    }
+    pending = {
+        item.parent_id
+        for item in items
+        if item.parent_id is not None and item.parent_id not in by_id
+    }
+    while pending:
+        rows = session.exec(select(Item).where(Item.id.in_(list(pending)))).all()
+        if not rows:
+            break
+        for row in rows:
+            if row.id is not None:
+                by_id[row.id] = row
+        pending = {
+            row.parent_id
+            for row in rows
+            if row.parent_id is not None and row.parent_id not in by_id
+        }
+
+    result: dict[int, int] = {}
+    for item in items:
+        if item.id is None:
+            continue
+        chain: list[Item] = []
+        current: Item | None = item
+        guard = 0
+        while current is not None and guard <= 8:
+            chain.append(current)
+            if current.parent_id is None:
+                break
+            current = by_id.get(current.parent_id)
+            guard += 1
+        root = None
+        for node in reversed(chain):
+            if node.kind in {"series", "season", "folder"}:
+                root = node
+                break
+        result[item.id] = root.id if root is not None and root.id is not None else item.id
+    return result
+
+
 def ancestors(session: Session, item: Item) -> dict[str, Item | None]:
     parent = session.get(Item, item.parent_id) if item.parent_id else None
     season = parent if parent and parent.kind == "season" else (

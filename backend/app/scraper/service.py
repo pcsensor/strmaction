@@ -176,8 +176,6 @@ class ScrapeService:
                 continue
             if not bool(getattr(provider, "enabled", False)):
                 continue
-            if getattr(provider, "season_type", None) is not None:
-                provider.season_type = season_type  # type: ignore[attr-defined]
             providers.append(provider)
         if not providers:
             self._mark_skipped(target.id, "no_provider")
@@ -197,7 +195,9 @@ class ScrapeService:
                     explicit = None
             if explicit:
                 try:
-                    meta = await provider.fetch(explicit, kind=kind)
+                    meta = await provider.fetch(
+                        explicit, kind=kind, season_type=season_type
+                    )
                     winning = (provider, meta, 1.0)
                     break
                 except ProviderError as exc:
@@ -219,7 +219,9 @@ class ScrapeService:
                 errors.append(f"{provider.name}:low_score")
                 continue
             try:
-                meta = await provider.fetch(best.provider_id, kind=kind)
+                meta = await provider.fetch(
+                    best.provider_id, kind=kind, season_type=season_type
+                )
             except ProviderError as exc:
                 errors.append(f"{provider.name}:{exc.kind}")
                 continue
@@ -253,7 +255,9 @@ class ScrapeService:
             if other is None or not bool(getattr(other, "enabled", False)):
                 continue
             try:
-                other_meta = await other.fetch(str(other_id), kind=kind)
+                other_meta = await other.fetch(
+                    str(other_id), kind=kind, season_type=season_type
+                )
                 filled = fill_missing(meta, other_meta)
             except ProviderError:
                 pass
@@ -291,7 +295,9 @@ class ScrapeService:
             try:
                 needs_fresh = any(e.match_state != "auto" or not e.still_path for e in episodes)
                 with bypass_cache(needs_fresh):
-                    detail = await provider.fetch_absolute(provider_id)  # type: ignore[attr-defined]
+                    detail = await provider.fetch_absolute(  # type: ignore[attr-defined]
+                        provider_id, season_type=season_type
+                    )
                 absolute = detail.episodes
             except ProviderError as exc:
                 warnings.append(f"absolute:{exc.kind}")
@@ -304,7 +310,9 @@ class ScrapeService:
                 )
                 try:
                     with bypass_cache(needs_fresh):
-                        details[number] = await provider.fetch_season(provider_id, number)
+                        details[number] = await provider.fetch_season(
+                            provider_id, number, season_type=season_type
+                        )
                 except ProviderError as exc:
                     warnings.append(f"season {number}:{exc.kind}")
         return details, absolute, warnings
@@ -316,8 +324,6 @@ class ScrapeService:
         provider = self.registry.get(target.provider)
         if provider is None or not bool(getattr(provider, "enabled", False)):
             return {"status": "skipped", "item_id": target.id, "reason": "provider_unavailable"}
-        if getattr(provider, "season_type", None) is not None:
-            provider.season_type = season_type  # type: ignore[attr-defined]
         details, absolute, warnings = await self._fetch_episode_details(
             provider, str(target.provider_id), episodes, season_type
         )
@@ -590,8 +596,6 @@ class ScrapeService:
                 return {"status": "failed", "reason": "no_target"}
             kind: Kind = "movie" if target.kind == "movie" else "tv"
             season_type = self.settings.tvdb_season_type(library)
-        if getattr(provider, "season_type", None) is not None:
-            provider.season_type = season_type  # type: ignore[attr-defined]
         if provider_name == "tmdb" and str(provider_id).lower().startswith("tt"):
             try:
                 resolved = await provider.resolve_external(  # type: ignore[attr-defined]
@@ -608,7 +612,9 @@ class ScrapeService:
             provider_id = resolved
         try:
             with bypass_cache():
-                meta = await provider.fetch(str(provider_id), kind=kind)
+                meta = await provider.fetch(
+                    str(provider_id), kind=kind, season_type=season_type
+                )
         except ProviderError as exc:
             return {"status": "failed", "reason": exc.kind, "message": exc.message}
         return await self._persist(

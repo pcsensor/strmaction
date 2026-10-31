@@ -181,7 +181,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     await _engine.load(
       payload,
       cacheLimitMb: _bufferLimit,
-      tlsVerify: !widget.app.config.allowSelfSignedHttps,
+      tlsVerify: true,
     );
     _watchdog?.cancel();
     _watchdog = null;
@@ -210,7 +210,7 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   void _onConfigChanged() {
     _engine.applySettings(
       cacheLimitMb: _bufferLimit,
-      tlsVerify: !widget.app.config.allowSelfSignedHttps,
+      tlsVerify: true,
     );
     if ((_boostSpeed - widget.app.config.boostSpeed).abs() > 0.001) {
       setState(() {

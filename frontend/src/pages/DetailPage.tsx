@@ -215,13 +215,21 @@ export function DetailPage() {
     item.season_no !== null && item.episode_no !== null
       ? `S${String(item.season_no).padStart(2, '0')}E${String(item.episode_no).padStart(2, '0')}`
       : null
+  const seasonWatched = Boolean(
+    isSeason &&
+      currentSeason &&
+      currentSeason.episode_count > 0 &&
+      currentSeason.watched_count >= currentSeason.episode_count,
+  )
   const allWatched = isSeries
     ? Boolean(
         item.series_progress &&
           item.series_progress.total > 0 &&
           item.series_progress.watched >= item.series_progress.total,
       )
-    : item.watched
+    : isSeason
+      ? seasonWatched
+      : item.watched
   const seriesStarted = Boolean(item.series_progress && item.series_progress.watched > 0)
 
   const play = () => start(playTarget, { mediaFileId: selectedMedia?.id })
@@ -525,7 +533,7 @@ export function DetailPage() {
                       className="btn-ghost gap-2 px-5 py-3.5"
                     >
                       <Edit3 className="h-4 w-4" />
-                      '管理'
+                      管理
                     </button>
                     {menuOpen ? (
                       <div

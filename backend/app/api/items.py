@@ -22,6 +22,7 @@ from ..deps import (
 )
 from ..errors import APIError
 from ..images import ImageService
+from ..item_lifecycle import merge_items
 from ..jobs import TaskManager
 from ..models import ImageTask, Item, Library, MediaFile, PlayProgress, utcnow
 from ..config_store import SettingsService
@@ -35,6 +36,7 @@ from ..serializers import (
     media_labels,
     parse_json,
     playlist_key,
+    playlist_key_map,
     progress_payload,
     ready_item_ids,
     ready_item_query,
@@ -139,11 +141,16 @@ def _find_continue_target(session: Session, candidates: list[Item], user_id: int
     return None
 
 
-def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
+def _choose_play_target(
+    session: Session,
+    item: Item,
+    user_id: int,
+    ready: set[int] | None = None,
+) -> Item:
     if item.kind in {"movie", "video", "episode"}:
         return item
     if item.kind == "season":
-        ready = ready_item_ids(session, item.library_id)
+        ready = ready if ready is not None else ready_item_ids(session, item.library_id)
         episodes = session.exec(
             select(Item)
             .where(Item.parent_id == item.id, Item.kind == "episode")
@@ -175,7 +182,7 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
         sequence = _episode_sequence(session, item)
         if not sequence:
             raise APIError(400, "NO_EPISODE", "该剧没有可播放的剧集")
-        ready = ready_item_ids(session, item.library_id)
+        ready = ready if ready is not None else ready_item_ids(session, item.library_id)
         ready_sequence = [e for e in sequence if e.id in ready]
         playable_sequence = ready_sequence or sequence
 
@@ -197,7 +204,7 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
         # 3. 否则（全新未看、全剧已看完、或已被移出继续播放），从第一集播放
         return playable_sequence[0]
     if item.kind == "folder":
-        ready = ready_item_ids(session, item.library_id)
+        ready = ready if ready is not None else ready_item_ids(session, item.library_id)
         videos = session.exec(
             select(Item).where(
                 Item.parent_id == item.id,
@@ -234,7 +241,7 @@ def _choose_play_target(session: Session, item: Item, user_id: int) -> Item:
         child_folders.sort(key=lambda x: natural_sort_key(x.title))
         for f in child_folders:
             try:
-                return _choose_play_target(session, f, user_id)
+                return _choose_play_target(session, f, user_id, ready=ready)
             except APIError:
                 continue
         raise APIError(400, "NO_VIDEO", "该文件夹内没有可播放的视频")
@@ -385,7 +392,19 @@ def get_item(
         library = session.get(Library, item.library_id)
         parent = session.get(Item, item.parent_id) if item.parent_id else None
         series = series_of(session, item)
-        ready = ready_item_ids(session)
+
+        def _ready_ids(ids: list[int]) -> set[int]:
+            if not ids:
+                return set()
+            return set(
+                session.exec(
+                    select(Item.id).where(
+                        Item.id.in_(ids),
+                        Item.id.in_(ready_item_query(item.library_id)),
+                    )
+                ).all()
+            )
+
         progress = _progress_map(
             session,
             [item.id]
@@ -456,21 +475,40 @@ def get_item(
                 )
                 .order_by(Item.season_no)
             ).all()
-            all_episodes: list[Item] = []
-            for season in seasons:
-                episodes = session.exec(
+            season_ids = [s.id for s in seasons if s.id is not None]
+            raw_episodes = (
+                session.exec(
                     select(Item)
-                    .where(Item.parent_id == season.id, Item.kind == "episode")
-                    .order_by(Item.episode_no)
+                    .where(
+                        Item.parent_id.in_(season_ids),
+                        Item.kind == "episode",
+                        Item.deleted_at == None,  # noqa: E711
+                    )
+                    .order_by(Item.season_no, Item.episode_no)
                 ).all()
-                episodes = [e for e in episodes if e.id in ready]
-                all_episodes.extend(episodes)
-                ep_progress = _progress_map(session, [e.id for e in episodes], user.id)
+                if season_ids
+                else []
+            )
+            ready_episodes = _ready_ids([e.id for e in raw_episodes if e.id is not None])
+            all_episodes = [e for e in raw_episodes if e.id in ready_episodes]
+            all_progress = _progress_map(
+                session, [e.id for e in all_episodes if e.id is not None], user.id
+            )
+            episodes_by_season: dict[int, list[Item]] = {}
+            for episode in all_episodes:
+                if episode.parent_id is not None:
+                    episodes_by_season.setdefault(episode.parent_id, []).append(episode)
+            for season in seasons:
+                episodes = episodes_by_season.get(season.id, [])
                 ep_payloads = [
-                    episode_summary(e, progress=ep_progress.get(e.id))
+                    episode_summary(e, progress=all_progress.get(e.id))
                     for e in episodes
                 ]
-                watched = sum(1 for e in episodes if ep_progress.get(e.id) and ep_progress[e.id].finished)
+                watched = sum(
+                    1
+                    for e in episodes
+                    if all_progress.get(e.id) and all_progress[e.id].finished
+                )
                 seasons_payload.append(
                     {
                         "id": season.id,
@@ -492,15 +530,18 @@ def get_item(
                     [],
                 )
             if all_episodes:
-                all_progress = _progress_map(session, [e.id for e in all_episodes], user.id)
                 if item.kind == "episode":
                     # 剧集详情页的播放按钮必须播放「当前这一集」，
                     # 不能再用整部剧的「第一集未看」作为目标。
                     target = item
                 elif item.kind == "season":
-                    target = _choose_play_target(session, item, user.id)
+                    target = _choose_play_target(
+                        session, item, user.id, ready=ready_episodes
+                    )
                 else:
-                    target = _choose_play_target(session, target_series, user.id)
+                    target = _choose_play_target(
+                        session, target_series, user.id, ready=ready_episodes
+                    )
                 try:
                     index = all_episodes.index(target)
                 except ValueError:
@@ -535,7 +576,8 @@ def get_item(
                     Item.deleted_at == None,  # noqa: E711
                 )
             ).all()
-            child_folders = [f for f in child_folders if f.id in ready]
+            folder_ids = _ready_ids([f.id for f in child_folders if f.id is not None])
+            child_folders = [f for f in child_folders if f.id in folder_ids]
             child_folders.sort(key=lambda x: natural_sort_key(x.title))
             folders_payload = [item_summary(f) for f in child_folders]
 
@@ -546,13 +588,22 @@ def get_item(
                     Item.deleted_at == None,  # noqa: E711
                 )
             ).all()
-            child_videos = [v for v in child_videos if v.id in ready]
+            video_ids = _ready_ids([v.id for v in child_videos if v.id is not None])
+            child_videos = [v for v in child_videos if v.id in video_ids]
             child_videos.sort(key=lambda x: natural_sort_key(x.title))
             v_progress = _progress_map(session, [v.id for v in child_videos if v.id], user.id)
+            media_by_item: dict[int, MediaFile] = {}
+            if child_videos:
+                for media in session.exec(
+                    select(MediaFile).where(
+                        MediaFile.item_id.in_([v.id for v in child_videos if v.id]),
+                        MediaFile.invalid == False,  # noqa: E712
+                        MediaFile.missing == False,  # noqa: E712
+                    ).order_by(MediaFile.id)
+                ).all():
+                    media_by_item.setdefault(media.item_id, media)
             for v in child_videos:
-                m_file = session.exec(
-                    select(MediaFile).where(MediaFile.item_id == v.id, MediaFile.invalid == False, MediaFile.missing == False)  # noqa: E712
-                ).first()
+                m_file = media_by_item.get(v.id)
                 badges = media_labels(m_file) if m_file else []
                 overrides = {}
                 if m_file:
@@ -573,13 +624,26 @@ def get_item(
                     Item.deleted_at == None,  # noqa: E711
                 )
             ).all()
-            sibling_videos = [v for v in sibling_videos if v.id in ready]
+            sibling_ids = _ready_ids(
+                [v.id for v in sibling_videos if v.id is not None]
+            )
+            sibling_videos = [v for v in sibling_videos if v.id in sibling_ids]
             sibling_videos.sort(key=lambda x: natural_sort_key(x.title))
             s_progress = _progress_map(session, [v.id for v in sibling_videos if v.id], user.id)
+            media_by_item: dict[int, MediaFile] = {}
+            if sibling_videos:
+                for media in session.exec(
+                    select(MediaFile).where(
+                        MediaFile.item_id.in_(
+                            [v.id for v in sibling_videos if v.id is not None]
+                        ),
+                        MediaFile.invalid == False,  # noqa: E712
+                        MediaFile.missing == False,  # noqa: E712
+                    ).order_by(MediaFile.id)
+                ).all():
+                    media_by_item.setdefault(media.item_id, media)
             for v in sibling_videos:
-                m_file = session.exec(
-                    select(MediaFile).where(MediaFile.item_id == v.id, MediaFile.invalid == False, MediaFile.missing == False)  # noqa: E712
-                ).first()
+                m_file = media_by_item.get(v.id)
                 badges = media_labels(m_file) if m_file else []
                 overrides = {}
                 if m_file:
@@ -825,7 +889,7 @@ async def upload_poster(
     if len(data) > 12 * 1024 * 1024:
         raise APIError(400, "FILE_TOO_LARGE", "图片不能超过 12MB")
     sha = hashlib.sha1(data).hexdigest()
-    if not images.save_variants(sha, kind, data):
+    if not await images.save_variants_async(sha, kind, data):
         raise APIError(400, "INVALID_IMAGE", "无法识别该图片格式")
     field = {"poster": "poster_path", "backdrop": "backdrop_path", "logo": "logo_path"}[kind]
     with Session(engine) as session:
@@ -990,34 +1054,40 @@ def mark_watched(
         elif item.kind == "season":
             sequence = session.exec(
                 select(Item).where(
-                    Item.parent_id == item.id, Item.kind == "episode"
+                    Item.parent_id == item.id,
+                    Item.kind == "episode",
+                    Item.deleted_at == None,  # noqa: E711
                 )
             ).all()
         else:
             sequence = [item]
         if not sequence:
             raise APIError(400, "NO_EPISODE", "该条目下没有可标记的内容")
-        for entry in sequence:
-            row = session.exec(
+        entry_ids = [entry.id for entry in sequence if entry.id is not None]
+        rows = {
+            row.item_id: row
+            for row in session.exec(
                 select(PlayProgress).where(
                     PlayProgress.user_id == user.id,
-                    PlayProgress.item_id == entry.id
+                    PlayProgress.item_id.in_(entry_ids),
                 )
-            ).first()
+            ).all()
+        }
+        now = utcnow()
+        for item_id in entry_ids:
+            row = rows.get(item_id)
             if row is None:
                 row = PlayProgress(
                     user_id=user.id,
-                    item_id=entry.id,
-                    updated_at=utcnow()
+                    item_id=item_id,
+                    updated_at=now,
                 )
             row.position_ms = 0
             row.finished = bool(body.finished)
             row.revision = (row.revision or 0) + 1
             row.client_session = None
             row.client_sequence = 0
-            row.updated_at = utcnow()
-            if row.duration_ms is None:
-                row.duration_ms = None
+            row.updated_at = now
             session.add(row)
         session.commit()
     return {"ok": True, "count": len(sequence), "finished": bool(body.finished)}
@@ -1035,23 +1105,22 @@ def merge_item(
     _admin: CurrentUser = Depends(require_admin),
     engine=Depends(get_engine),
 ):
+    if body.source_id == item_id:
+        raise APIError(400, "MERGE_SELF", "不能把条目合并到自身")
     with Session(engine) as session:
+        session.exec(text("BEGIN IMMEDIATE"))
         target = _get_item(session, item_id)
         source = _get_item(session, body.source_id)
         if target.kind != source.kind:
             raise APIError(400, "KIND_MISMATCH", "只能合并同类型条目")
         if target.kind not in {"movie", "video"}:
             raise APIError(400, "MERGE_UNSUPPORTED", "当前仅支持电影 / 视频合并")
-        for media in session.exec(
-            select(MediaFile).where(MediaFile.item_id == source.id)
-        ).all():
-            media.item_id = target.id
-            session.add(media)
-        for row in session.exec(
-            select(PlayProgress).where(PlayProgress.item_id == source.id)
-        ).all():
-            session.delete(row)
-        session.delete(source)
+        if target.library_id != source.library_id:
+            raise APIError(400, "MERGE_LIBRARY_MISMATCH", "只能合并同一媒体库内的条目")
+        try:
+            merge_items(session, target, source)
+        except ValueError as exc:
+            raise APIError(400, "MERGE_INVALID", str(exc)) from exc
         target.updated_at = utcnow()
         session.add(target)
         session.commit()
@@ -1092,10 +1161,11 @@ def dismiss_continue(
         candidates = session.exec(
             select(Item).where(Item.id.in_(item_ids))
         ).all() if item_ids else []
+        key_map = playlist_key_map(session, candidates)
         member_ids = {
             cand.id
             for cand in candidates
-            if playlist_key(session, cand) == target_key
+            if key_map.get(cand.id, cand.id) == target_key
         }
 
         for row in rows:

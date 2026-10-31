@@ -8,9 +8,10 @@ import '../core/version.dart';
 /// The React app already knows `window.StrmActionNative` and the older
 /// `window.pywebview.api`. Keeping both means the web frontend needs no
 /// changes for the Flutter migration.
-String buildBridgeScript({bool isTV = false}) {
+String buildBridgeScript({bool isTV = false, String bridgeNonce = ''}) {
   final desktop = Platform.isWindows || Platform.isMacOS;
   final versionLiteral = jsonEncode(appVersion);
+  final nonceLiteral = jsonEncode(bridgeNonce);
   return '''
 (function () {
   if (window.__strmactionFlutterBridgeInstalled) return;
@@ -23,7 +24,8 @@ String buildBridgeScript({bool isTV = false}) {
         if (window.flutter_inappwebview &&
             typeof window.flutter_inappwebview.callHandler === 'function') {
           window.flutter_inappwebview
-            .callHandler.apply(window.flutter_inappwebview, ['strmaction', method].concat(args))
+            .callHandler.apply(window.flutter_inappwebview,
+              ['strmaction', method].concat(args).concat([$nonceLiteral]))
             .then(function (result) {
               try {
                 resolve(typeof result === 'string' ? JSON.parse(result) : result);

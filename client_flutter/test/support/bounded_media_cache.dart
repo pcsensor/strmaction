@@ -2,9 +2,9 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-import '../core/trust.dart';
-import 'download_policy.dart';
-import 'media_redirect.dart';
+import 'package:strmaction_desktop/core/trust.dart';
+import 'package:strmaction_desktop/services/download_policy.dart';
+import 'package:strmaction_desktop/services/media_redirect.dart';
 
 /// A per-playback Range cache. Transport segments are 4–8 MiB; disk blocks stay
 /// small. Reservations include in-flight segments, so parallel reads cannot

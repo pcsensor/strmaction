@@ -85,11 +85,15 @@ def test_existing_progress_schema_receives_version_defaults(tmp_path):
 
 def test_cleanup_deletes_missing_item_and_dependencies(catalog):
     db, settings, root, library_id, scanner = catalog
+    # 保留一个真实文件，使目录仍可验证；否则新的空目录保护会跳过清理。
+    (root / "Keep.strm").write_text("https://example.com/keep\n", encoding="utf-8")
     (root / "Film.strm").unlink()
+    with Session(db.engine) as session:
+        film_id = session.exec(select(Item.id).where(Item.title == "Film")).one()
     for _ in range(3):
         scanner.scan_library(library_id)
     with Session(db.engine) as session:
-        item = session.exec(select(Item)).one()
+        item = session.get(Item, film_id)
         item.deleted_at = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
         session.add(PlayProgress(item_id=item.id, position_ms=5))
         session.add(item)
@@ -97,9 +101,14 @@ def test_cleanup_deletes_missing_item_and_dependencies(catalog):
     with Session(db.engine) as session:
         assert missing_cleanup(session, settings) == 1
     with Session(db.engine) as session:
-        assert session.exec(select(Item)).all() == []
-        assert session.exec(select(MediaFile)).all() == []
-        assert session.exec(select(PlayProgress)).all() == []
+        assert session.get(Item, film_id) is None
+        assert session.exec(select(Item).where(Item.title == "Keep")).one()
+        assert not session.exec(
+            select(MediaFile).where(MediaFile.item_id == film_id)
+        ).all()
+        assert not session.exec(
+            select(PlayProgress).where(PlayProgress.item_id == film_id)
+        ).all()
 
 
 def test_revoked_library_is_absent_from_continue(catalog, tmp_path):

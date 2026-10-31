@@ -10,6 +10,7 @@ from collections.abc import Iterator
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlmodel import Session, select
 
 from ..models import ScrapeCache, utcnow
@@ -68,23 +69,22 @@ def cache_store(
     ).isoformat(timespec="seconds")
     raw = json.dumps(payload, ensure_ascii=False)
     with Session(engine) as session:
-        row = session.exec(
-            select(ScrapeCache).where(
-                ScrapeCache.provider == provider,
-                ScrapeCache.query_hash == key,
-            )
-        ).first()
-        if row is None:
-            row = ScrapeCache(
+        # 并发刮削可能同时写同一个 key；用 SQLite upsert 避免唯一索引冲突
+        # 被上层捕获后把整个条目误判为 failed。
+        stmt = (
+            sqlite_insert(ScrapeCache)
+            .values(
                 provider=provider,
                 query_hash=key,
                 payload=raw,
                 expires_at=expires,
             )
-        else:
-            row.payload = raw
-            row.expires_at = expires
-        session.add(row)
+            .on_conflict_do_update(
+                index_elements=["provider", "query_hash"],
+                set_={"payload": raw, "expires_at": expires},
+            )
+        )
+        session.exec(stmt)
         session.commit()
 
 

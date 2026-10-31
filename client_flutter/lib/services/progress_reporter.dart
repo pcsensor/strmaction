@@ -131,7 +131,16 @@ class ProgressReporter {
       return true;
     }
     try {
-      if (outboxPath != null) await ProgressOutbox(outboxPath!).save(url, playToken, payload, accountKey: accountKey);
+      if (outboxPath != null) {
+        try {
+          await ProgressOutbox(outboxPath!).save(
+            url, playToken, payload, accountKey: accountKey,
+          );
+        } on Object catch (error) {
+          // 本地队列写失败不应阻止当前网络上报。
+          logger?.warning('进度队列写入失败：$error');
+        }
+      }
       final request = await client.postUrl(Uri.parse(url)).timeout(
             const Duration(seconds: 5),
           );

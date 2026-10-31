@@ -86,7 +86,7 @@ async def lifespan(app: FastAPI):
     auth = AuthService(settings, db.engine)
     images = ImageService(settings)
     tasks = TaskManager(db.engine, settings, images)
-    scheduler = SchedulerService(db.engine, settings, tasks, images)
+    scheduler = SchedulerService(db.engine, settings, tasks, images, auth)
     state = AppState(config, db, settings, auth, images, tasks, scheduler)
     app.state.app_state = state
 
@@ -106,7 +106,22 @@ async def lifespan(app: FastAPI):
             pass
 
 
+def _assert_single_worker() -> None:
+    raw = os.environ.get("WEB_CONCURRENCY") or os.environ.get("UVICORN_WORKERS")
+    if raw:
+        try:
+            workers = int(raw)
+        except ValueError:
+            workers = 1
+        if workers > 1:
+            raise RuntimeError(
+                "StrmAction 当前使用进程内任务锁、登录限流和会话密钥，"
+                "必须使用单 worker 运行。请移除多 worker 配置。"
+            )
+
+
 def create_app() -> FastAPI:
+    _assert_single_worker()
     app = FastAPI(
         title="StrmAction",
         description="面向 .strm 媒体库的刮削、展示与播放分发服务",

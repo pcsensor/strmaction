@@ -65,7 +65,7 @@ void main() {
         'log_level': 'debug',
       });
       expect(config.cacheLimitMb, 0);
-      expect(config.allowSelfSignedHttps, isFalse);
+      // 旧版本的 allow_self_signed_https 已下线，导入时被忽略。
       expect(config.logLevel, 'DEBUG');
       expect(config.boostSpeed, defaultBoostSpeed);
       expect(config.customSpeed, isNull);

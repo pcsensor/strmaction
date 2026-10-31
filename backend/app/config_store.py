@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from .config import ConfigManager, deep_merge, mask_config, strip_masked_keys
@@ -45,6 +46,8 @@ class SettingsService:
         if not clean:
             return self.effective()
         with Session(self.engine) as session:
+            # 把读取/合并/写入串行化，避免两个管理员同时 PATCH 时后写覆盖先写。
+            session.exec(text("BEGIN IMMEDIATE"))
             row = session.get(Setting, SETTINGS_KEY)
             raw = {}
             if row and row.value:

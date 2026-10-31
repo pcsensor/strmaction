@@ -29,7 +29,6 @@ class AppConfig {
   final Map<String, String> playbackOverrides;
   final String serverUrl;
   final int cacheLimitMb;
-  final bool allowSelfSignedHttps;
   final int windowWidth;
   final int windowHeight;
   final String logLevel;
@@ -61,7 +60,6 @@ class AppConfig {
     this.playbackOverrides = const {},
     this.serverUrl = '',
     this.cacheLimitMb = defaultCacheLimitMb,
-    this.allowSelfSignedHttps = false,
     this.windowWidth = defaultWidth,
     this.windowHeight = defaultHeight,
     this.logLevel = 'INFO',
@@ -80,7 +78,6 @@ class AppConfig {
     Map<String, String>? playbackOverrides,
     String? serverUrl,
     int? cacheLimitMb,
-    bool? allowSelfSignedHttps,
     int? windowWidth,
     int? windowHeight,
     String? logLevel,
@@ -96,8 +93,6 @@ class AppConfig {
       playbackOverrides: playbackOverrides ?? this.playbackOverrides,
       serverUrl: serverUrl ?? this.serverUrl,
       cacheLimitMb: cacheLimitMb ?? this.cacheLimitMb,
-      allowSelfSignedHttps:
-          allowSelfSignedHttps ?? this.allowSelfSignedHttps,
       windowWidth: windowWidth ?? this.windowWidth,
       windowHeight: windowHeight ?? this.windowHeight,
       logLevel: logLevel ?? this.logLevel,
@@ -118,7 +113,6 @@ class AppConfig {
       serverUrl:
           serverUrl.trim().isEmpty ? '' : normalizeServerUrl(serverUrl),
       cacheLimitMb: normalizeCacheLimit(cacheLimitMb),
-      allowSelfSignedHttps: false,
       windowWidth: _clamp(windowWidth, minWidth, 3840, defaultWidth),
       windowHeight: _clamp(windowHeight, minHeight, 2160, defaultHeight),
       logLevel: (logLevel.isEmpty ? 'INFO' : logLevel).toUpperCase(),
@@ -157,7 +151,6 @@ class AppConfig {
           : const {},
       serverUrl: (json['server_url'] ?? '').toString(),
       cacheLimitMb: _asInt(json['cache_limit_mb'], defaultCacheLimitMb),
-      allowSelfSignedHttps: false,
       windowWidth: _asInt(json['window_width'], defaultWidth),
       windowHeight: _asInt(json['window_height'], defaultHeight),
       logLevel: (json['log_level'] ?? 'INFO').toString(),

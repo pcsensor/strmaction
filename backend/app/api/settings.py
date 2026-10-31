@@ -12,6 +12,7 @@ from typing import Any
 from fastapi import APIRouter, Body, Depends, Request
 
 from .. import __version__
+from ..config import is_masked
 from ..config_store import SettingsService
 from ..deps import (
     get_current_user,
@@ -46,7 +47,38 @@ PLAYER_MODES = {"builtin", "copy"}
 
 
 def _validate(patch: dict[str, Any]) -> None:
+    for key in ("server", "auth", "scraper", "scanner", "player", "ui"):
+        if key in patch and not isinstance(patch[key], dict):
+            raise APIError(400, "INVALID_SETTINGS", f"{key} 必须是对象")
+    server = patch.get("server") or {}
+    if isinstance(server, dict):
+        for key in ("data_dir", "port"):
+            if key in server:
+                raise APIError(
+                    400,
+                    "INVALID_SETTINGS",
+                    "服务器数据目录和端口不能通过设置接口修改，请使用环境变量或配置文件",
+                )
+    scanner = patch.get("scanner") or {}
+    if isinstance(scanner, dict):
+        if "max_depth" in scanner:
+            try:
+                depth = int(scanner["max_depth"])
+            except (TypeError, ValueError):
+                raise APIError(400, "INVALID_SETTINGS", "scanner.max_depth 必须是整数")
+            if depth < 1 or depth > 64:
+                raise APIError(400, "INVALID_SETTINGS", "scanner.max_depth 必须在 1 到 64 之间")
+        if "ignore" in scanner and not (
+            isinstance(scanner["ignore"], list)
+            and all(isinstance(item, str) for item in scanner["ignore"])
+        ):
+            raise APIError(400, "INVALID_SETTINGS", "scanner.ignore 必须是字符串数组")
+        if "follow_symlinks" in scanner and not isinstance(scanner["follow_symlinks"], bool):
+            raise APIError(400, "INVALID_SETTINGS", "scanner.follow_symlinks 必须是布尔值")
     scraper = patch.get("scraper") or {}
+    for provider in ("tmdb", "tvdb"):
+        if provider in scraper and not isinstance(scraper[provider], dict):
+            raise APIError(400, "INVALID_SETTINGS", f"scraper.{provider} 必须是对象")
     priority = scraper.get("provider_priority")
     if priority is not None:
         if not isinstance(priority, dict):
@@ -71,7 +103,32 @@ def _validate(patch: dict[str, Any]) -> None:
 
 
 def _sanitize(patch: dict[str, Any]) -> dict[str, Any]:
-    """清洗播放器相关字段，避免把非法的请求头/间隔写进配置。"""
+    """清洗播放器/扫描器字段，避免把非法值写进配置。"""
+    server = patch.get("server")
+    if isinstance(server, dict):
+        # 防御旧备份或旧客户端回写不可变字段。
+        server.pop("data_dir", None)
+        server.pop("port", None)
+    auth = patch.get("auth")
+    if isinstance(auth, dict):
+        password_hash = auth.get("password_hash")
+        if password_hash is not None and (not password_hash or is_masked(password_hash)):
+            auth.pop("password_hash", None)
+    scanner = patch.get("scanner")
+    if isinstance(scanner, dict):
+        if "max_depth" in scanner:
+            try:
+                scanner["max_depth"] = min(max(int(scanner["max_depth"]), 1), 64)
+            except (TypeError, ValueError):
+                scanner.pop("max_depth", None)
+        if "ignore" in scanner:
+            scanner["ignore"] = [
+                str(item).strip()
+                for item in scanner.get("ignore") or []
+                if isinstance(item, str) and str(item).strip()
+            ]
+        if "follow_symlinks" in scanner:
+            scanner["follow_symlinks"] = bool(scanner["follow_symlinks"])
     player = patch.get("player")
     if isinstance(player, dict):
         if "play_headers" in player:
@@ -103,6 +160,11 @@ def _sanitize(patch: dict[str, Any]) -> dict[str, Any]:
         for key in ("mpv_path", "mpv_extra_args", "mpv_package", "enable_progress", "fallback_on_error"):
             player.pop(key, None)
     return patch
+
+
+# 供系统导入等入口复用同一套校验/清洗逻辑。
+validate_settings_patch = _validate
+sanitize_settings_patch = _sanitize
 
 
 def _payload(settings: SettingsService) -> dict[str, Any]:

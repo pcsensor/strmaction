@@ -4,7 +4,7 @@ import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:strmaction_desktop/services/bounded_media_cache.dart';
+import 'support/bounded_media_cache.dart';
 import 'package:strmaction_desktop/services/download_policy.dart';
 
 const mib = 1024 * 1024;

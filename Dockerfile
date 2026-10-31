@@ -25,8 +25,8 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY backend/requirements.txt /app/requirements.txt
-RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r /app/requirements.txt
+COPY backend/requirements.lock /app/requirements.lock
+RUN pip install --no-cache-dir --index-url "$PIP_INDEX_URL" -r /app/requirements.lock
 
 COPY backend /app/backend
 COPY --from=web-builder /web/dist /app/static
@@ -38,4 +38,5 @@ EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=4)" || exit 1
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers"]
+# 任务锁、登录限流和会话密钥都在进程内存中；当前架构必须单 worker。
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8080", "--proxy-headers", "--workers", "1"]

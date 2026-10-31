@@ -5,6 +5,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, Request, Response
+from sqlalchemy import text
 from sqlmodel import Session, select
 
 from .. import __version__
@@ -69,6 +70,7 @@ def setup(
     engine=Depends(get_engine),
 ):
     """v0.9: 初次设置，创建第一个管理员账号。"""
+    # 快速失败：已完成初始化后，避免未认证请求触发 Argon2 计算。
     if not auth.needs_setup():
         raise APIError(409, "ALREADY_SETUP", "管理员密码已设置")
     problem = auth.check_password_strength(body.password)
@@ -76,18 +78,25 @@ def setup(
         raise APIError(400, "WEAK_PASSWORD", problem)
 
     username = (body.username or settings.username() or "admin").strip() or "admin"
+    # Argon2 开销较大，放到写事务之外，避免首次设置期间长时间持有 SQLite 写锁。
+    password_hash = auth.hash_password(body.password)
 
     with Session(engine) as db:
+        # 先拿到 SQLite 写锁，再检查并创建；两个并发首次设置请求会被串行化。
+        db.exec(text("BEGIN IMMEDIATE"))
+        if not auth.needs_setup(db):
+            raise APIError(409, "ALREADY_SETUP", "管理员密码已设置")
+
         # 查找是否已有账号（如之前存在的占位 admin），有则更新，无则创建
         admin = db.exec(select(User).where(User.username == username)).first()
         if admin:
-            admin.password_hash = auth.hash_password(body.password)
+            admin.password_hash = password_hash
             admin.role = "admin"
             admin.enabled = True
         else:
             admin = User(
                 username=username,
-                password_hash=auth.hash_password(body.password),
+                password_hash=password_hash,
                 role="admin",
                 display_name="管理员",
                 enabled=True,

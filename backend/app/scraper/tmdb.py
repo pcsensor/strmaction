@@ -341,7 +341,9 @@ class TmdbProvider:
             )
         return out
 
-    async def fetch(self, provider_id: str, *, kind: Kind) -> CanonicalMeta:
+    async def fetch(
+        self, provider_id: str, *, kind: Kind, season_type: str | None = None
+    ) -> CanonicalMeta:
         params = self._params()
         append = (
             "credits,videos,images,external_ids,alternative_titles,release_dates"
@@ -385,7 +387,9 @@ class TmdbProvider:
                 return str(item["id"])
         return None
 
-    async def fetch_season(self, provider_id: str, season_no: int) -> SeasonDetail:
+    async def fetch_season(
+        self, provider_id: str, season_no: int, season_type: str | None = None
+    ) -> SeasonDetail:
         params = self._params()
         path = f"/tv/{provider_id}/season/{season_no}"
         data = await self._cached(

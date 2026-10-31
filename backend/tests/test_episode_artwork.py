@@ -36,7 +36,7 @@ class ArtworkProvider:
     async def search(self, **kwargs):
         raise AssertionError("已绑定的剧目不应重新搜索")
 
-    async def fetch(self, provider_id, *, kind):
+    async def fetch(self, provider_id, *, kind, season_type=None):
         self.detail_calls.append(provider_id)
         return CanonicalMeta(
             provider=self.name, provider_id=provider_id, kind=kind,
@@ -45,7 +45,7 @@ class ArtworkProvider:
             seasons=[SeasonSummary(1, episode_count=3)],
         )
 
-    async def fetch_season(self, provider_id, season_no):
+    async def fetch_season(self, provider_id, season_no, season_type=None):
         return SeasonDetail(season_no, [
             EpisodeMeta(n, title=f"单集 {n}", still_url=self.image)
             for n in (1, 2, 3)
@@ -96,7 +96,7 @@ def media(tmp_path, monkeypatch):
     settings = SettingsService(config, db.engine)
     settings.update({"scraper": {"tmdb": {"api_key": "test-placeholder"}}})
     images = ImageService(settings)
-    image = tmp_path / "still.png"
+    image = settings.data_dir / "still.png"
     Image.new("RGB", (800, 450), "blue").save(image)
     root = tmp_path / "media"
 

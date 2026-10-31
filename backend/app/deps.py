@@ -11,7 +11,7 @@ from .db import Database
 from .errors import APIError
 from .images import ImageService
 from .jobs import SchedulerService, TaskManager
-from .models import User, UserLibraryAccess
+from .models import Library, User, UserLibraryAccess
 from .schemas import CurrentUser
 from .security import AuthService
 
@@ -96,24 +96,32 @@ def require_admin(user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
     return user
 
 
-def get_accessible_library_ids(user: CurrentUser, engine) -> list[int] | None:
+def get_accessible_library_ids(
+    user: CurrentUser, engine, *, include_disabled: bool = False
+) -> list[int] | None:
     """
     获取用户可访问的媒体库 ID 列表。
 
     返回：
-    - None: 管理员，可访问所有库
-    - list[int]: 普通用户授权的库 ID 列表
+    - None: 仅当管理员且 include_disabled=True，表示包含禁用库在内的全部库
+    - list[int]: 用户可见/可访问的库 ID 列表
     """
-    if user.role == "admin":
-        return None  # 管理员访问所有库
-
     with Session(engine) as db:
-        access_rows = db.exec(
-            select(UserLibraryAccess.library_id).where(
-                UserLibraryAccess.user_id == user.id
+        if user.role == "admin":
+            if include_disabled:
+                return None
+            return list(
+                db.exec(select(Library.id).where(Library.enabled == True)).all()  # noqa: E712
             )
-        ).all()
-        return list(access_rows)
+
+        query = (
+            select(UserLibraryAccess.library_id)
+            .join(Library, Library.id == UserLibraryAccess.library_id)
+            .where(UserLibraryAccess.user_id == user.id)
+        )
+        if not include_disabled:
+            query = query.where(Library.enabled == True)  # noqa: E712
+        return list(db.exec(query).all())
 
 
 def authorize_item_access(request: Request, item_id: int) -> CurrentUser | None:

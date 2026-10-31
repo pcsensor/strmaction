@@ -25,8 +25,22 @@ class ProgressOutbox {
   Future<List<Map<String, dynamic>>> _read() async {
     final file = File(path);
     if (!await file.exists()) return [];
-    final decoded = jsonDecode(await file.readAsString()) as List;
-    return decoded.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    try {
+      final decoded = jsonDecode(await file.readAsString());
+      if (decoded is! List) throw const FormatException('outbox is not a list');
+      return decoded.whereType<Map>().map((e) => Map<String, dynamic>.from(e)).toList();
+    } on Object {
+      // 崩溃/磁盘写入中断可能留下损坏 JSON。隔离坏文件，不能让它阻塞
+      // 之后所有进度上报。
+      try {
+        await file.rename(
+          '$path.corrupt-${DateTime.now().millisecondsSinceEpoch}',
+        );
+      } on Object {
+        try { await file.delete(); } on Object { /* ignore */ }
+      }
+      return [];
+    }
   }
   Future<void> _write(List<Map<String, dynamic>> entries) async {
     final file = File(path);
@@ -43,11 +57,17 @@ class ProgressOutbox {
       entry['account_key'] == accountKey && (entry['body'] as Map?)?['client_session'] == body['client_session'] &&
       body['client_session'] != null);
     entries.add({'url': url, 'token': token, 'body': body, 'account_key': accountKey, 'saved_at': DateTime.now().millisecondsSinceEpoch});
+    if (entries.length > 200) {
+      entries.removeRange(0, entries.length - 200);
+    }
     await _write(entries);
   });
   Future<void> acknowledge(String url, String key) => _locked(() async {
     final entries = await _read();
-    entries.removeWhere((entry) => entry['url'] == url && (entry['body'] as Map)['client_key'] == key);
+    entries.removeWhere((entry) {
+      final body = entry['body'];
+      return entry['url'] == url && body is Map && body['client_key'] == key;
+    });
     await _write(entries);
   });
   /// Returns the number of records needing user attention; records for other
@@ -95,6 +115,11 @@ class ProgressOutbox {
           if (response.statusCode >= 200 && response.statusCode < 300) {
             entries.remove(entry);
             await _write(entries);
+          } else if (response.statusCode == 409) {
+            // 服务端已有更新进度，继续重放只会永久冲突。
+            entries.remove(entry);
+            await _write(entries);
+            unresolved++;
           } else if (response.statusCode >= 500) { break; }
           else { unresolved++; }
         } on Object { break; }

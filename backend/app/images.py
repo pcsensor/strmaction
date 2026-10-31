@@ -5,17 +5,25 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import io
+import ipaddress
 import json
+import socket
+import warnings
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from PIL import Image
 from sqlmodel import Session, select
 
 from .config_store import SettingsService
-from .models import ImageTask, Item, utcnow
+from .models import ImageTask, Item, Library, utcnow
+
+Image.MAX_IMAGE_PIXELS = 50_000_000
+MAX_IMAGE_BYTES = 25 * 1024 * 1024
+ALLOWED_REMOTE_CONTENT_TYPES = ("image/", "application/octet-stream")
 
 VARIANT_SIZES: dict[str, tuple[int, ...]] = {
     "poster": (342, 500),
@@ -138,8 +146,10 @@ class ImageService:
 
     def save_variants(self, sha: str, kind: str, data: bytes) -> bool:
         try:
-            image = Image.open(io.BytesIO(data))
-            image.load()
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                image = Image.open(io.BytesIO(data))
+                image.load()
         except Exception:
             return False
         if image.mode in {"RGBA", "LA"} or (image.mode == "P" and "transparency" in image.info):
@@ -160,20 +170,108 @@ class ImageService:
                 return False
         return True
 
+    async def save_variants_async(self, sha: str, kind: str, data: bytes) -> bool:
+        return await asyncio.to_thread(self.save_variants, sha, kind, data)
+
+    def _local_source_allowed(self, path: Path) -> bool:
+        """本地图片只允许来自数据目录、图片目录或已配置媒体库根目录。"""
+        try:
+            resolved = path.resolve()
+        except OSError:
+            return False
+        roots = [self.settings.data_dir, self.image_dir]
+        with Session(self.engine) as session:
+            roots.extend(
+                Path(root)
+                for root in session.exec(select(Library.root_path)).all()
+                if root
+            )
+        for root in roots:
+            try:
+                resolved.relative_to(root.resolve())
+                return True
+            except (OSError, ValueError):
+                continue
+        return False
+
+    async def _remote_source_allowed(self, url: str) -> bool:
+        try:
+            parsed = urlsplit(url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                return False
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
+            infos = await asyncio.wait_for(
+                asyncio.get_running_loop().getaddrinfo(
+                    parsed.hostname, port, type=socket.SOCK_STREAM
+                ),
+                timeout=5,
+            )
+        except (OSError, ValueError, asyncio.TimeoutError):
+            return False
+        for info in infos:
+            try:
+                address = ipaddress.ip_address(info[4][0].split("%", 1)[0])
+            except ValueError:
+                return False
+            if (
+                address.is_private
+                or address.is_loopback
+                or address.is_link_local
+                or address.is_multicast
+                or address.is_reserved
+                or address.is_unspecified
+            ):
+                return False
+        return True
+
+    async def _fetch_remote(self, source: str) -> bytes | None:
+        """带重定向校验、大小限制和内容类型检查的图片下载。"""
+        url = source
+        for _ in range(4):
+            if not await self._remote_source_allowed(url):
+                return None
+            try:
+                async with self.client().stream(
+                    "GET", url, follow_redirects=False
+                ) as response:
+                    if response.status_code in {301, 302, 303, 307, 308}:
+                        location = response.headers.get("location")
+                        if not location:
+                            return None
+                        url = urljoin(url, location)
+                        continue
+                    if response.status_code in {404, 410}:
+                        return None
+                    response.raise_for_status()
+                    content_type = (response.headers.get("content-type") or "").lower()
+                    if content_type and not content_type.startswith(
+                        ALLOWED_REMOTE_CONTENT_TYPES
+                    ):
+                        return None
+                    content_length = response.headers.get("content-length")
+                    if content_length and int(content_length) > MAX_IMAGE_BYTES:
+                        return None
+                    chunks: list[bytes] = []
+                    total = 0
+                    async for chunk in response.aiter_bytes():
+                        total += len(chunk)
+                        if total > MAX_IMAGE_BYTES:
+                            return None
+                        chunks.append(chunk)
+                    return b"".join(chunks)
+            except (httpx.HTTPError, ValueError, OSError):
+                return None
+        return None
+
     async def read_source(self, source: str) -> bytes | None:
         if source.startswith(("http://", "https://")):
-            try:
-                response = await self.client().get(source)
-                if response.status_code in {404, 410}:
-                    return None
-                response.raise_for_status()
-                return response.content
-            except Exception:
-                return None
+            return await self._fetch_remote(source)
         path = Path(source)
-        if not path.is_absolute():
+        if not path.is_absolute() or not self._local_source_allowed(path):
             return None
         try:
+            if path.stat().st_size > MAX_IMAGE_BYTES:
+                return None
             return path.read_bytes()
         except OSError:
             return None
@@ -200,7 +298,7 @@ class ImageService:
         async with self._write_lock:
             if self.variants_exist(sha, kind) and not force:
                 return sha
-            if not self.save_variants(sha, kind, data):
+            if not await self.save_variants_async(sha, kind, data):
                 return None
         return sha
 
@@ -219,7 +317,7 @@ class ImageService:
             data = await self.read_source(source)
         if not data:
             return None
-        return extract_color(data)
+        return await asyncio.to_thread(extract_color, data)
 
     # -- 队列 -------------------------------------------------------------
     def enqueue(
@@ -435,9 +533,20 @@ class ImageService:
                         referenced.update(member["avatar"] for member in cast
                                           if isinstance(member, dict) and isinstance(member.get("avatar"), str))
                 except (ValueError, TypeError):
-                    # Corrupt metadata should not cause unrelated image loss.
-                    return 0
-            referenced.update(sha for sha in session.exec(select(ImageTask.sha)).all() if sha)
+                    # 单个条目的 cast 损坏不应阻止其它图片清理。
+                    continue
+            # 只保留每个 (item, kind, target_field) 最新任务的 sha。历史任务
+            # 的 sha 如果继续算引用，被替换掉的图片会永久留在磁盘上。
+            seen_targets: set[tuple[int, str, str | None]] = set()
+            for task in session.exec(
+                select(ImageTask).order_by(ImageTask.id.desc())
+            ).all():
+                key = (task.item_id, task.kind, task.target_field)
+                if key in seen_targets:
+                    continue
+                seen_targets.add(key)
+                if task.sha:
+                    referenced.add(task.sha)
         removed = 0
         for file in self.image_dir.glob("*.webp"):
             try:

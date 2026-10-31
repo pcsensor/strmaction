@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react'
-import { Link, useSearchParams } from 'react-router-dom'
+import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import {
   BookOpen,
   ChevronLeft,
@@ -63,17 +63,19 @@ function libCountSummary(lib: LibraryInfo) {
 }
 
 export function LibrariesPage() {
-  const [params, setParams] = useSearchParams()
+  const [params] = useSearchParams()
+  const routeParams = useParams()
+  const navigate = useNavigate()
   const { data: libData, isLoading: libLoading } = useLibraries()
   const libraries = libData?.libraries || []
 
   const activeLibId = useMemo(() => {
-    const rawId = Number(params.get('id'))
+    const rawId = Number(routeParams.id ?? params.get('id'))
     if (rawId && libraries.some((l) => l.id === rawId)) {
       return rawId
     }
     return libraries[0]?.id ?? null
-  }, [params, libraries])
+  }, [params, libraries, routeParams.id])
 
   const [sort, setSort] = useState('recent')
   const [page, setPage] = useState(1)
@@ -95,7 +97,7 @@ export function LibrariesPage() {
     library_id: activeLibId || undefined,
     parent_id: isTreeType ? 'root' : undefined,
     sort: isTreeType ? undefined : sort,
-    page: isTreeType ? 1 : page,
+    page,
     page_size: isTreeType ? 100 : 48,
   })
 
@@ -116,9 +118,7 @@ export function LibrariesPage() {
   }, [items])
 
   const selectLibrary = (id: number) => {
-    const next = new URLSearchParams(params)
-    next.set('id', String(id))
-    setParams(next)
+    navigate(`/libraries/${id}`)
   }
 
   if (libLoading) {
@@ -315,6 +315,37 @@ export function LibrariesPage() {
                   title="该媒体库尚无视频或目录"
                   description="请确认目录文件是否已生成且格式正确，或在设置中执行扫描。"
                 />
+              ) : null}
+              {totalPages > 1 ? (
+                <div className="flex items-center justify-center gap-3">
+                  <button
+                    type="button"
+                    disabled={page <= 1}
+                    onClick={() => {
+                      setPage((p) => Math.max(1, p - 1))
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }}
+                    className="btn-ghost gap-1.5 px-4 py-2 text-xs disabled:opacity-30"
+                  >
+                    <ChevronLeft className="h-4 w-4" />
+                    上一页
+                  </button>
+                  <span className="text-xs text-ink-400">
+                    第 {page} / {totalPages} 页
+                  </span>
+                  <button
+                    type="button"
+                    disabled={page >= totalPages}
+                    onClick={() => {
+                      setPage((p) => Math.min(totalPages, p + 1))
+                      window.scrollTo({ top: 0, behavior: 'smooth' })
+                    }}
+                    className="btn-ghost gap-1.5 px-4 py-2 text-xs disabled:opacity-30"
+                  >
+                    下一页
+                    <ChevronRight className="h-4 w-4" />
+                  </button>
+                </div>
               ) : null}
             </div>
           ) : (

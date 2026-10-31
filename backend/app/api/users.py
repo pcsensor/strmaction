@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends
+from sqlalchemy import text
 from sqlmodel import Session, select, func
 
 from ..deps import (
@@ -26,6 +27,20 @@ from ..schemas import (
 from ..security import AuthService
 
 router = APIRouter(prefix="/users", tags=["用户管理"])
+
+
+def _begin_admin_write(db: Session) -> None:
+    """把管理员数量检查与写入串行化，避免并发操作把最后一个管理员移除。"""
+    db.exec(text("BEGIN IMMEDIATE"))
+
+
+def _other_enabled_admins(db: Session, user_id: int) -> int:
+    count = db.exec(
+        select(func.count(User.id)).where(
+            User.role == "admin", User.enabled == True, User.id != user_id  # noqa: E712
+        )
+    ).first()
+    return int(count or 0)
 
 
 @router.get("", response_model=list[UserOut])
@@ -177,7 +192,16 @@ async def update_user(
     engine=Depends(get_engine),
 ):
     """更新用户信息（仅管理员）。"""
+    new_password_hash: str | None = None
+    if body.password is not None:
+        error = auth.check_password_strength(body.password)
+        if error:
+            raise APIError(400, "WEAK_PASSWORD", error)
+        # 在写事务外完成 Argon2 计算，避免占用 SQLite 写锁。
+        new_password_hash = auth.hash_password(body.password)
+
     with Session(engine) as db:
+        _begin_admin_write(db)
         user = db.get(User, user_id)
         if not user:
             raise APIError(404, "USER_NOT_FOUND", "用户不存在")
@@ -187,11 +211,8 @@ async def update_user(
             raise APIError(400, "CANNOT_CHANGE_OWN_ROLE", "不能修改自己的角色")
 
         # 更新字段
-        if body.password is not None:
-            error = auth.check_password_strength(body.password)
-            if error:
-                raise APIError(400, "WEAK_PASSWORD", error)
-            user.password_hash = auth.hash_password(body.password)
+        if new_password_hash is not None:
+            user.password_hash = new_password_hash
 
         if body.display_name is not None:
             user.display_name = body.display_name
@@ -199,24 +220,14 @@ async def update_user(
         if body.enabled is not None:
             # 防止禁用最后一个管理员
             if not body.enabled and user.role == "admin":
-                admin_count = db.exec(
-                    select(func.count(User.id)).where(
-                        User.role == "admin", User.enabled == True, User.id != user.id
-                    )
-                ).first()
-                if admin_count == 0:
+                if _other_enabled_admins(db, user.id) == 0:
                     raise APIError(400, "LAST_ADMIN", "不能禁用最后一个管理员")
             user.enabled = body.enabled
 
         if body.role is not None and body.role != user.role:
-            # 防止删除最后一个管理员
+            # 防止降级最后一个管理员
             if user.role == "admin":
-                admin_count = db.exec(
-                    select(func.count(User.id)).where(
-                        User.role == "admin", User.enabled == True, User.id != user.id
-                    )
-                ).first()
-                if admin_count == 0:
+                if _other_enabled_admins(db, user.id) == 0:
                     raise APIError(400, "LAST_ADMIN", "不能降级最后一个管理员")
             user.role = body.role
 
@@ -230,6 +241,8 @@ async def update_user(
         # 管理员重置他人密码后，注销对方全部会话
         if body.password is not None and user.id != admin.id:
             auth.revoke_user_sessions(user.id)
+        if body.enabled is False:
+            auth.revoke_user_play_tokens(user.id)
 
         # 统计库数量
         lib_count = None
@@ -261,6 +274,7 @@ async def delete_user(
 ):
     """删除用户（仅管理员）。"""
     with Session(engine) as db:
+        _begin_admin_write(db)
         user = db.get(User, user_id)
         if not user:
             raise APIError(404, "USER_NOT_FOUND", "用户不存在")
@@ -271,17 +285,11 @@ async def delete_user(
 
         # 防止删除最后一个管理员
         if user.role == "admin":
-            admin_count = db.exec(
-                select(func.count(User.id)).where(
-                    User.role == "admin", User.enabled == True, User.id != user.id
-                )
-            ).first()
-            if admin_count == 0:
+            if _other_enabled_admins(db, user.id) == 0:
                 raise APIError(400, "LAST_ADMIN", "不能删除最后一个管理员")
 
         # 级联删除相关数据
         # 1. 用户的库授权
-        db.exec(select(UserLibraryAccess).where(UserLibraryAccess.user_id == user.id)).all()
         for access in db.exec(
             select(UserLibraryAccess).where(UserLibraryAccess.user_id == user.id)
         ).all():

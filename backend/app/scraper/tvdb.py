@@ -136,56 +136,68 @@ class TvdbProvider:
                 self._token_expires = expires
 
     async def _login(self, force: bool = False) -> str:
+        async with self._login_lock:
+            return await self._login_locked(force)
+
+    async def _login_locked(self, force: bool) -> str:
         if self.http is None:
             raise ProviderError("config", "未配置 TVDB API Key")
         if not self.api_key:
             raise ProviderError("config", "未配置 TVDB API Key")
-        async with self._login_lock:
-            if not force and self._token:
-                return self._token
-            body: dict[str, Any] = {"apikey": self.api_key}
-            if self.pin:
-                body["pin"] = self.pin
-            try:
-                data = await self.http.request("POST", "/login", json_body=body)
-            except ProviderError as exc:
-                if exc.kind == "auth":
-                    raise ProviderError("auth", "TVDB 登录失败，请检查 API Key / PIN") from exc
-                raise
-            token = (
-                (data.get("data") or {}).get("token")
-                if isinstance(data, dict)
-                else None
-            )
-            if not token:
-                raise ProviderError("auth", "TVDB 登录响应缺少 token")
-            exp = _jwt_exp(token)
-            if exp is None:
-                exp = datetime.now(timezone.utc) + timedelta(days=1)
-            # 提前 24h 续期
-            stored_exp = exp - timedelta(hours=24)
-            self._token = token
-            self._token_expires = stored_exp
-            with Session(self.engine) as session:
-                row = session.get(ProviderToken, "tvdb")
-                if row is None:
-                    row = ProviderToken(
-                        provider="tvdb",
-                        token=token,
-                        expires_at=stored_exp.isoformat(timespec="seconds"),
-                        updated_at=utcnow(),
-                    )
-                else:
-                    row.token = token
-                    row.expires_at = stored_exp.isoformat(timespec="seconds")
-                    row.updated_at = utcnow()
-                session.add(row)
-                session.commit()
-            return token
+        if not force and self._token:
+            return self._token
+        body: dict[str, Any] = {"apikey": self.api_key}
+        if self.pin:
+            body["pin"] = self.pin
+        try:
+            data = await self.http.request("POST", "/login", json_body=body)
+        except ProviderError as exc:
+            if exc.kind == "auth":
+                raise ProviderError("auth", "TVDB 登录失败，请检查 API Key / PIN") from exc
+            raise
+        token = (
+            (data.get("data") or {}).get("token")
+            if isinstance(data, dict)
+            else None
+        )
+        if not token:
+            raise ProviderError("auth", "TVDB 登录响应缺少 token")
+        exp = _jwt_exp(token)
+        if exp is None:
+            exp = datetime.now(timezone.utc) + timedelta(days=1)
+        # 提前 24h 续期
+        stored_exp = exp - timedelta(hours=24)
+        self._token = token
+        self._token_expires = stored_exp
+        with Session(self.engine) as session:
+            row = session.get(ProviderToken, "tvdb")
+            if row is None:
+                row = ProviderToken(
+                    provider="tvdb",
+                    token=token,
+                    expires_at=stored_exp.isoformat(timespec="seconds"),
+                    updated_at=utcnow(),
+                )
+            else:
+                row.token = token
+                row.expires_at = stored_exp.isoformat(timespec="seconds")
+                row.updated_at = utcnow()
+            session.add(row)
+            session.commit()
+        return token
 
     async def _ensure_token(self, force: bool = False) -> str:
         if force:
-            return await self._login(force=True)
+            # 如果另一个并发请求刚刚刷新过 token，直接复用，避免 401 风暴时
+            # 每个任务都强制重新登录。
+            async with self._login_lock:
+                if (
+                    self._token
+                    and self._token_expires
+                    and self._token_expires > datetime.now(timezone.utc)
+                ):
+                    return self._token
+                return await self._login_locked(force=True)
         if self._token is None:
             self._load_token()
         if self._token and self._token_expires:
@@ -221,6 +233,9 @@ class TvdbProvider:
         except ProviderError as exc:
             if exc.kind != "auth":
                 raise
+            # 让并发请求知道旧 token 已失效，由第一个拿到锁的请求刷新。
+            self._token = None
+            self._token_expires = None
             token = await self._ensure_token(force=True)
             data = await self.http.request(
                 method,
@@ -315,7 +330,10 @@ class TvdbProvider:
             )
         return out
 
-    async def fetch(self, provider_id: str, *, kind: Kind) -> CanonicalMeta:
+    async def fetch(
+        self, provider_id: str, *, kind: Kind, season_type: str | None = None
+    ) -> CanonicalMeta:
+        stype = season_type or self.season_type or "default"
         if kind == "tv":
             data = await self._request(
                 "GET",
@@ -375,9 +393,9 @@ class TvdbProvider:
             number = season.get("number")
             if number is None:
                 continue
-            season_type = ((season.get("type") or {}).get("type") or "").lower()
-            if self.season_type not in {"default", "official"}:
-                if season_type and season_type not in {self.season_type, "official"}:
+            season_type_name = ((season.get("type") or {}).get("type") or "").lower()
+            if stype not in {"default", "official"}:
+                if season_type_name and season_type_name not in {stype, "official"}:
                     continue
             number = int(number)
             if number in seen_seasons:
@@ -481,15 +499,25 @@ class TvdbProvider:
             page += 1
         return out
 
-    async def fetch_season(self, provider_id: str, season_no: int) -> SeasonDetail:
-        episodes = await self._episodes(provider_id, season=season_no)
+    async def fetch_season(
+        self, provider_id: str, season_no: int, season_type: str | None = None
+    ) -> SeasonDetail:
+        episodes = await self._episodes(
+            provider_id, season=season_no, season_type=season_type
+        )
         return SeasonDetail(season_no=season_no, episodes=episodes)
 
-    async def fetch_absolute(self, provider_id: str) -> SeasonDetail:
+    async def fetch_absolute(
+        self, provider_id: str, season_type: str | None = None
+    ) -> SeasonDetail:
         """动漫绝对集号：按 TVDB absolute 顺序返回全部集。"""
-        episodes = await self._episodes(provider_id, season=None, season_type="absolute")
+        episodes = await self._episodes(
+            provider_id, season=None, season_type=season_type or "absolute"
+        )
         if not episodes:
-            episodes = await self._episodes(provider_id, season=None, season_type="default")
+            episodes = await self._episodes(
+                provider_id, season=None, season_type=season_type or "default"
+            )
         if episodes:
             episodes.sort(key=lambda e: e.episode_no)
         return SeasonDetail(season_no=1, episodes=episodes)

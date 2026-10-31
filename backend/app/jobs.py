@@ -168,12 +168,20 @@ class TaskManager:
             if auto_scrape and has_provider:
                 with Session(self.engine) as session:
                     item_ids = self._pending_item_ids(session, library_id)
-                if item_ids:
-                    scrape_stats = await self._scrape_ids(
-                        task_id, item_ids, force=False, base_stats=stats
-                    )
+                scrape_key = f"scrape:{library_id}"
+                if item_ids and scrape_key not in self._running:
+                    # 和手动/定时刮削共用同一个 claim，避免扫描内刮削与它们并发。
+                    self._running[scrape_key] = task_id
+                    try:
+                        scrape_stats = await self._scrape_ids(
+                            task_id, item_ids, force=False, base_stats=stats
+                        )
+                    finally:
+                        self._running.pop(scrape_key, None)
                     stats = {**stats, "scrape": scrape_stats}
                     message = "扫描并刮削完成"
+                elif item_ids:
+                    stats = {**stats, "scrape_skipped": "another_scrape_running"}
             self._finish_task(task_id, "success", stats, message)
         except Exception as exc:  # pragma: no cover
             self._finish_task(task_id, "failed", {"error": str(exc)}, f"扫描失败: {exc}")
@@ -193,14 +201,19 @@ class TaskManager:
         return False
 
     # -- 刮削 -------------------------------------------------------------
-    def start_scrape(self, library_id: int, mode: str = "pending") -> int:
-        key = f"scrape:{library_id}:{mode}"
+    def start_scrape(
+        self,
+        library_id: int,
+        mode: str = "pending",
+        item_ids: list[int] | None = None,
+    ) -> int:
+        key = f"scrape:{library_id}"
         existing = self._running.get(key)
         if existing:
             return existing
         task_id = self._create_task("scrape", library_id, "刮削元数据")
         self._running[key] = task_id
-        self._spawn(self._run_scrape(task_id, library_id, mode, key))
+        self._spawn(self._run_scrape(task_id, library_id, mode, key, item_ids))
         return task_id
 
     def start_refresh_item(self, item_id: int) -> int:
@@ -213,20 +226,30 @@ class TaskManager:
         self._spawn(self._run_single_refresh(task_id, item_id, key))
         return task_id
 
-    async def _run_scrape(self, task_id: int, library_id: int, mode: str, key: str) -> None:
+    async def _run_scrape(
+        self,
+        task_id: int,
+        library_id: int,
+        mode: str,
+        key: str,
+        item_ids: list[int] | None = None,
+    ) -> None:
         try:
-            with Session(self.engine) as session:
-                if mode == "pending":
-                    item_ids = self._pending_item_ids(session, library_id)
-                else:
-                    item_ids = list(
-                        session.exec(select(Item.id).where(
-                            Item.library_id == library_id,
-                            Item.kind.in_(["movie", "series"]),
-                            Item.deleted_at == None,  # noqa: E711
-                            Item.match_state != "manual",
-                        )).all()
-                    )
+            if item_ids is None:
+                with Session(self.engine) as session:
+                    if mode == "pending":
+                        item_ids = self._pending_item_ids(session, library_id)
+                    else:
+                        item_ids = list(
+                            session.exec(
+                                select(Item.id).where(
+                                    Item.library_id == library_id,
+                                    Item.kind.in_(["movie", "series"]),
+                                    Item.deleted_at == None,  # noqa: E711
+                                    Item.match_state != "manual",
+                                )
+                            ).all()
+                        )
             stats = await self._scrape_ids(task_id, item_ids, force=(mode == "refresh"))
             self._finish_task(task_id, "success", stats, "刮削完成")
         except Exception as exc:  # pragma: no cover
@@ -313,11 +336,13 @@ class SchedulerService:
         settings: SettingsService,
         tasks: TaskManager,
         images: ImageService,
+        auth=None,
     ):
         self.engine = engine
         self.settings = settings
         self.tasks = tasks
         self.images = images
+        self.auth = auth
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         self._job_ids: set[str] = set()
 
@@ -387,16 +412,24 @@ class SchedulerService:
                 select(Library).where(Library.enabled == True)  # noqa: E712
             ).all()
             for library in libraries:
-                items = session.exec(
-                    select(Item).where(
-                        Item.library_id == library.id,
-                        Item.kind.in_(["movie", "series"]),
-                        Item.match_state.notin_(["manual", "skipped"]),  # type: ignore[attr-defined]
-                        Item.updated_at < cutoff,
+                if not library.auto_scrape:
+                    continue
+                item_ids = [
+                    item_id
+                    for item_id in session.exec(
+                        select(Item.id).where(
+                            Item.library_id == library.id,
+                            Item.kind.in_(["movie", "series"]),
+                            Item.match_state.notin_(["manual", "skipped"]),  # type: ignore[attr-defined]
+                            Item.updated_at < cutoff,
+                        )
+                    ).all()
+                    if item_id
+                ]
+                if item_ids:
+                    self.tasks.start_scrape(
+                        library.id, mode="refresh", item_ids=item_ids
                     )
-                ).all()
-                if items:
-                    self.tasks.start_scrape(library.id, mode="refresh")
 
     async def _cleanup(self) -> None:
         def cleanup_missing() -> None:
@@ -407,6 +440,7 @@ class SchedulerService:
             ("missing", cleanup_missing),
             ("scrape cache", lambda: purge_expired(self.engine)),
             ("images", lambda: self.images.purge_older_than(90)),
+            ("auth", lambda: self.auth.purge_expired_sessions() if self.auth else None),
         ):
             try:
                 operation()

@@ -10,12 +10,13 @@ import os
 import secrets
 import time
 import threading
+from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from argon2 import PasswordHasher
 from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
-from sqlmodel import Session
+from sqlmodel import Session, select
 
 from .config_store import SettingsService
 from .models import PlayToken, User
@@ -27,6 +28,7 @@ SESSION_COOKIE = "st_sess"
 SESSION_TTL_DAYS = 30
 MAX_FAILURES = 5
 LOCK_SECONDS = 300
+MAX_TRACKED_LOGIN_KEYS = 4096
 
 
 def _b64e(data: bytes) -> str:
@@ -44,8 +46,10 @@ class AuthService:
         self.engine = engine
         self._hasher = PasswordHasher(time_cost=2, memory_cost=64 * 1024, parallelism=2)
         self._secret = self._load_secret()
-        self._failures: dict[str, list[float]] = {}
-        self._lock: dict[str, float] = {}
+        # 使用有界 OrderedDict，避免攻击者用随机用户名无限创建失败记录。
+        self._failures: OrderedDict[str, list[float]] = OrderedDict()
+        self._lock: OrderedDict[str, float] = OrderedDict()
+        self._rate_lock = threading.Lock()
         # Bound memory while serializing the check/verify/update sequence per key.
         self._login_locks = [threading.Lock() for _ in range(128)]
 
@@ -71,17 +75,26 @@ class AuthService:
         return raw
 
     # -- 密码 -------------------------------------------------------------
-    def needs_setup(self) -> bool:
-        """v0.9: 检查是否有设置了有效密码的管理员用户存在。"""
-        with Session(self.engine) as db:
-            from sqlmodel import select, func
-            count = db.exec(
+    def needs_setup(self, db: Session | None = None) -> bool:
+        """v0.9: 检查是否有设置了有效密码的管理员用户存在。
+
+        传入 db 时在调用方的事务中检查，供首次设置做原子判断。
+        """
+        from sqlmodel import select, func
+
+        def _check(session: Session) -> bool:
+            count = session.exec(
                 select(func.count(User.id)).where(
                     User.role == "admin",
                     User.password_hash != "",
                 )
             ).first()
             return (count or 0) == 0
+
+        if db is not None:
+            return _check(db)
+        with Session(self.engine) as session:
+            return _check(session)
 
     def hash_password(self, password: str) -> str:
         return self._hasher.hash(password)
@@ -124,25 +137,39 @@ class AuthService:
 
     # -- 登录限流 ---------------------------------------------------------
     def is_locked(self, key: str) -> bool:
-        until = self._lock.get(key, 0)
-        if until and until > time.time():
-            return True
-        if until:
-            self._lock.pop(key, None)
-        return False
+        with self._rate_lock:
+            now = time.monotonic()
+            until = self._lock.get(key, 0)
+            if until and until > now:
+                self._lock.move_to_end(key)
+                return True
+            if until:
+                self._lock.pop(key, None)
+            return False
 
     def _record_failure(self, key: str) -> None:
-        now = time.time()
-        window = [t for t in self._failures.get(key, []) if now - t < LOCK_SECONDS]
-        window.append(now)
-        self._failures[key] = window
-        if len(window) >= MAX_FAILURES:
-            self._lock[key] = now + LOCK_SECONDS
-            self._failures[key] = []
+        with self._rate_lock:
+            now = time.monotonic()
+            window = [t for t in self._failures.get(key, []) if now - t < LOCK_SECONDS]
+            window.append(now)
+            self._failures[key] = window
+            self._failures.move_to_end(key)
+            if len(window) >= MAX_FAILURES:
+                self._lock[key] = now + LOCK_SECONDS
+                self._lock.move_to_end(key)
+                self._failures[key] = []
+            self._trim_rate_limit_state()
+
+    def _trim_rate_limit_state(self) -> None:
+        while len(self._failures) > MAX_TRACKED_LOGIN_KEYS:
+            self._failures.popitem(last=False)
+        while len(self._lock) > MAX_TRACKED_LOGIN_KEYS:
+            self._lock.popitem(last=False)
 
     def reset_failures(self, key: str) -> None:
-        self._failures.pop(key, None)
-        self._lock.pop(key, None)
+        with self._rate_lock:
+            self._failures.pop(key, None)
+            self._lock.pop(key, None)
 
     # -- 会话 -------------------------------------------------------------
     def _sign(self, payload: str) -> str:
@@ -283,11 +310,32 @@ class AuthService:
         return min(max(value, 1), 72)
 
     def create_play_token(self, user_id: int, item_id: int) -> tuple[str, str]:
-        """v0.9: 创建播放凭证，绑定用户和条目。"""
-        token = "pt_" + secrets.token_urlsafe(32)
-        hours = self.play_token_ttl_hours()
-        expires = datetime.now(timezone.utc) + timedelta(hours=hours)
+        """v0.9: 创建播放凭证，绑定用户和条目；未过期时复用同一凭证。"""
+        now = datetime.now(timezone.utc)
         with Session(self.engine) as session:
+            existing = session.exec(
+                select(PlayToken)
+                .where(
+                    PlayToken.user_id == user_id,
+                    PlayToken.item_id == item_id,
+                    PlayToken.revoked == False,  # noqa: E712
+                )
+                .order_by(PlayToken.created_at.desc())
+            ).first()
+            if existing is not None:
+                try:
+                    expires = datetime.fromisoformat(existing.expires_at)
+                except ValueError:
+                    expires = now
+                if expires > now:
+                    return existing.token, existing.expires_at
+                existing.revoked = True
+                session.add(existing)
+                session.commit()
+
+            token = "pt_" + secrets.token_urlsafe(32)
+            hours = self.play_token_ttl_hours()
+            expires = now + timedelta(hours=hours)
             session.add(
                 PlayToken(
                     token=token,
@@ -300,6 +348,22 @@ class AuthService:
             )
             session.commit()
         return token, expires.isoformat(timespec="seconds")
+
+    def revoke_user_play_tokens(self, user_id: int) -> int:
+        """禁用/删除用户时撤销其剩余播放凭证。"""
+        with Session(self.engine) as session:
+            rows = session.exec(
+                select(PlayToken).where(
+                    PlayToken.user_id == user_id,
+                    PlayToken.revoked == False,  # noqa: E712
+                )
+            ).all()
+            for row in rows:
+                row.revoked = True
+                session.add(row)
+            if rows:
+                session.commit()
+            return len(rows)
 
     def validate_play_token(self, token: str | None, item_id: int) -> str:
         """返回 ok / expired / mismatch / invalid。"""

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -23,6 +24,7 @@ import '../player/player_page.dart';
 import '../services/progress_outbox.dart';
 import 'bridge_script.dart';
 import 'web_safe_area.dart';
+import 'web_shell_policy.dart';
 
 class WebShellPage extends StatefulWidget {
   final AppController app;
@@ -49,8 +51,16 @@ class _WebShellPageState extends State<WebShellPage> {
   String? _playbackCoverText;
   EdgeInsets _safeInsets = EdgeInsets.zero;
   ApiClient? _apiClient;
+  late final String _bridgeNonce = _randomBridgeNonce();
 
   AppController get app => widget.app;
+
+  static String _randomBridgeNonce() {
+    final random = Random.secure();
+    return List.generate(
+      32, (_) => random.nextInt(256).toRadixString(16).padLeft(2, '0')
+    ).join();
+  }
 
   /// 同一份配置复用连接；服务器地址或证书变化时重建。
   ApiClient get _api {
@@ -294,9 +304,6 @@ class _WebShellPageState extends State<WebShellPage> {
       serverUrl: (decoded['server_url'] ?? app.config.serverUrl).toString(),
       cacheLimitMb: int.tryParse('${decoded['cache_limit_mb'] ?? app.config.cacheLimitMb}') ??
           app.config.cacheLimitMb,
-      allowSelfSignedHttps: decoded.containsKey('allow_self_signed_https')
-          ? decoded['allow_self_signed_https'] == true
-          : app.config.allowSelfSignedHttps,
     ).normalized();
     final serverChanged = await app.saveSettings(next);
     if (!mounted) return serverChanged;
@@ -355,7 +362,6 @@ class _WebShellPageState extends State<WebShellPage> {
           'ok': true,
           'server_url': app.config.serverUrl,
           'cache_limit_mb': app.config.cacheLimitMb,
-          'allow_self_signed_https': app.config.allowSelfSignedHttps,
           'version': appVersion,
         });
       case 'save_settings':
@@ -453,21 +459,6 @@ class _WebShellPageState extends State<WebShellPage> {
     );
   }
 
-  bool _isAllowed(Uri uri) {
-    if (uri.scheme == 'about' ||
-        uri.scheme == 'data' ||
-        uri.scheme == 'file' ||
-        uri.scheme == 'qrc') {
-      return true;
-    }
-    final server = Uri.tryParse(app.config.serverUrl);
-    if (server == null) return false;
-    return uri.scheme == server.scheme &&
-        uri.host == server.host &&
-        (uri.port == server.port || (uri.port == 80 && server.port == 0) ||
-            (uri.port == 443 && server.port == 0));
-  }
-
   Future<void> _openExternal(Uri uri) async {
     if (uri.scheme != 'http' && uri.scheme != 'https') return;
     try {
@@ -507,7 +498,7 @@ class _WebShellPageState extends State<WebShellPage> {
       initialSettings: _settings(),
       initialUserScripts: UnmodifiableListView<UserScript>([
         UserScript(
-          source: buildBridgeScript(isTV: _isTv),
+          source: buildBridgeScript(isTV: _isTv, bridgeNonce: _bridgeNonce),
           injectionTime: UserScriptInjectionTime.AT_DOCUMENT_START,
           forMainFrameOnly: true,
         ),
@@ -523,9 +514,16 @@ class _WebShellPageState extends State<WebShellPage> {
           handlerName: 'strmaction',
           callback: (args) async {
             final origin = await controller.getUrl();
-            if (origin == null || !['http', 'https'].contains(origin.scheme) || !_isAllowed(origin)) return {'ok': false, 'error': '页面来源不受信任'};
-            final method = args.isNotEmpty ? '${args[0]}' : '';
-            final arg = args.length > 1 ? args[1] : null;
+            if (origin == null ||
+                !['http', 'https'].contains(origin.scheme) ||
+                !isAllowedWebShellUrl(origin, app.config.serverUrl)) {
+              return {'ok': false, 'error': '页面来源不受信任'};
+            }
+            if (args.length < 2 || '${args.last}' != _bridgeNonce) {
+              return {'ok': false, 'error': 'Bridge 调用来源不受信任'};
+            }
+            final method = '${args[0]}';
+            final arg = args.length > 2 ? args[1] : null;
             try {
               return await _handleBridge(method, arg);
             } on Object catch (error) {
@@ -549,7 +547,9 @@ class _WebShellPageState extends State<WebShellPage> {
         setState(() => _loading = false);
         await _refreshAccount();
         try {
-          await controller.evaluateJavascript(source: buildBridgeScript(isTV: _isTv));
+          await controller.evaluateJavascript(
+            source: buildBridgeScript(isTV: _isTv, bridgeNonce: _bridgeNonce),
+          );
         } on Object {
           // The document may be navigating again.
         }
@@ -582,8 +582,10 @@ class _WebShellPageState extends State<WebShellPage> {
       shouldOverrideUrlLoading: (controller, navigationAction) async {
         final uri = navigationAction.request.url;
         if (uri == null) return NavigationActionPolicy.ALLOW;
-        if (_isAllowed(uri)) return NavigationActionPolicy.ALLOW;
-        if (uri.scheme == 'http' || uri.scheme == 'https') {
+        if (isAllowedWebShellUrl(uri, app.config.serverUrl)) {
+          return NavigationActionPolicy.ALLOW;
+        }
+        if (shouldOpenExternally(uri)) {
           await _openExternal(uri);
         }
         return NavigationActionPolicy.CANCEL;

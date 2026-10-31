@@ -268,6 +268,23 @@ void main() {
     await root.delete(recursive: true);
   });
 
+  test('corrupt outbox is quarantined instead of blocking progress', () async {
+    final root = await Directory.systemTemp.createTemp('progress-corrupt-');
+    final path = '${root.path}/queue.json';
+    await File(path).writeAsString('{not-json');
+    final outbox = ProgressOutbox(path);
+    await outbox.save(
+      'https://media.example/api/items/1/progress',
+      'pt_token',
+      {'position_ms': 1, 'client_key': 'a', 'client_session': 'a'},
+      accountKey: 'https://media.example|1',
+    );
+    final entries = jsonDecode(await File(path).readAsString()) as List;
+    expect(entries, hasLength(1));
+    expect(await root.list().where((e) => e.path.contains('.corrupt-')).length, 1);
+    await root.delete(recursive: true);
+  });
+
   test('expired credentials do not discard pending progress', () async {
     final root = await Directory.systemTemp.createTemp('progress-expired-');
     final path = '${root.path}/queue.json';

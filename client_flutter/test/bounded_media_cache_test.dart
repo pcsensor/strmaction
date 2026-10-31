@@ -2,7 +2,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:strmaction_desktop/services/bounded_media_cache.dart';
+import 'support/bounded_media_cache.dart';
 import 'package:strmaction_desktop/services/media_redirect.dart';
 
 void main() {
