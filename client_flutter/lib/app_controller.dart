@@ -24,7 +24,7 @@ class AppController {
   ProgressReporter? activeProgress;
   Future<void> Function()? _playbackShutdown;
   bool _shutDown = false;
-  Future<void> _configTail = Future<void>.value();
+  Future<void>? _configTail;
 
   AppController({
     required this.paths,
@@ -87,7 +87,7 @@ class AppController {
   }
 
   Future<bool> updateSettings(AppConfig Function(AppConfig) update) {
-    final result = _configTail.then((_) async {
+    final result = (_configTail ?? Future<void>.value()).then((_) async {
       final previousServer = config.serverUrl;
       final normalized = update(config).normalized();
       await configStore.save(normalized);
@@ -114,7 +114,8 @@ class AppController {
   Future<void> shutdown() async {
     if (_shutDown) return;
     _shutDown = true;
-    await _configTail;
+    final writes = _configTail;
+    if (writes != null) await writes;
     try {
       if (_playbackShutdown != null) { await _playbackShutdown!(); }
       else { await activeProgress?.stop(flush: true); }
